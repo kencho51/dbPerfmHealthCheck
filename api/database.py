@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -43,11 +44,30 @@ engine: AsyncEngine = create_async_engine(
 
 
 # ---------------------------------------------------------------------------
-# Session dependency (use as async context manager or FastAPI Depends)
+# Session: FastAPI Depends (async generator) + direct use (context manager)
 # ---------------------------------------------------------------------------
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a SQLModel async session; commit on exit, rollback on error."""
+    """Async generator — for use with FastAPI `Depends(get_session)`."""
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+@asynccontextmanager
+async def open_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Async context manager — for direct programmatic use (scripts, tests,
+    services that are called outside a FastAPI request lifecycle).
+
+    Usage:
+        async with open_session() as session:
+            result = await session.exec(select(RawQuery))
+    """
     async with AsyncSession(engine, expire_on_commit=False) as session:
         try:
             yield session

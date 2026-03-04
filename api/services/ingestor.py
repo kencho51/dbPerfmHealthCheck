@@ -15,13 +15,25 @@ from __future__ import annotations
 
 import hashlib
 import re
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import update as sa_update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.models import RawQuery
+
+# SQLModel emits a DeprecationWarning when .execute() is used on a session,
+# suggesting .exec() instead.  For INSERT and UPDATE statements (non-SELECT),
+# .execute() is the correct SQLAlchemy method; .exec() is SQLModel's SELECT-only
+# wrapper.  Suppress the false-positive warning for this module only.
+warnings.filterwarnings(
+    "ignore",
+    message=".*You probably want to use.*session.exec.*",
+    category=DeprecationWarning,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -150,26 +162,32 @@ async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
             stmt = sqlite_insert(RawQuery).values(**values)
 
             # On conflict: bump the counter and refresh last_seen / updated_at
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["query_hash"],
-                set_={
-                    "occurrence_count": RawQuery.occurrence_count + 1,
-                    "last_seen":        now,
-                    "updated_at":       now,
-                },
+            stmt = sqlite_insert(RawQuery).values(**values).on_conflict_do_nothing(
+                index_elements=["query_hash"]
             )
 
-            exec_result = await session.exec(stmt)  # type: ignore[arg-type]
+            # Use execute() (not exec()) — exec() is SQLModel's select-only helper
+            exec_result = await session.execute(stmt)
 
-            # rowcount == 1 → insert;  rowcount == 2 → update (SQLite upsert)
             if exec_result.rowcount == 1:
+                # Fresh insert — row did not exist
                 result.inserted += 1
             else:
+                # Row already existed (conflict ignored) — bump counters manually
+                upd = (
+                    sa_update(RawQuery)
+                    .where(RawQuery.query_hash == q_hash)
+                    .values(
+                        occurrence_count=RawQuery.occurrence_count + 1,
+                        last_seen=now,
+                        updated_at=now,
+                    )
+                )
+                await session.execute(upd)
                 result.updated += 1
 
         except Exception as exc:
             result.errors.append(f"Row error ({row.get('host', '?')}): {exc}")
             result.skipped += 1
 
-    await session.commit()
     return result

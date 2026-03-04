@@ -2,8 +2,13 @@
 SQLModel table definitions for the two-table schema:
   - RawQuery  : every row extracted from Splunk CSVs (source of truth for analytics)
   - Pattern   : curated / auto-detected recurring or suspicious patterns
+
+NOTE: `from __future__ import annotations` is intentionally NOT imported here.
+SQLModel/SQLAlchemy needs to evaluate relationship type annotations at class-
+definition time (not lazily), so that ForwardRef('RawQuery') can be resolved
+by the mapper during initialisation.  String forward refs ("RawQuery") are used
+only for the one cross-reference that must be forward-declared.
 """
-from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
