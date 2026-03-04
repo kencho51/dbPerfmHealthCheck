@@ -1,15 +1,18 @@
 """
 Query endpoints:
     GET  /api/queries         — paginated, filterable list of raw query rows
-    PATCH /api/queries/{id}   — assign a pattern_id to a raw query row
+    GET  /api/queries/count   — total matching row count (for pagination)
+    GET  /api/queries/{id}    — single row by primary key
+    PATCH /api/queries/{id}   — assign / unassign a pattern_id
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlmodel import col, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
+from sqlmodel import col, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
@@ -24,6 +27,46 @@ from api.models import (
 router = APIRouter()
 
 _PAGE_MAX = 200
+
+
+# ---------------------------------------------------------------------------
+# Shared filter builder (reused by list + count endpoints)
+# ---------------------------------------------------------------------------
+
+def _apply_filters(
+    stmt,
+    *,
+    environment: Optional[EnvironmentType],
+    type:        Optional[QueryType],
+    source:      Optional[SourceType],
+    host:        Optional[str],
+    db_name:     Optional[str],
+    month_year:  Optional[list[str]],
+    pattern_id:  Optional[int],
+    has_pattern: Optional[bool],
+    search:      Optional[str],
+):
+    if environment is not None:
+        stmt = stmt.where(RawQuery.environment == environment)
+    if type is not None:
+        stmt = stmt.where(RawQuery.type == type)
+    if source is not None:
+        stmt = stmt.where(RawQuery.source == source)
+    if host:
+        stmt = stmt.where(col(RawQuery.host).contains(host))
+    if db_name:
+        stmt = stmt.where(col(RawQuery.db_name).contains(db_name))
+    if month_year:
+        stmt = stmt.where(col(RawQuery.month_year).in_(month_year))
+    if pattern_id is not None:
+        stmt = stmt.where(RawQuery.pattern_id == pattern_id)
+    if has_pattern is True:
+        stmt = stmt.where(col(RawQuery.pattern_id).isnot(None))
+    if has_pattern is False:
+        stmt = stmt.where(col(RawQuery.pattern_id).is_(None))
+    if search:
+        stmt = stmt.where(col(RawQuery.query_details).contains(search))
+    return stmt
 
 
 # ---------------------------------------------------------------------------
@@ -45,35 +88,60 @@ async def list_queries(
     # Pagination
     offset: int = Query(default=0, ge=0),
     limit:  int = Query(default=50, ge=1, le=_PAGE_MAX),
+    # Response
+    response: Response = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[RawQuery]:
-    stmt = select(RawQuery)
+    """
+    Returns paginated rows.  The response header `X-Total-Count` carries the
+    total number of matching rows (ignoring offset/limit) so the frontend can
+    render a correct pagination control.
+    """
+    filter_kwargs = dict(
+        environment=environment, type=type, source=source, host=host,
+        db_name=db_name, month_year=month_year, pattern_id=pattern_id,
+        has_pattern=has_pattern, search=search,
+    )
 
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if type is not None:
-        stmt = stmt.where(RawQuery.type == type)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if host:
-        stmt = stmt.where(col(RawQuery.host).contains(host))
-    if db_name:
-        stmt = stmt.where(col(RawQuery.db_name).contains(db_name))
-    if month_year:
-        stmt = stmt.where(col(RawQuery.month_year).in_(month_year))
-    if pattern_id is not None:
-        stmt = stmt.where(RawQuery.pattern_id == pattern_id)
-    if has_pattern is True:
-        stmt = stmt.where(RawQuery.pattern_id.isnot(None))  # type: ignore[union-attr]
-    if has_pattern is False:
-        stmt = stmt.where(RawQuery.pattern_id.is_(None))  # type: ignore[union-attr]
-    if search:
-        stmt = stmt.where(col(RawQuery.query_details).contains(search))
+    # Total count (for X-Total-Count header)
+    count_stmt = _apply_filters(select(func.count(RawQuery.id)), **filter_kwargs)
+    total       = (await session.exec(count_stmt)).one()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
 
+    # Paginated data
+    stmt = _apply_filters(select(RawQuery), **filter_kwargs)
     stmt = stmt.order_by(col(RawQuery.last_seen).desc()).offset(offset).limit(limit)
-
     rows = await session.exec(stmt)
     return list(rows.all())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/queries/count  — dedicated count endpoint (avoids full data fetch)
+# ---------------------------------------------------------------------------
+
+@router.get("/count", summary="Count matching raw query rows")
+async def count_queries(
+    environment: Optional[EnvironmentType] = None,
+    type:        Optional[QueryType]        = None,
+    source:      Optional[SourceType]       = None,
+    host:        Optional[str]              = Query(default=None),
+    db_name:     Optional[str]              = Query(default=None),
+    month_year:  Optional[list[str]]        = Query(default=None),
+    pattern_id:  Optional[int]              = None,
+    has_pattern: Optional[bool]             = None,
+    search:      Optional[str]              = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    stmt = _apply_filters(
+        select(func.count(RawQuery.id)),
+        environment=environment, type=type, source=source, host=host,
+        db_name=db_name, month_year=month_year, pattern_id=pattern_id,
+        has_pattern=has_pattern, search=search,
+    )
+    total = (await session.exec(stmt)).one()
+    return {"count": total}
 
 
 # ---------------------------------------------------------------------------
@@ -94,13 +162,6 @@ async def get_query(
 # ---------------------------------------------------------------------------
 # PATCH /api/queries/{id}  — assign / unassign a pattern
 # ---------------------------------------------------------------------------
-
-class _PatchQuery(dict):
-    pass
-
-
-from pydantic import BaseModel
-
 
 class QueryPatch(BaseModel):
     pattern_id: Optional[int] = None
