@@ -29,7 +29,7 @@ SAMPLE_SIZE = 50
 _CRITICAL_FIELDS: dict[str, list[str]] = {
     "slow_query_sql":   ["host", "db_name", "query_final"],
     "blocker":          ["host", "database_name", "query_text"],
-    "deadlock":         ["host"],
+    "deadlock":         ["currentdbname", "all_query"],
     "slow_query_mongo": ["host", "_raw"],
 }
 

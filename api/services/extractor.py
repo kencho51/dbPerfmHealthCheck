@@ -28,9 +28,9 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 EXPECTED_COLUMNS: dict[str, list[str]] = {
-    "slow_query_sql":  ["host", "db_name", "query_final"],
-    "blocker":         ["host", "database_name", "query_text"],
-    "deadlock":        ["host"],
+    "slow_query_sql":   ["host", "db_name", "query_final"],
+    "blocker":          ["host", "database_name", "query_text"],
+    "deadlock":         ["currentdbname", "all_query"],
     "slow_query_mongo": ["host", "_raw"],
 }
 
