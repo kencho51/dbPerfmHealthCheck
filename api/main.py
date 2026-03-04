@@ -104,6 +104,12 @@ def _register_routers(app: FastAPI) -> None:
     except ImportError:
         logger.debug("validate router not yet available")
 
+    try:
+        from api.routers.export import router as export_router
+        app.include_router(export_router, prefix="/api", tags=["export"])
+    except ImportError:
+        logger.debug("export router not yet available")
+
 
 # ---------------------------------------------------------------------------
 # Module-level app instance (uvicorn / fastapi dev entrypoint)
