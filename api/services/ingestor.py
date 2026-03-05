@@ -59,6 +59,10 @@ def _derive_month_year(time_str: str | None) -> str | None:
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
+        # Splunk deadlock CSVs use slash-separated dates
+        "%Y/%m/%d %H:%M:%S.%f",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d",
     ]
     for fmt in formats:
         try:
@@ -67,8 +71,8 @@ def _derive_month_year(time_str: str | None) -> str | None:
         except ValueError:
             continue
 
-    # Regex fallback: search for YYYY-MM anywhere in the string
-    m = re.search(r"(\d{4})-(\d{2})", time_str)
+    # Regex fallback: search for YYYY-MM or YYYY/MM anywhere in the string
+    m = re.search(r"(\d{4})[/\-](\d{2})", time_str)
     if m:
         return f"{m.group(1)}-{m.group(2)}"
 
@@ -78,7 +82,9 @@ def _derive_month_year(time_str: str | None) -> str | None:
 def compute_hash(row: dict) -> str:
     """
     Compute MD5 deduplication hash for a row dict.
-    Keys used: source, host, db_name, environment, type, query_details.
+    Keys used: source, host, db_name, environment, type, time, query_details.
+    Including `time` ensures the same query pattern observed across different
+    time windows is stored as distinct raw rows (idempotent on re-upload).
     """
     parts = "|".join([
         (row.get("source") or "").strip().lower(),
@@ -86,6 +92,7 @@ def compute_hash(row: dict) -> str:
         (row.get("db_name") or "").strip().lower(),
         (row.get("environment") or "").strip().lower(),
         (row.get("type") or "").strip().lower(),
+        (row.get("time") or "").strip(),
         (row.get("query_details") or "").strip(),
     ])
     return hashlib.md5(parts.encode("utf-8")).hexdigest()
@@ -139,7 +146,7 @@ async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
                 source = "sql"
             if environment not in ("prod", "sat", "unknown"):
                 environment = "unknown"
-            if q_type not in ("slow_query", "blocker", "deadlock", "unknown"):
+            if q_type not in ("slow_query", "slow_query_mongo", "blocker", "deadlock", "unknown"):
                 q_type = "unknown"
 
             values = {
@@ -152,7 +159,7 @@ async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
                 "type":            q_type,
                 "query_details":   row.get("query_details") or None,
                 "month_year":      _derive_month_year(row.get("time")),
-                "occurrence_count": 1,
+                "occurrence_count": int(row.get("occurrence_count") or 1),
                 "first_seen":      now,
                 "last_seen":       now,
                 "created_at":      now,

@@ -28,6 +28,7 @@ class SourceType(str, Enum):
 
 class QueryType(str, Enum):
     slow_query = "slow_query"
+    slow_query_mongo = "slow_query_mongo"
     blocker = "blocker"
     deadlock = "deadlock"
     unknown = "unknown"
