@@ -13,6 +13,7 @@ Returns a `ValidationResult` dataclass consumed by:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,8 +132,17 @@ def validate_csv(path: Path) -> ValidationResult:
 
     # -- 5. Sample rows ----------------------------------------------------------
     sample_df = df.head(SAMPLE_SIZE)
-    # Convert to records, replace NaN with None for JSON-safety
-    sample_rows = sample_df.where(pd.notna(sample_df), None).to_dict(orient="records")
+    # Convert to records, replace NaN/inf with None for JSON-safety.
+    # pd.where alone doesn't clean float NaN in numeric columns reliably,
+    # so we do a second pass replacing any remaining float nan/inf values.
+    raw_records = sample_df.where(pd.notna(sample_df), None).to_dict(orient="records")
+    sample_rows = [
+        {
+            k: (None if (isinstance(v, float) and not math.isfinite(v)) else v)
+            for k, v in row.items()
+        }
+        for row in raw_records
+    ]
 
     # -- 6. Environment sanity ---------------------------------------------------
     if environment == "unknown":

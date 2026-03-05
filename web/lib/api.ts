@@ -175,13 +175,25 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     return fetch(`${base()}/upload`, { method: "POST", body: fd })
-      .then((r) => r.json() as Promise<UploadResult>);
+      .then(async (r) => {
+        if (!r.ok) {
+          const text = await r.text().catch(() => r.statusText);
+          throw new Error(`Upload failed (${r.status}): ${text}`);
+        }
+        return r.json() as Promise<UploadResult>;
+      });
   },
 
   validate: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
     return fetch(`${base()}/validate`, { method: "POST", body: fd })
-      .then((r) => r.json() as Promise<ValidationResult>);
+      .then(async (r) => {
+        if (!r.ok) {
+          const text = await r.text().catch(() => r.statusText);
+          throw new Error(`Validation failed (${r.status}): ${text}`);
+        }
+        return r.json() as Promise<ValidationResult>;
+      });
   },
 };
