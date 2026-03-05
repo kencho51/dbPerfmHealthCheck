@@ -180,7 +180,7 @@ class PatternRead(SQLModel):
 
 class PatternCreate(SQLModel):
     name: str
-    pattern_tag: str
+    pattern_tag: Optional[str] = None
     severity: SeverityType = SeverityType.warning
     description: Optional[str] = None
     example_query_hash: Optional[str] = None
