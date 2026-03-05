@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -190,9 +190,8 @@ export default function QueriesPage() {
             </thead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <>
+                <React.Fragment key={row.id}>
                   <tr
-                    key={row.id}
                     className="border-b border-slate-50 hover:bg-slate-50 cursor-pointer"
                     onClick={() => setExpanded(expanded === row.original.id ? null : row.original.id)}
                   >
@@ -203,7 +202,7 @@ export default function QueriesPage() {
                     ))}
                   </tr>
                   {expanded === row.original.id && (
-                    <tr key={`${row.id}-expanded`} className="bg-slate-50">
+                    <tr className="bg-slate-50">
                       <td colSpan={columns.length} className="px-4 py-3">
                         <pre className="whitespace-pre-wrap text-xs font-mono text-slate-700 max-h-48 overflow-auto">
                           {row.original.query_details ?? "—"}
@@ -211,7 +210,7 @@ export default function QueriesPage() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
               {data.length === 0 && (
                 <tr>
