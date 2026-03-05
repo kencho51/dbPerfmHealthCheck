@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api, type RawQuery, type EnvironmentType, type QueryType } from "@/lib/api";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
+import { QueryDetailDrawer } from "@/components/QueryDetailDrawer";
 
 const PAGE_SIZE = 50;
 
@@ -77,6 +78,7 @@ export default function QueriesPage() {
   const [data, setData] = useState<RawQuery[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [selectedQuery, setSelectedQuery] = useState<RawQuery | null>(null);
 
   // Instant filters (selects)
   const [environment, setEnvironment] = useState("");
@@ -144,6 +146,11 @@ export default function QueriesPage() {
     setEnvironment(""); setType(""); setSource("");
     setHostInput(""); setDbInput(""); setMonthInput(""); setSearchInput("");
     setHost(""); setDbName(""); setMonth(""); setSearch("");
+  };
+
+  const handlePatternChange = (updated: RawQuery) => {
+    setData((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    setSelectedQuery(updated);
   };
 
   return (
@@ -235,7 +242,11 @@ export default function QueriesPage() {
             </thead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <tr key={row.id} className="border-b border-slate-50 hover:bg-indigo-50/30">
+                <tr
+                  key={row.id}
+                  className="border-b border-slate-50 hover:bg-indigo-50/50 cursor-pointer"
+                  onClick={() => setSelectedQuery(row.original)}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-2 py-0.5 align-middle">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -273,6 +284,12 @@ export default function QueriesPage() {
           </Button>
         </div>
       </div>
+
+      <QueryDetailDrawer
+        query={selectedQuery}
+        onClose={() => setSelectedQuery(null)}
+        onPatternChange={handlePatternChange}
+      />
     </div>
   );
 }
