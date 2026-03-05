@@ -85,6 +85,9 @@ async def list_queries(
     pattern_id:  Optional[int]              = None,
     has_pattern: Optional[bool]             = None,
     search:      Optional[str]              = Query(default=None, description="Substring search in query_details"),
+    # Sorting
+    sort_by:  str = Query(default="id",   pattern="^(id|last_seen|occurrence_count)$"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     # Pagination
     offset: int = Query(default=0, ge=0),
     limit:  int = Query(default=50, ge=1, le=_PAGE_MAX),
@@ -112,7 +115,9 @@ async def list_queries(
 
     # Paginated data
     stmt = _apply_filters(select(RawQuery), **filter_kwargs)
-    stmt = stmt.order_by(col(RawQuery.last_seen).desc()).offset(offset).limit(limit)
+    _SORT_COLS = {"id": RawQuery.id, "last_seen": RawQuery.last_seen, "occurrence_count": RawQuery.occurrence_count}
+    _col_expr = col(_SORT_COLS.get(sort_by, RawQuery.id))
+    stmt = stmt.order_by(_col_expr.desc() if sort_dir == "desc" else _col_expr.asc()).offset(offset).limit(limit)
     rows = await session.exec(stmt)
     return list(rows.all())
 

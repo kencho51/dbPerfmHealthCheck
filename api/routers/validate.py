@@ -44,7 +44,17 @@ async def validate_upload(file: UploadFile) -> dict:
         # Patch with original filename context
         result.file_type   = _detect_file_category(filename)
         result.environment = _extract_environment(filename)
+        return result.to_dict()
+    except Exception as exc:
+        return {
+            "is_valid": False,
+            "file_type": _detect_file_category(filename),
+            "environment": _extract_environment(filename),
+            "row_count": 0,
+            "warnings": [],
+            "errors": [f"Validation error: {type(exc).__name__}: {exc}"],
+            "null_rates": {},
+            "sample_rows": [],
+        }
     finally:
         tmp_path.unlink(missing_ok=True)
-
-    return result.to_dict()

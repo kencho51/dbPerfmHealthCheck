@@ -13,7 +13,7 @@ Returns a `ValidationResult` dataclass consumed by:
 """
 from __future__ import annotations
 
-import math
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -132,17 +132,21 @@ def validate_csv(path: Path) -> ValidationResult:
 
     # -- 5. Sample rows ----------------------------------------------------------
     sample_df = df.head(SAMPLE_SIZE)
-    # Convert to records, replace NaN/inf with None for JSON-safety.
-    # pd.where alone doesn't clean float NaN in numeric columns reliably,
-    # so we do a second pass replacing any remaining float nan/inf values.
-    raw_records = sample_df.where(pd.notna(sample_df), None).to_dict(orient="records")
-    sample_rows = [
-        {
-            k: (None if (isinstance(v, float) and not math.isfinite(v)) else v)
-            for k, v in row.items()
-        }
-        for row in raw_records
-    ]
+    # Use pandas' own JSON encoder (handles numpy int64/float64/NaN/inf) then
+    # parse back to get native Python types that are safe for json.dumps.
+    try:
+        # Truncate large string columns (e.g. _raw) so the JSON response stays reasonable
+        str_cols = sample_df.select_dtypes(include="object").columns
+        for _c in str_cols:
+            sample_df = sample_df.copy()
+            sample_df[_c] = sample_df[_c].apply(
+                lambda v: (v[:500] + "…[truncated]") if isinstance(v, str) and len(v) > 500 else v
+            )
+        sample_rows: list[dict] = json.loads(
+            sample_df.to_json(orient="records", date_format="iso", default_handler=str)
+        )
+    except Exception:
+        sample_rows = []
 
     # -- 6. Environment sanity ---------------------------------------------------
     if environment == "unknown":

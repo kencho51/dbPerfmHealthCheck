@@ -80,6 +80,13 @@ async def upload_csv(
         # -- Ingest --------------------------------------------------------------
         ingest_result = await ingest_rows(rows, session)
 
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": f"Ingest failed: {type(exc).__name__}: {exc}"},
+        ) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
 
