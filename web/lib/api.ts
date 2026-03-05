@@ -9,6 +9,9 @@
 const SERVER_BASE =
   (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000") + "/api";
 const CLIENT_BASE = "/api";
+// Always send file uploads directly to the backend — bypasses the Next.js
+// dev-server proxy which has a 10 MB body-size cap on rewrites.
+const UPLOAD_BASE = SERVER_BASE;
 
 // Pick the right base at call-time so this module is importable in both contexts.
 function base(): string {
@@ -174,7 +177,7 @@ export const api = {
   upload: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`${base()}/upload`, { method: "POST", body: fd })
+    return fetch(`${UPLOAD_BASE}/upload`, { method: "POST", body: fd })
       .then(async (r) => {
         if (!r.ok) {
           const text = await r.text().catch(() => r.statusText);
@@ -187,7 +190,7 @@ export const api = {
   validate: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`${base()}/validate`, { method: "POST", body: fd })
+    return fetch(`${UPLOAD_BASE}/validate`, { method: "POST", body: fd })
       .then(async (r) => {
         if (!r.ok) {
           const text = await r.text().catch(() => r.statusText);

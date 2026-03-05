@@ -76,6 +76,7 @@ export default function QueriesPage() {
   const [total, setTotal] = useState(0);
   const [data, setData] = useState<RawQuery[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // Instant filters (selects)
   const [environment, setEnvironment] = useState("");
@@ -100,7 +101,7 @@ export default function QueriesPage() {
   useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 300); return () => clearTimeout(t); }, [searchInput]);
 
   // Reset page on any filter change
-  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search]);
+  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir]);
 
   const buildParams = useCallback(() => {
     const p: Record<string, string | number> = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
@@ -112,8 +113,10 @@ export default function QueriesPage() {
     if (dbName)      p.db_name     = dbName;
     if (month)       p.month_year  = month;
     if (search)      p.search      = search;
+    p.sort_by  = "id";
+    p.sort_dir = sortDir;
     return p;
-  }, [page, environment, type, source, host, dbName, month, search]);
+  }, [page, environment, type, source, host, dbName, month, search, sortDir]);
 
   useEffect(() => {
     setLoading(true);
@@ -180,12 +183,19 @@ export default function QueriesPage() {
                       className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap"
                       style={{ width: h.getSize() }}
                     >
-                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      {h.column.id === "id" ? (
+                        <button
+                          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+                          className="flex items-center gap-0.5 hover:text-indigo-600 cursor-pointer select-none"
+                          title="Sort by ID"
+                        >
+                          ID <span className="text-[10px]">{sortDir === "desc" ? "▼" : "▲"}</span>
+                        </button>
+                      ) : flexRender(h.column.columnDef.header, h.getContext())}
                     </th>
                   ))}
                 </tr>
               ))}
-              {/* Per-column filter row */}
               <tr className="border-b border-slate-200 bg-slate-50">
                 <td className="px-2 py-1" />
                 <td className="px-2 py-1 w-16">
@@ -216,11 +226,11 @@ export default function QueriesPage() {
                 <td className="px-2 py-1">
                   <FInput value={dbInput} onChange={setDbInput} placeholder="db…" />
                 </td>
-                <td className="px-2 py-1" />             {/* Occ */}
+                <td className="px-2 py-1" />
                 <td className="px-2 py-1">
                   <FInput value={monthInput} onChange={setMonthInput} placeholder="YYYY-MM" />
                 </td>
-                <td className="px-2 py-1" />             {/* Query Details — search is in header */}
+                <td className="px-2 py-1" />
               </tr>
             </thead>
             <tbody>
