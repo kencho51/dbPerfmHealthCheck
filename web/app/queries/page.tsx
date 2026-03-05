@@ -186,7 +186,7 @@ export default function QueriesPage() {
               ))}
               {/* Per-column filter row */}
               <tr className="border-b border-slate-200 bg-slate-50">
-                <td className="px-2 py-1" />             {/* ID */}
+                <td className="px-2 py-1" />
                 <td className="px-2 py-1 w-16">
                   <FSelect value={environment} onChange={setEnvironment}>
                     <option value="">all</option>
