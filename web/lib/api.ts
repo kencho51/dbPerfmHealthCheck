@@ -141,7 +141,10 @@ export const api = {
   analytics: {
     summary: () => apiFetch<SummaryRow[]>("/analytics/summary"),
     byHost: (topN = 10) => apiFetch<HostRow[]>(`/analytics/by-host?top_n=${topN}`),
-    byMonth: () => apiFetch<MonthRow[]>("/analytics/by-month"),
+    byMonth: (params?: { type?: string; environment?: string; source?: string }) => {
+      const qs = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v))).toString() : "";
+      return apiFetch<MonthRow[]>(`/analytics/by-month${qs}`);
+    },
     byDb: (topN = 10) => apiFetch<DbRow[]>(`/analytics/by-db?top_n=${topN}`),
     patternCoverage: () => apiFetch<PatternCoverage>("/analytics/pattern-coverage"),
   },

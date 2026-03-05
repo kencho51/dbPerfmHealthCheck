@@ -3,10 +3,10 @@ import { Card, CardHeader, CardTitle, CardValue, CardContent } from "@/component
 import {
   SummaryBarChart,
   EnvPieChart,
-  MonthLineChart,
   CoverageDonut,
   HostBarChart,
 } from "@/components/charts";
+import { MonthlyTrendCard } from "@/components/MonthlyTrendCard";
 
 export const dynamic = "force-dynamic";
 
@@ -85,14 +85,7 @@ export default async function DashboardPage() {
 
       {/* Chart row 2 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Monthly Trend</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <MonthLineChart data={months} />
-          </CardContent>
-        </Card>
+        <MonthlyTrendCard initialData={months} />
         <Card>
           <CardHeader>
             <CardTitle>Top Hosts (by occurrences)</CardTitle>

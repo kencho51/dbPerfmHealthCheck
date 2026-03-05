@@ -109,6 +109,7 @@ async def analytics_by_host(
 async def analytics_by_month(
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
+    type:        Optional[QueryType]       = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -125,6 +126,8 @@ async def analytics_by_month(
         stmt = stmt.where(RawQuery.environment == environment)
     if source is not None:
         stmt = stmt.where(RawQuery.source == source)
+    if type is not None:
+        stmt = stmt.where(RawQuery.type == type)
 
     rows = await session.exec(stmt)
     return [
