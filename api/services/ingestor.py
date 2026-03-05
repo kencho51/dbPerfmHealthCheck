@@ -59,14 +59,18 @@ def _derive_month_year(time_str: str | None) -> str | None:
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
-        # Splunk deadlock CSVs use slash-separated dates
+        # Splunk deadlock CSVs use slash-separated dates (YYYY/MM/DD)
         "%Y/%m/%d %H:%M:%S.%f",
         "%Y/%m/%d %H:%M:%S",
         "%Y/%m/%d",
+        # maxElapsedQueries CSVs use M/D/YYYY h:MM:SS AM/PM
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y",
     ]
     for fmt in formats:
         try:
-            dt = datetime.strptime(time_str[:26], fmt)  # cap microseconds
+            dt = datetime.strptime(time_str.strip()[:26], fmt)
             return dt.strftime("%Y-%m")
         except ValueError:
             continue
@@ -181,6 +185,9 @@ async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
                 result.inserted += 1
             else:
                 # Row already existed (conflict ignored) — bump counters manually
+                # Also backfill month_year in case it was NULL previously (e.g. date
+                # format not yet supported when the row was first inserted).
+                derived_month = _derive_month_year(row.get("time"))
                 upd = (
                     sa_update(RawQuery)
                     .where(RawQuery.query_hash == q_hash)
@@ -188,6 +195,7 @@ async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
                         occurrence_count=RawQuery.occurrence_count + 1,
                         last_seen=now,
                         updated_at=now,
+                        **({"month_year": derived_month} if derived_month else {}),
                     )
                 )
                 await session.execute(upd)

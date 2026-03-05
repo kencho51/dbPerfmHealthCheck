@@ -105,7 +105,8 @@ export default function QueriesPage() {
   const buildParams = useCallback(() => {
     const p: Record<string, string | number> = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
     if (environment) p.environment = environment;
-    if (type)        p.type        = type;
+    // Translate: slow_query + mongodb source → slow_query_mongo in the DB
+    if (type) p.type = (type === "slow_query" && source === "mongodb") ? "slow_query_mongo" : type;
     if (source)      p.source      = source;
     if (host)        p.host        = host;
     if (dbName)      p.db_name     = dbName;
@@ -200,7 +201,6 @@ export default function QueriesPage() {
                     <option value="slow_query">slow query</option>
                     <option value="blocker">blocker</option>
                     <option value="deadlock">deadlock</option>
-                    <option value="slow_query_mongo">mongo slow</option>
                   </FSelect>
                 </td>
                 <td className="px-2 py-1 w-16">
