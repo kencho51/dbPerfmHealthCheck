@@ -176,6 +176,9 @@ dbPerfmHealthCheck/
     - Use case: when curating a pattern tagged `"COLLSCAN"`, the panel can surface relevant MongoDB indexing docs automatically
     - Note: SDK is marked WIP by Upstash — wrap all calls in `try/catch`; fail silently if unavailable; gate behind a feature flag env var `NEXT_PUBLIC_CONTEXT7_ENABLED=true`
 
+**Phase 6 -- NEON database integration**
+21. check official doc: https://neon.com/docs/guides/nextjs
+22. install Neon vscode extension
 ---
 
 ### Verification

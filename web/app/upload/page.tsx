@@ -57,7 +57,7 @@ export default function UploadPage() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Upload CSV</h1>
         <p className="text-sm text-slate-500 mt-1">
@@ -167,6 +167,46 @@ export default function UploadPage() {
                       </span>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Data preview table */}
+            {validation.sample_rows && validation.sample_rows.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-medium text-slate-500 mb-1">
+                  Data preview (first {validation.sample_rows.length} rows)
+                </p>
+                <div className="overflow-x-auto rounded border border-slate-200">
+                  <table className="min-w-full text-xs font-mono">
+                    <thead className="bg-slate-100 sticky top-0">
+                      <tr>
+                        {Object.keys(validation.sample_rows[0]).map((col) => (
+                          <th
+                            key={col}
+                            className="px-2 py-1 text-left text-slate-600 font-semibold whitespace-nowrap border-r border-slate-200 last:border-r-0"
+                          >
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {validation.sample_rows.map((row, ri) => (
+                        <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                          {Object.values(row).map((val, ci) => (
+                            <td
+                              key={ci}
+                              className="px-2 py-0.5 text-slate-700 whitespace-nowrap border-r border-slate-100 last:border-r-0 max-w-[220px] truncate"
+                              title={val != null ? String(val) : ""}
+                            >
+                              {val != null ? String(val) : <span className="text-slate-300">null</span>}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
