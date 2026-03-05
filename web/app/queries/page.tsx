@@ -9,11 +9,9 @@ import {
 } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { api, type RawQuery, type EnvironmentType, type QueryType } from "@/lib/api";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 
 const PAGE_SIZE = 50;
 
@@ -26,27 +24,52 @@ function typeBadge(t: QueryType) {
     : t === "blocker" ? "warning"
     : t === "deadlock" ? "critical"
     : "mongo" as const;
-  return <Badge variant={v as "default"}>{t.replace("_", " ")}</Badge>;
+  return <Badge variant={v as "default"}>{t.replaceAll("_", " ")}</Badge>;
 }
 
 const columns: ColumnDef<RawQuery>[] = [
-  { accessorKey: "id", header: "ID", size: 60 },
-  { accessorKey: "environment", header: "Env", cell: (i) => envBadge(i.getValue<EnvironmentType>()) },
-  { accessorKey: "type", header: "Type", cell: (i) => typeBadge(i.getValue<QueryType>()) },
-  { accessorKey: "source", header: "Src", size: 50 },
-  { accessorKey: "host", header: "Host", cell: (i) => <span className="font-mono text-xs">{i.getValue<string>() ?? "—"}</span> },
-  { accessorKey: "db_name", header: "Database", cell: (i) => <span className="font-mono text-xs">{i.getValue<string>() ?? "—"}</span> },
-  { accessorKey: "occurrence_count", header: "Occ", size: 60 },
-  { accessorKey: "month_year", header: "Month", size: 80 },
+  { accessorKey: "id",               header: "ID",       size: 52 },
+  { accessorKey: "environment",      header: "Env",      size: 64,  cell: (i) => envBadge(i.getValue<EnvironmentType>()) },
+  { accessorKey: "type",             header: "Type",               cell: (i) => typeBadge(i.getValue<QueryType>()) },
+  { accessorKey: "source",           header: "Src",      size: 60,  cell: (i) => { const v = i.getValue<string>(); return <Badge variant={v === "sql" ? "sql" : "mongo"}>{v === "mongodb" ? "mongo" : v}</Badge>; } },
+  { accessorKey: "host",             header: "Host",     size: 160, cell: (i) => <span className="font-mono truncate block max-w-[148px]" title={i.getValue<string>() ?? ""}>{i.getValue<string>() ?? "—"}</span> },
+  { accessorKey: "db_name",          header: "Database", size: 160, cell: (i) => <span className="font-mono truncate block max-w-[148px]" title={i.getValue<string>() ?? ""}>{i.getValue<string>() ?? "—"}</span> },
+  { accessorKey: "occurrence_count", header: "Occ",      size: 48 },
+  { accessorKey: "month_year",       header: "Month",    size: 76,  cell: (i) => <span>{i.getValue<string | null>() ?? "—"}</span> },
   {
-    accessorKey: "pattern_id",
-    header: "Pattern",
+    accessorKey: "query_details",
+    header: "Query Details",
     cell: (i) => {
-      const v = i.getValue<number | null>();
-      return v ? <Badge variant="info">#{v}</Badge> : <span className="text-slate-300">—</span>;
+      const v = i.getValue<string | null>();
+      return v
+        ? <span className="font-mono text-slate-600 truncate block max-w-[340px]" title={v}>{v}</span>
+        : <span className="text-slate-300">—</span>;
     },
   },
 ];
+
+// Compact filter controls -----------------------------------------------
+function FInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <input
+      className="h-6 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder ?? "filter…"}
+    />
+  );
+}
+function FSelect({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
+  return (
+    <select
+      className="h-6 w-full rounded border border-slate-200 bg-white px-1 text-[11px] text-slate-700 focus:outline-none focus:border-indigo-400"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {children}
+    </select>
+  );
+}
 
 export default function QueriesPage() {
   const [page, setPage] = useState(0);
@@ -54,49 +77,51 @@ export default function QueriesPage() {
   const [data, setData] = useState<RawQuery[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Instant filters (selects)
   const [environment, setEnvironment] = useState("");
   const [type, setType] = useState("");
-  const [host, setHost] = useState("");
-  const [search, setSearch] = useState("");
-  const [searchInput, setSearchInput] = useState(""); // debounce source
+  const [source, setSource] = useState("");
 
-  // Expanded row
-  const [expanded, setExpanded] = useState<number | null>(null);
+  // Text inputs (UI state)
+  const [hostInput,   setHostInput]   = useState("");
+  const [dbInput,     setDbInput]     = useState("");
+  const [monthInput,  setMonthInput]  = useState("");
+  const [searchInput, setSearchInput] = useState("");
+
+  // Debounced values (used in API call)
+  const [host,   setHost]   = useState("");
+  const [dbName, setDbName] = useState("");
+  const [month,  setMonth]  = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => { const t = setTimeout(() => setHost(hostInput),   300); return () => clearTimeout(t); }, [hostInput]);
+  useEffect(() => { const t = setTimeout(() => setDbName(dbInput),   300); return () => clearTimeout(t); }, [dbInput]);
+  useEffect(() => { const t = setTimeout(() => setMonth(monthInput), 300); return () => clearTimeout(t); }, [monthInput]);
+  useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 300); return () => clearTimeout(t); }, [searchInput]);
+
+  // Reset page on any filter change
+  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search]);
 
   const buildParams = useCallback(() => {
     const p: Record<string, string | number> = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
     if (environment) p.environment = environment;
-    if (type) p.type = type;
-    if (host) p.host = host;
-    if (search) p.search = search;
+    if (type)        p.type        = type;
+    if (source)      p.source      = source;
+    if (host)        p.host        = host;
+    if (dbName)      p.db_name     = dbName;
+    if (month)       p.month_year  = month;
+    if (search)      p.search      = search;
     return p;
-  }, [page, environment, type, host, search]);
-
-  useEffect(() => {
-    const handler = setTimeout(() => setSearch(searchInput), 300);
-    return () => clearTimeout(handler);
-  }, [searchInput]);
-
-  useEffect(() => {
-    setPage(0);
-  }, [environment, type, host, search]);
+  }, [page, environment, type, source, host, dbName, month, search]);
 
   useEffect(() => {
     setLoading(true);
     const params = buildParams();
-    Promise.all([
-      api.queries.list(params),
-      api.queries.count(
-        Object.fromEntries(
-          Object.entries(params).filter(([k]) => !["limit", "offset"].includes(k))
-        ) as Record<string, string>
-      ),
-    ])
-      .then(([rows, cnt]) => {
-        setData(rows);
-        setTotal(cnt.count);
-      })
+    const countParams = Object.fromEntries(
+      Object.entries(params).filter(([k]) => !["limit", "offset"].includes(k))
+    ) as Record<string, string>;
+    Promise.all([api.queries.list(params), api.queries.count(countParams)])
+      .then(([rows, cnt]) => { setData(rows); setTotal(cnt.count); })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [buildParams]);
@@ -111,75 +136,47 @@ export default function QueriesPage() {
 
   const pageCount = Math.ceil(total / PAGE_SIZE);
 
-  return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Raw Queries</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          {total.toLocaleString()} rows — click a row to expand query details
-        </p>
-      </div>
+  const resetAll = () => {
+    setEnvironment(""); setType(""); setSource("");
+    setHostInput(""); setDbInput(""); setMonthInput(""); setSearchInput("");
+    setHost(""); setDbName(""); setMonth(""); setSearch("");
+  };
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3">
-        <Select
-          className="w-32"
-          value={environment}
-          onChange={(e) => setEnvironment(e.target.value)}
-        >
-          <option value="">All envs</option>
-          <option value="prod">prod</option>
-          <option value="sat">sat</option>
-        </Select>
-        <Select
-          className="w-40"
-          value={type}
-          onChange={(e) => setType(e.target.value)}
-        >
-          <option value="">All types</option>
-          <option value="slow_query">slow query</option>
-          <option value="blocker">blocker</option>
-          <option value="deadlock">deadlock</option>
-          <option value="slow_query_mongo">mongo slow</option>
-        </Select>
-        <Input
-          className="w-48"
-          placeholder="Host contains…"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <Input
-          className="w-56"
-          placeholder="Search query text…"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setEnvironment(""); setType(""); setHost(""); setSearchInput(""); setSearch("");
-          }}
-        >
-          Reset
-        </Button>
+  return (
+    <div className="space-y-3">
+      {/* Header bar */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Raw Queries</h1>
+          <p className="text-xs text-slate-500 mt-0.5">{total.toLocaleString()} rows</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            className="h-7 w-56 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
+            placeholder="Search query text…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+          <Button variant="outline" size="sm" onClick={resetAll} className="h-7 text-xs gap-1">
+            <X className="h-3 w-3" />Reset
+          </Button>
+        </div>
       </div>
 
       {/* Table */}
       <div className="overflow-auto rounded-lg border border-slate-200 bg-white">
         {loading ? (
-          <div className="flex items-center justify-center h-48">
-            <Spinner />
-          </div>
+          <div className="flex items-center justify-center h-48"><Spinner /></div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-xs">
             <thead>
+              {/* Column labels */}
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="border-b border-slate-100 bg-slate-50">
+                <tr key={hg.id} className="border-b border-slate-200 bg-slate-100">
                   {hg.headers.map((h) => (
                     <th
                       key={h.id}
-                      className="px-3 py-2 text-left text-xs font-medium text-slate-500"
+                      className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap"
                       style={{ width: h.getSize() }}
                     >
                       {flexRender(h.column.columnDef.header, h.getContext())}
@@ -187,34 +184,58 @@ export default function QueriesPage() {
                   ))}
                 </tr>
               ))}
+              {/* Per-column filter row */}
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <td className="px-2 py-1" />             {/* ID */}
+                <td className="px-2 py-1 w-16">
+                  <FSelect value={environment} onChange={setEnvironment}>
+                    <option value="">all</option>
+                    <option value="prod">prod</option>
+                    <option value="sat">sat</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1">
+                  <FSelect value={type} onChange={setType}>
+                    <option value="">all</option>
+                    <option value="slow_query">slow query</option>
+                    <option value="blocker">blocker</option>
+                    <option value="deadlock">deadlock</option>
+                    <option value="slow_query_mongo">mongo slow</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1 w-16">
+                  <FSelect value={source} onChange={setSource}>
+                    <option value="">all</option>
+                    <option value="sql">sql</option>
+                    <option value="mongodb">mongo</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1">
+                  <FInput value={hostInput} onChange={setHostInput} placeholder="host…" />
+                </td>
+                <td className="px-2 py-1">
+                  <FInput value={dbInput} onChange={setDbInput} placeholder="db…" />
+                </td>
+                <td className="px-2 py-1" />             {/* Occ */}
+                <td className="px-2 py-1">
+                  <FInput value={monthInput} onChange={setMonthInput} placeholder="YYYY-MM" />
+                </td>
+                <td className="px-2 py-1" />             {/* Query Details — search is in header */}
+              </tr>
             </thead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <React.Fragment key={row.id}>
-                  <tr
-                    className="border-b border-slate-50 hover:bg-slate-50 cursor-pointer"
-                    onClick={() => setExpanded(expanded === row.original.id ? null : row.original.id)}
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-3 py-2">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                  {expanded === row.original.id && (
-                    <tr className="bg-slate-50">
-                      <td colSpan={columns.length} className="px-4 py-3">
-                        <pre className="whitespace-pre-wrap text-xs font-mono text-slate-700 max-h-48 overflow-auto">
-                          {row.original.query_details ?? "—"}
-                        </pre>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
+                <tr key={row.id} className="border-b border-slate-50 hover:bg-indigo-50/30">
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="px-2 py-0.5 align-middle">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
               ))}
               {data.length === 0 && (
                 <tr>
-                  <td colSpan={columns.length} className="py-12 text-center text-sm text-slate-400">
+                  <td colSpan={columns.length} className="py-12 text-center text-xs text-slate-400">
                     No rows found
                   </td>
                 </tr>
@@ -225,22 +246,20 @@ export default function QueriesPage() {
       </div>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-slate-500">
-          Page {page + 1} of {pageCount || 1} &bull; {total.toLocaleString()} rows
-        </span>
+      <div className="flex items-center justify-between text-xs text-slate-500">
+        <span>Page {page + 1} of {pageCount || 1} &bull; {total.toLocaleString()} rows</span>
         <div className="flex gap-1">
           <Button variant="outline" size="icon" onClick={() => setPage(0)} disabled={page === 0}>
-            <ChevronsLeft className="h-4 w-4" />
+            <ChevronsLeft className="h-3.5 w-3.5" />
           </Button>
           <Button variant="outline" size="icon" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-3.5 w-3.5" />
           </Button>
           <Button variant="outline" size="icon" onClick={() => setPage((p) => p + 1)} disabled={page >= pageCount - 1}>
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-3.5 w-3.5" />
           </Button>
           <Button variant="outline" size="icon" onClick={() => setPage(pageCount - 1)} disabled={page >= pageCount - 1}>
-            <ChevronsRight className="h-4 w-4" />
+            <ChevronsRight className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>

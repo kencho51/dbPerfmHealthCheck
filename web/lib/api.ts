@@ -1,12 +1,22 @@
 /**
  * Typed fetch helpers that talk to the FastAPI backend.
- * All paths are relative — Next.js rewrites /api/* → localhost:8000/api/*
+ *
+ * - Browser (Client Components): relative `/api/*` — Next.js rewrite proxies to the backend.
+ * - Server (RSC / Server Actions): absolute URL is required; rewrites don't run server-side.
+ *   Use NEXT_PUBLIC_API_BASE (defaults to http://localhost:8000).
  */
 
-const BASE = "/api";
+const SERVER_BASE =
+  (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000") + "/api";
+const CLIENT_BASE = "/api";
+
+// Pick the right base at call-time so this module is importable in both contexts.
+function base(): string {
+  return typeof window === "undefined" ? SERVER_BASE : CLIENT_BASE;
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${base()}${path}`, {
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     ...init,
@@ -22,7 +32,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type QueryType = "slow_query" | "blocker" | "deadlock" | "slow_query_mongo";
 export type EnvironmentType = "prod" | "sat";
-export type SourceType = "sql" | "mongo";
+export type SourceType = "sql" | "mongodb";
 export type SeverityType = "critical" | "warning" | "info";
 
 export interface RawQuery {
@@ -164,14 +174,14 @@ export const api = {
   upload: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`${BASE}/upload`, { method: "POST", body: fd })
+    return fetch(`${base()}/upload`, { method: "POST", body: fd })
       .then((r) => r.json() as Promise<UploadResult>);
   },
 
   validate: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`${BASE}/validate`, { method: "POST", body: fd })
+    return fetch(`${base()}/validate`, { method: "POST", body: fd })
       .then((r) => r.json() as Promise<ValidationResult>);
   },
 };

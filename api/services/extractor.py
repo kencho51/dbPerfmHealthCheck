@@ -151,15 +151,19 @@ def _process_deadlocks(file_path: Path) -> list[dict]:
     env = _extract_environment(file_path.name)
     rows = []
     for _, row in df.iterrows():
+        # Use the CSV `count` as occurrence_count — Splunk aggregated occurrences
+        raw_count = row.get("count", None)
+        occ = int(raw_count) if raw_count is not None and not (isinstance(raw_count, float) and pd.isna(raw_count)) else 1
         rows.append({
-            "time":          _get(row, "earliest", "_time"),
-            "source":        "sql",
-            "host":          _get(row, "host"),
-            "db_name":       _get(row, "currentdbname", "database_name", "db_name"),
-            "environment":   env,
-            "type":          "deadlock",
-            "query_details": _get(row, "all_query", "query_text", "statement",
-                                       "sql_text", "deadlock_graph"),
+            "time":             _get(row, "earliest", "_time"),
+            "source":           "sql",
+            "host":             _get(row, "host"),
+            "db_name":          _get(row, "currentdbname", "database_name", "db_name"),
+            "environment":      env,
+            "type":             "deadlock",
+            "occurrence_count": occ,
+            "query_details":    _get(row, "all_query", "query_text", "statement",
+                                         "sql_text", "deadlock_graph"),
         })
     return rows
 
@@ -182,7 +186,7 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
             "host":          _get(row, "host"),
             "db_name":       db_name,
             "environment":   env,
-            "type":          "slow_query",
+            "type":          "slow_query_mongo",
             "query_details": _extract_mongodb_command(raw_str),
         })
     return rows
