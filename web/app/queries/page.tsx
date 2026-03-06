@@ -61,13 +61,34 @@ const columns: ColumnDef<RawQuery>[] = [
 ];
 
 // Compact filter controls -----------------------------------------------
+// Commits to parent only on Enter or blur — no per-keystroke API calls
 function FInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const [draft, setDraft] = React.useState(value);
+  React.useEffect(() => { setDraft(value); }, [value]);
+  const commit = (d: string) => { if (d !== value) onChange(d); };
   return (
     <input
       className="h-6 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder ?? "filter…"}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter") { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); } }}
+      placeholder={placeholder ?? "↵ to filter…"}
+    />
+  );
+}
+function SearchInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [draft, setDraft] = React.useState(value);
+  React.useEffect(() => { setDraft(value); }, [value]);
+  const commit = (d: string) => { if (d !== value) onChange(d); };
+  return (
+    <input
+      className="h-7 w-56 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter") { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); } }}
+      placeholder="Search query text… (Enter)"
     />
   );
 }
@@ -97,22 +118,18 @@ export default function QueriesPage() {
   const [source, setSource] = useState("");
   const [hasPattern, setHasPattern] = useState("");
 
-  // Text inputs (UI state)
-  const [hostInput,   setHostInput]   = useState("");
-  const [dbInput,     setDbInput]     = useState("");
-  const [monthInput,  setMonthInput]  = useState("");
-  const [searchInput, setSearchInput] = useState("");
+  // Dropdown options for host / database
+  const [hostOpts, setHostOpts] = useState<string[]>([]);
+  const [dbOpts,   setDbOpts]   = useState<string[]>([]);
+  useEffect(() => {
+    api.queries.distinct().then((r) => { setHostOpts(r.hosts); setDbOpts(r.db_names); }).catch(() => {});
+  }, []);
 
-  // Debounced values (used in API call)
+  // Text filters — committed only on Enter / blur via FInput
   const [host,   setHost]   = useState("");
   const [dbName, setDbName] = useState("");
   const [month,  setMonth]  = useState("");
   const [search, setSearch] = useState("");
-
-  useEffect(() => { const t = setTimeout(() => setHost(hostInput),   300); return () => clearTimeout(t); }, [hostInput]);
-  useEffect(() => { const t = setTimeout(() => setDbName(dbInput),   300); return () => clearTimeout(t); }, [dbInput]);
-  useEffect(() => { const t = setTimeout(() => setMonth(monthInput), 300); return () => clearTimeout(t); }, [monthInput]);
-  useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 300); return () => clearTimeout(t); }, [searchInput]);
 
   // Reset page on any filter change
   useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir, hasPattern]);
@@ -157,7 +174,6 @@ export default function QueriesPage() {
 
   const resetAll = () => {
     setEnvironment(""); setType(""); setSource(""); setHasPattern("");
-    setHostInput(""); setDbInput(""); setMonthInput(""); setSearchInput("");
     setHost(""); setDbName(""); setMonth(""); setSearch("");
   };
 
@@ -175,12 +191,7 @@ export default function QueriesPage() {
           <p className="text-xs text-slate-500 mt-0.5">{total.toLocaleString()} rows</p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            className="h-7 w-56 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-            placeholder="Search query text…"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-          />
+          <SearchInput value={search} onChange={setSearch} />
           <Button variant="outline" size="sm" onClick={resetAll} className="h-7 text-xs gap-1">
             <X className="h-3 w-3" />Reset
           </Button>
@@ -241,14 +252,20 @@ export default function QueriesPage() {
                   </FSelect>
                 </td>
                 <td className="px-2 py-1">
-                  <FInput value={hostInput} onChange={setHostInput} placeholder="host…" />
+                  <FSelect value={host} onChange={setHost}>
+                    <option value="">all</option>
+                    {hostOpts.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </FSelect>
                 </td>
                 <td className="px-2 py-1">
-                  <FInput value={dbInput} onChange={setDbInput} placeholder="db…" />
+                  <FSelect value={dbName} onChange={setDbName}>
+                    <option value="">all</option>
+                    {dbOpts.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </FSelect>
                 </td>
                 <td className="px-2 py-1" />
                 <td className="px-2 py-1">
-                  <FInput value={monthInput} onChange={setMonthInput} placeholder="YYYY-MM" />
+                  <FInput value={month} onChange={setMonth} placeholder="YYYY-MM" />
                 </td>
                 <td className="px-2 py-1">
                   <FSelect value={hasPattern} onChange={setHasPattern}>
