@@ -66,10 +66,14 @@ function PatternPanel({
   const [newSev, setNewSev] = useState<"info" | "warning" | "critical">("info");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [confirmUnassign, setConfirmUnassign] = useState(false);
 
   // Current assigned pattern
   const [currentPattern, setCurrentPattern] = useState<Pattern | null>(null);
   const [loadingCurrent, setLoadingCurrent] = useState(false);
+
+  // Reset confirm state when switching to a different query
+  useEffect(() => { setConfirmUnassign(false); }, [query.id]);
 
   // Fetch current pattern when query.pattern_id changes
   useEffect(() => {
@@ -117,6 +121,7 @@ function PatternPanel({
   };
 
   const handleUnassign = async () => {
+    setConfirmUnassign(false);
     setAssigning(true);
     setError("");
     try {
@@ -170,16 +175,39 @@ function PatternPanel({
               {currentPattern.severity}
             </span>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 text-xs gap-1 shrink-0 ml-3"
-            onClick={handleUnassign}
-            disabled={assigning}
-          >
-            {assigning ? <Spinner /> : <Link2Off className="h-3 w-3" />}
-            Unassign
-          </Button>
+          {confirmUnassign ? (
+            <div className="flex items-center gap-1.5 shrink-0 ml-3">
+              <span className="text-[11px] text-slate-500">Unassign?</span>
+              <Button
+                size="sm"
+                className="h-7 text-xs bg-red-500 hover:bg-red-600 text-white border-0"
+                onClick={handleUnassign}
+                disabled={assigning}
+              >
+                {assigning ? <Spinner /> : "Yes"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setConfirmUnassign(false)}
+                disabled={assigning}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1 shrink-0 ml-3"
+              onClick={() => setConfirmUnassign(true)}
+              disabled={assigning}
+            >
+              <Link2Off className="h-3 w-3" />
+              Unassign
+            </Button>
+          )}
         </div>
       ) : (
         <p className="text-xs text-slate-400 italic">No pattern assigned.</p>
