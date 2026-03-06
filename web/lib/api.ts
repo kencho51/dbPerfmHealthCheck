@@ -158,6 +158,7 @@ export const api = {
       const qs = params ? "?" + new URLSearchParams(params).toString() : "";
       return apiFetch<{ count: number }>(`/queries/count${qs}`);
     },
+    distinct: () => apiFetch<{ hosts: string[]; db_names: string[] }>("/queries/distinct"),
     get: (id: number) => apiFetch<RawQuery>(`/queries/${id}`),
     patch: (id: number, body: { pattern_id: number | null }) =>
       apiFetch<RawQuery>(`/queries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

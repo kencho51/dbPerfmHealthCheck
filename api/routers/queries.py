@@ -1,9 +1,10 @@
 """
 Query endpoints:
-    GET  /api/queries         — paginated, filterable list of raw query rows
-    GET  /api/queries/count   — total matching row count (for pagination)
-    GET  /api/queries/{id}    — single row by primary key
-    PATCH /api/queries/{id}   — assign / unassign a pattern_id
+    GET  /api/queries             — paginated, filterable list of raw query rows
+    GET  /api/queries/count       — total matching row count (for pagination)
+    GET  /api/queries/distinct    — distinct host and db_name values
+    GET  /api/queries/{id}        — single row by primary key
+    PATCH /api/queries/{id}       — assign / unassign a pattern_id
 """
 from __future__ import annotations
 
@@ -53,9 +54,9 @@ def _apply_filters(
     if source is not None:
         stmt = stmt.where(RawQuery.source == source)
     if host:
-        stmt = stmt.where(col(RawQuery.host).contains(host))
+        stmt = stmt.where(RawQuery.host == host)
     if db_name:
-        stmt = stmt.where(col(RawQuery.db_name).contains(db_name))
+        stmt = stmt.where(RawQuery.db_name == db_name)
     if month_year:
         stmt = stmt.where(col(RawQuery.month_year).in_(month_year))
     if pattern_id is not None:
@@ -120,6 +121,19 @@ async def list_queries(
     stmt = stmt.order_by(_col_expr.desc() if sort_dir == "desc" else _col_expr.asc()).offset(offset).limit(limit)
     rows = await session.exec(stmt)
     return list(rows.all())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/queries/distinct  — dropdown option lists for Host & Database
+# ---------------------------------------------------------------------------
+
+@router.get("/distinct", summary="Distinct host and db_name values")
+async def distinct_values(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    hosts   = (await session.exec(select(RawQuery.host).distinct().where(col(RawQuery.host).isnot(None)).order_by(RawQuery.host))).all()
+    db_names = (await session.exec(select(RawQuery.db_name).distinct().where(col(RawQuery.db_name).isnot(None)).order_by(RawQuery.db_name))).all()
+    return {"hosts": list(hosts), "db_names": list(db_names)}
 
 
 # ---------------------------------------------------------------------------
