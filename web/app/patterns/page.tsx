@@ -99,6 +99,15 @@ export default function PatternsPage() {
   const [loading, setLoading] = useState(true);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selectedQuery, setSelectedQuery] = useState<RawQuery | null>(null);
+  // Incremented on mount and on manual refresh to guarantee a fresh fetch
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = () => setRefreshKey((k) => k + 1);
+  // Re-fetch every time the page becomes visible (e.g. navigating from queries → patterns)
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   const [environment, setEnvironment] = useState("");
   const [type, setType] = useState("");
@@ -141,13 +150,14 @@ export default function PatternsPage() {
     setLoading(true);
     const params = buildParams();
     const countParams = Object.fromEntries(
-      Object.entries(params).filter(([k]) => !["limit", "offset"].includes(k))
+      Object.entries(params).filter(([k]) => !["limit", "offset", "sort_by", "sort_dir"].includes(k))
     ) as Record<string, string>;
     Promise.all([api.queries.list(params), api.queries.count(countParams)])
       .then(([rows, cnt]) => { setData(rows); setTotal(cnt.count); })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [buildParams]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildParams, refreshKey]);
 
   const table = useReactTable({
     data,
@@ -185,6 +195,9 @@ export default function PatternsPage() {
         </div>
         <div className="flex items-center gap-2">
           <SearchInput value={search} onChange={setSearch} />
+          <Button variant="outline" size="sm" onClick={refresh} className="h-7 text-xs gap-1 text-slate-400 hover:text-slate-700">
+            ↻
+          </Button>
           <Button variant="outline" size="sm" onClick={resetAll} className="h-7 text-xs gap-1">
             <X className="h-3 w-3" />Reset
           </Button>
