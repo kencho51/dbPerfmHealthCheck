@@ -1,4 +1,7 @@
-import { api } from "@/lib/api";
+"use client";
+
+import { useEffect, useState } from "react";
+import { api, SummaryRow, HostRow, MonthRow, DbRow, PatternCoverage } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardValue, CardContent } from "@/components/ui/card";
 import {
   SummaryBarChart,
@@ -8,31 +11,125 @@ import {
 } from "@/components/charts";
 import { MonthlyTrendCard } from "@/components/MonthlyTrendCard";
 
-export const dynamic = "force-dynamic";
-
 function fmt(n: number) {
   return n.toLocaleString();
 }
 
-export default async function DashboardPage() {
-  const [summary, hosts, months, dbs, coverage] = await Promise.all([
-    api.analytics.summary().catch(() => []),
-    api.analytics.byHost(10).catch(() => []),
-    api.analytics.byMonth().catch(() => []),
-    api.analytics.byDb(10).catch(() => []),
-    api.analytics.patternCoverage().catch(() => ({ total: 0, tagged: 0, untagged: 0, coverage_pct: 0 })),
-  ]);
+interface DashboardData {
+  totalQueries: number;
+  distinctHosts: number;
+  monthsCount: number;
+  patternCount: number;
+  summary: SummaryRow[];
+  hosts: HostRow[];
+  months: MonthRow[];
+  dbs: DbRow[];
+  coverage: PatternCoverage;
+}
 
-  const totalRows = summary.reduce((s, r) => s + r.row_count, 0);
-  const distinctHosts = new Set(hosts.map((h) => h.host)).size;
-  const monthsCount = months.length;
-  const [patCount] = await Promise.all([api.patterns.count().catch(() => ({ count: 0 }))]);
+const DEFAULT_COVERAGE: PatternCoverage = { total: 0, tagged: 0, untagged: 0, coverage_pct: 0 };
+
+export default function DashboardPage() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function fetchAll() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [
+        queryCount,
+        distinctValues,
+        summary,
+        hosts,
+        months,
+        dbs,
+        coverage,
+        patCount,
+      ] = await Promise.all([
+        api.queries.count(),
+        api.queries.distinct(),
+        api.analytics.summary().catch(() => [] as SummaryRow[]),
+        api.analytics.byHost(100).catch(() => [] as HostRow[]),
+        api.analytics.byMonth().catch(() => [] as MonthRow[]),
+        api.analytics.byDb(10).catch(() => [] as DbRow[]),
+        api.analytics.patternCoverage().catch(() => DEFAULT_COVERAGE),
+        api.queries.count({ has_pattern: "true" }).catch(() => ({ count: 0 })),
+      ]);
+
+      setData({
+        totalQueries: queryCount.count,
+        distinctHosts: distinctValues.hosts.length,
+        monthsCount: months.length,
+        patternCount: patCount.count,
+        summary,
+        hosts,
+        months,
+        dbs,
+        coverage,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load dashboard data");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-1">Loading</p>
+        </div>
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <Card key={i}>
+              <CardHeader>
+                <div className="h-4 w-24 bg-slate-100 rounded animate-pulse" />
+                <div className="h-8 w-16 bg-slate-100 rounded animate-pulse mt-2" />
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+        <p className="text-sm text-red-500">{error ?? "No data"}</p>
+        <button
+          onClick={fetchAll}
+          className="text-sm text-indigo-600 underline"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">Database performance overview — Jan 2026</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-1">Database performance overview</p>
+        </div>
+        <button
+          onClick={fetchAll}
+          className="text-xs text-slate-400 hover:text-slate-700 border border-slate-200 rounded px-2 py-1 transition-colors"
+        >
+           Refresh
+        </button>
       </div>
 
       {/* KPI row */}
@@ -40,25 +137,25 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Total Queries</CardTitle>
-            <CardValue>{fmt(totalRows)}</CardValue>
+            <CardValue>{fmt(data.totalQueries)}</CardValue>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Distinct Hosts</CardTitle>
-            <CardValue>{distinctHosts}</CardValue>
+            <CardValue>{data.distinctHosts}</CardValue>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Months Covered</CardTitle>
-            <CardValue>{monthsCount}</CardValue>
+            <CardValue>{data.monthsCount}</CardValue>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Patterns Curated</CardTitle>
-            <CardValue>{patCount.count}</CardValue>
+            <CardValue>{data.patternCount}</CardValue>
           </CardHeader>
         </Card>
       </div>
@@ -70,7 +167,7 @@ export default async function DashboardPage() {
             <CardTitle>Queries by Type</CardTitle>
           </CardHeader>
           <CardContent>
-            <SummaryBarChart data={summary} />
+            <SummaryBarChart data={data.summary} />
           </CardContent>
         </Card>
         <Card>
@@ -78,20 +175,20 @@ export default async function DashboardPage() {
             <CardTitle>By Environment</CardTitle>
           </CardHeader>
           <CardContent>
-            <EnvPieChart data={summary} />
+            <EnvPieChart data={data.summary} />
           </CardContent>
         </Card>
       </div>
 
       {/* Chart row 2 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <MonthlyTrendCard initialData={months} />
+        <MonthlyTrendCard initialData={data.months} />
         <Card>
           <CardHeader>
             <CardTitle>Top Hosts (by occurrences)</CardTitle>
           </CardHeader>
           <CardContent>
-            <HostBarChart data={hosts} />
+            <HostBarChart data={data.hosts} />
           </CardContent>
         </Card>
       </div>
@@ -113,9 +210,9 @@ export default async function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {dbs.map((d) => (
+                {data.dbs.map((d) => (
                   <tr key={d.db_name} className="border-b border-slate-50 hover:bg-slate-50">
-                    <td className="py-1.5 font-mono text-xs">{d.db_name ?? "—"}</td>
+                    <td className="py-1.5 font-mono text-xs">{d.db_name ?? ""}</td>
                     <td className="py-1.5 text-right">{fmt(d.row_count)}</td>
                     <td className="py-1.5 text-right">{fmt(d.total_occurrences)}</td>
                   </tr>
@@ -131,9 +228,9 @@ export default async function DashboardPage() {
             <CardTitle>Pattern Coverage</CardTitle>
           </CardHeader>
           <CardContent>
-            <CoverageDonut data={coverage} />
+            <CoverageDonut data={data.coverage} />
             <p className="text-center text-sm text-slate-500 mt-2">
-              {coverage.coverage_pct.toFixed(1)}% of queries tagged with a pattern
+              {data.coverage.coverage_pct.toFixed(1)}% of queries tagged with a pattern
             </p>
           </CardContent>
         </Card>
