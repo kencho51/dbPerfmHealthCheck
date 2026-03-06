@@ -87,10 +87,16 @@ def _register_routers(app: FastAPI) -> None:
         logger.debug("queries router not yet available")
 
     try:
-        from api.routers.patterns import router as patterns_router
-        app.include_router(patterns_router, prefix="/api/patterns", tags=["patterns"])
+        from api.routers.labels import router as labels_router
+        app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
     except ImportError:
-        logger.debug("patterns router not yet available")
+        logger.debug("labels router not yet available")
+
+    try:
+        from api.routers.curated import router as curated_router
+        app.include_router(curated_router, prefix="/api/curated", tags=["curated"])
+    except ImportError:
+        logger.debug("curated router not yet available")
 
     try:
         from api.routers.upload import router as upload_router

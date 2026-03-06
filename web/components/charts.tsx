@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { SummaryRow, HostRow, MonthRow, DbRow, PatternCoverage } from "@/lib/api";
+import type { SummaryRow, HostRow, MonthRow, DbRow, CurationCoverage } from "@/lib/api";
 
 const COLORS = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 const TYPE_COLORS: Record<string, string> = {
@@ -106,11 +106,11 @@ export function MonthLineChart({ data }: { data: MonthRow[] }) {
   );
 }
 
-// ---- Pattern coverage donut ----------------------------------------------
-export function CoverageDonut({ data }: { data: PatternCoverage }) {
+// ---- Curation coverage donut ----------------------------------------------
+export function CoverageDonut({ data }: { data: CurationCoverage }) {
   const chartData = [
-    { name: "Tagged", value: data.tagged },
-    { name: "Untagged", value: data.untagged },
+    { name: "Curated", value: data.curated_rows },
+    { name: "Uncurated", value: data.uncurated_rows },
   ];
   return (
     <ResponsiveContainer width="100%" height={180}>

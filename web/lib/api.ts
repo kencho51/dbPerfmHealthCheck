@@ -52,27 +52,42 @@ export interface RawQuery {
   first_seen: string;
   last_seen: string;
   query_details: string | null;
-  pattern_id: number | null;
+  curated_id: number | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface Pattern {
+export interface PatternLabel {
   id: number;
   name: string;
-  description: string | null;
-  pattern_tag: string | null;
   severity: SeverityType;
-  example_query_hash: string | null;
-  source: SourceType | null;
-  environment: EnvironmentType | null;
-  type: QueryType | null;
-  first_seen: string | null;
-  last_seen: string | null;
-  total_occurrences: number;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CuratedQuery {
+  // curated_query fields
+  id: number;
+  raw_query_id: number;
+  label_id: number | null;
+  label: PatternLabel | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // raw_query fields (denormalised)
+  query_hash: string;
+  time: string | null;
+  source: SourceType;
+  host: string | null;
+  db_name: string | null;
+  environment: EnvironmentType;
+  type: QueryType;
+  query_details: string | null;
+  month_year: string | null;
+  occurrence_count: number;
+  first_seen: string;
+  last_seen: string;
 }
 
 export interface ValidationResult {
@@ -128,10 +143,10 @@ export interface DbRow {
   total_occurrences: number;
 }
 
-export interface PatternCoverage {
-  total: number;
-  tagged: number;
-  untagged: number;
+export interface CurationCoverage {
+  total_rows: number;
+  curated_rows: number;
+  uncurated_rows: number;
   coverage_pct: number;
 }
 
@@ -146,7 +161,7 @@ export const api = {
       return apiFetch<MonthRow[]>(`/analytics/by-month${qs}`);
     },
     byDb: (topN = 10) => apiFetch<DbRow[]>(`/analytics/by-db?top_n=${topN}`),
-    patternCoverage: () => apiFetch<PatternCoverage>("/analytics/pattern-coverage"),
+    curationCoverage: () => apiFetch<CurationCoverage>("/analytics/curation-coverage"),
   },
 
   queries: {
@@ -160,22 +175,40 @@ export const api = {
     },
     distinct: () => apiFetch<{ hosts: string[]; db_names: string[] }>("/queries/distinct"),
     get: (id: number) => apiFetch<RawQuery>(`/queries/${id}`),
-    patch: (id: number, body: { pattern_id: number | null }) =>
-      apiFetch<RawQuery>(`/queries/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   },
 
-  patterns: {
-    list: (params?: Record<string, string>) => {
-      const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-      return apiFetch<Pattern[]>(`/patterns${qs}`);
+  labels: {
+    list: () => apiFetch<PatternLabel[]>("/labels"),
+    create: (body: { name: string; severity?: SeverityType; description?: string | null }) =>
+      apiFetch<PatternLabel>("/labels", { method: "POST", body: JSON.stringify(body) }),
+    patch: (id: number, body: { name?: string; severity?: SeverityType; description?: string | null }) =>
+      apiFetch<PatternLabel>(`/labels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    delete: (id: number) =>
+      fetch(`${base()}/labels/${id}`, { method: "DELETE" }).then(async (r) => {
+        if (r.status === 204 || r.ok) return;
+        const text = await r.text().catch(() => r.statusText);
+        throw new Error(`API error ${r.status}: ${text}`);
+      }),
+  },
+
+  curated: {
+    list: (params?: Record<string, string | number>) => {
+      const qs = params ? "?" + new URLSearchParams(params as Record<string, string>).toString() : "";
+      return apiFetch<CuratedQuery[]>(`/curated${qs}`);
     },
-    count: () => apiFetch<{ count: number }>("/patterns/count"),
-    get: (id: number) => apiFetch<Pattern>(`/patterns/${id}`),
-    create: (body: Partial<Pattern>) =>
-      apiFetch<Pattern>("/patterns", { method: "POST", body: JSON.stringify(body) }),
-    patch: (id: number, body: Partial<Pattern>) =>
-      apiFetch<Pattern>(`/patterns/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-    queries: (id: number) => apiFetch<RawQuery[]>(`/patterns/${id}/queries`),
+    count: (params?: Record<string, string>) => {
+      const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+      return apiFetch<{ count: number }>(`/curated/count${qs}`);
+    },
+    get: (id: number) => apiFetch<CuratedQuery>(`/curated/${id}`),
+    create: (body: { raw_query_id: number; label_id?: number | null; notes?: string | null }) =>
+      apiFetch<CuratedQuery>("/curated", { method: "POST", body: JSON.stringify(body) }),
+    patch: (id: number, body: { label_id?: number | null; notes?: string | null }) =>
+      apiFetch<CuratedQuery>(`/curated/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    delete: (id: number) =>
+      fetch(`${base()}/curated/${id}`, { method: "DELETE" }).then((r) => {
+        if (!r.ok && r.status !== 204) throw new Error(`Unassign failed: ${r.status}`);
+      }),
   },
 
   upload: (file: File) => {

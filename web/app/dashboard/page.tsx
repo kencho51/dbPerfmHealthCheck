@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, SummaryRow, HostRow, MonthRow, DbRow, PatternCoverage } from "@/lib/api";
+import { api, SummaryRow, HostRow, MonthRow, DbRow, CurationCoverage } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardValue, CardContent } from "@/components/ui/card";
 import {
   SummaryBarChart,
@@ -19,15 +19,15 @@ interface DashboardData {
   totalQueries: number;
   distinctHosts: number;
   monthsCount: number;
-  patternCount: number;
+  curatedCount: number;
   summary: SummaryRow[];
   hosts: HostRow[];
   months: MonthRow[];
   dbs: DbRow[];
-  coverage: PatternCoverage;
+  coverage: CurationCoverage;
 }
 
-const DEFAULT_COVERAGE: PatternCoverage = { total: 0, tagged: 0, untagged: 0, coverage_pct: 0 };
+const DEFAULT_COVERAGE: CurationCoverage = { total_rows: 0, curated_rows: 0, uncurated_rows: 0, coverage_pct: 0 };
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -54,15 +54,15 @@ export default function DashboardPage() {
         api.analytics.byHost(100).catch(() => [] as HostRow[]),
         api.analytics.byMonth().catch(() => [] as MonthRow[]),
         api.analytics.byDb(10).catch(() => [] as DbRow[]),
-        api.analytics.patternCoverage().catch(() => DEFAULT_COVERAGE),
-        api.queries.count({ has_pattern: "true" }).catch(() => ({ count: 0 })),
+        api.analytics.curationCoverage().catch(() => DEFAULT_COVERAGE),
+        api.curated.count().catch(() => ({ count: 0 })),
       ]);
 
       setData({
         totalQueries: queryCount.count,
         distinctHosts: distinctValues.hosts.length,
         monthsCount: months.length,
-        patternCount: patCount.count,
+        curatedCount: patCount.count,
         summary,
         hosts,
         months,
@@ -154,8 +154,8 @@ export default function DashboardPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Patterns Curated</CardTitle>
-            <CardValue>{data.patternCount}</CardValue>
+            <CardTitle>Queries Curated</CardTitle>
+            <CardValue>{data.curatedCount}</CardValue>
           </CardHeader>
         </Card>
       </div>
@@ -222,15 +222,15 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Pattern coverage */}
+        {/* Curation coverage */}
         <Card>
           <CardHeader>
-            <CardTitle>Pattern Coverage</CardTitle>
+            <CardTitle>Curation Coverage</CardTitle>
           </CardHeader>
           <CardContent>
             <CoverageDonut data={data.coverage} />
             <p className="text-center text-sm text-slate-500 mt-2">
-              {data.coverage.coverage_pct.toFixed(1)}% of queries tagged with a pattern
+              {data.coverage.coverage_pct.toFixed(1)}% of queries curated
             </p>
           </CardContent>
         </Card>

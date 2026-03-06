@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Database, LayoutDashboard, Upload, Layers } from "lucide-react";
+import { BarChart3, Database, LayoutDashboard, Upload, Layers, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/upload",    label: "Upload",    icon: Upload },
   { href: "/queries",   label: "Queries",   icon: Database },
-  { href: "/patterns",  label: "Patterns",  icon: Layers },
+  { href: "/patterns",  label: "Curated",   icon: Layers },
+  { href: "/labels",    label: "Labels",    icon: Tag },
 ];
 
 export function NavBar() {

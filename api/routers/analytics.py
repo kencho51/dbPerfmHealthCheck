@@ -5,7 +5,7 @@ GET /api/analytics/summary          — counts by environment × type
 GET /api/analytics/by-host          — top N hosts by occurrence_count sum
 GET /api/analytics/by-month         — rows per month_year (trend line)
 GET /api/analytics/by-db            — top databases by occurrence count
-GET /api/analytics/pattern-coverage — % of raw rows with a linked pattern_id
+GET /api/analytics/curation-coverage — % of raw rows with a curated_query entry
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
-from api.models import EnvironmentType, QueryType, RawQuery, SourceType
+from api.models import CuratedQuery, EnvironmentType, QueryType, RawQuery, SourceType
 
 router = APIRouter()
 
@@ -182,26 +182,26 @@ async def analytics_by_db(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/analytics/pattern-coverage
+# GET /api/analytics/curation-coverage
 # ---------------------------------------------------------------------------
 
-@router.get("/pattern-coverage", summary="Pattern tagging coverage statistics")
-async def analytics_pattern_coverage(
+@router.get("/curation-coverage", summary="Curation coverage statistics")
+async def analytics_curation_coverage(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     total_stmt   = select(func.count(RawQuery.id))
-    tagged_stmt  = select(func.count(RawQuery.id)).where(RawQuery.pattern_id.isnot(None))  # type: ignore[union-attr]
+    curated_stmt = select(func.count(CuratedQuery.id))
 
-    total_result  = await session.exec(total_stmt)
-    tagged_result = await session.exec(tagged_stmt)
+    total_result   = await session.exec(total_stmt)
+    curated_result = await session.exec(curated_stmt)
 
-    total  = total_result.one()
-    tagged = tagged_result.one()
-    coverage = round(tagged / total, 4) if total else 0.0
+    total   = total_result.one()
+    curated = curated_result.one()
+    coverage = round(curated / total, 4) if total else 0.0
 
     return {
         "total_rows":    total,
-        "tagged_rows":   tagged,
-        "untagged_rows": total - tagged,
+        "curated_rows":  curated,
+        "uncurated_rows": total - curated,
         "coverage_pct":  round(coverage * 100, 2),
     }
