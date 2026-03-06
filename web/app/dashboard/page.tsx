@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, SummaryRow, HostRow, MonthRow, DbRow, CurationCoverage } from "@/lib/api";
+import { api, SummaryRow, HostRow, MonthRow, DbRow, CurationCoverage, AnalyticsFilters } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardValue, CardContent } from "@/components/ui/card";
 import {
   SummaryBarChart,
@@ -34,10 +34,20 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  async function fetchAll() {
+  // ── Filter state ──────────────────────────────────────────────────────────
+  const [filterHost, setFilterHost] = useState("");
+  const [filterDb,   setFilterDb]   = useState("");
+  const [hostOptions, setHostOptions] = useState<string[]>([]);
+  const [dbOptions,   setDbOptions]   = useState<string[]>([]);
+
+  async function fetchAll(filters: AnalyticsFilters = {}) {
     setLoading(true);
     setError(null);
     try {
+      const countParams: Record<string, string> = {};
+      if (filters.host)    countParams.host    = filters.host;
+      if (filters.db_name) countParams.db_name = filters.db_name;
+
       const [
         queryCount,
         distinctValues,
@@ -46,23 +56,27 @@ export default function DashboardPage() {
         months,
         dbs,
         coverage,
-        patCount,
       ] = await Promise.all([
-        api.queries.count(),
+        api.queries.count(Object.keys(countParams).length ? countParams : undefined),
         api.queries.distinct(),
-        api.analytics.summary().catch(() => [] as SummaryRow[]),
-        api.analytics.byHost(100).catch(() => [] as HostRow[]),
-        api.analytics.byMonth().catch(() => [] as MonthRow[]),
-        api.analytics.byDb(10).catch(() => [] as DbRow[]),
-        api.analytics.curationCoverage().catch(() => DEFAULT_COVERAGE),
-        api.curated.count().catch(() => ({ count: 0 })),
+        api.analytics.summary(filters).catch(() => [] as SummaryRow[]),
+        api.analytics.byHost(100, filters).catch(() => [] as HostRow[]),
+        api.analytics.byMonth(filters).catch(() => [] as MonthRow[]),
+        api.analytics.byDb(10, filters).catch(() => [] as DbRow[]),
+        api.analytics.curationCoverage(filters).catch(() => DEFAULT_COVERAGE),
       ]);
 
+      // Populate dropdown options from the full distinct list (unfiltered)
+      setHostOptions(distinctValues.hosts);
+      setDbOptions(distinctValues.db_names);
+
+      const uniqueHosts = new Set(hosts.map((h) => h.host)).size;
+
       setData({
-        totalQueries: queryCount.count,
-        distinctHosts: distinctValues.hosts.length,
-        monthsCount: months.length,
-        curatedCount: patCount.count,
+        totalQueries:  queryCount.count,
+        distinctHosts: uniqueHosts,
+        monthsCount:   months.length,
+        curatedCount:  coverage.curated_rows,
         summary,
         hosts,
         months,
@@ -76,10 +90,14 @@ export default function DashboardPage() {
     }
   }
 
+  // Fetch whenever filters change (also covers initial mount)
   useEffect(() => {
-    fetchAll();
+    const filters: AnalyticsFilters = {};
+    if (filterHost) filters.host    = filterHost;
+    if (filterDb)   filters.db_name = filterDb;
+    fetchAll(filters);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [filterHost, filterDb]);
 
   if (loading) {
     return (
@@ -108,7 +126,10 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="text-sm text-red-500">{error ?? "No data"}</p>
         <button
-          onClick={fetchAll}
+          onClick={() => fetchAll({
+            ...(filterHost ? { host: filterHost } : {}),
+            ...(filterDb   ? { db_name: filterDb } : {}),
+          })}
           className="text-sm text-indigo-600 underline"
         >
           Retry
@@ -125,11 +146,64 @@ export default function DashboardPage() {
           <p className="text-sm text-slate-500 mt-1">Database performance overview</p>
         </div>
         <button
-          onClick={fetchAll}
+          onClick={() => fetchAll({
+            ...(filterHost ? { host: filterHost } : {}),
+            ...(filterDb   ? { db_name: filterDb } : {}),
+          })}
           className="text-xs text-slate-400 hover:text-slate-700 border border-slate-200 rounded px-2 py-1 transition-colors"
         >
            Refresh
         </button>
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-3 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+        <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Filter</span>
+
+        {/* Host */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-slate-500">Host</label>
+          <select
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400 min-w-[160px]"
+            value={filterHost}
+            onChange={(e) => { setFilterHost(e.target.value); setFilterDb(""); }}
+          >
+            <option value="">All hosts</option>
+            {hostOptions.map((h) => (
+              <option key={h} value={h}>{h}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Database */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-slate-500">Database</label>
+          <select
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400 min-w-[180px]"
+            value={filterDb}
+            onChange={(e) => { setFilterDb(e.target.value); setFilterHost(""); }}
+          >
+            <option value="">All databases</option>
+            {dbOptions.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Active filter badge + clear */}
+        {(filterHost || filterDb) && (
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-xs bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-0.5">
+              {filterHost ? `Host: ${filterHost}` : `DB: ${filterDb}`}
+            </span>
+            <button
+              className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+              onClick={() => { setFilterHost(""); setFilterDb(""); }}
+            >
+              ✕ Clear
+            </button>
+          </div>
+        )}
       </div>
 
       {/* KPI row */}
@@ -182,7 +256,13 @@ export default function DashboardPage() {
 
       {/* Chart row 2 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <MonthlyTrendCard initialData={data.months} />
+        <MonthlyTrendCard
+          initialData={data.months}
+          filters={{
+            ...(filterHost ? { host: filterHost } : {}),
+            ...(filterDb   ? { db_name: filterDb }   : {}),
+          }}
+        />
         <Card>
           <CardHeader>
             <CardTitle>Top Hosts (by occurrences)</CardTitle>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { MonthLineChart } from "@/components/charts";
-import { api, type MonthRow, type QueryType } from "@/lib/api";
+import { api, type MonthRow, type QueryType, type AnalyticsFilters } from "@/lib/api";
 
 const TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "",                label: "All types" },
@@ -13,19 +13,37 @@ const TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "deadlock",        label: "Deadlock" },
 ];
 
-export function MonthlyTrendCard({ initialData }: { initialData: MonthRow[] }) {
+export function MonthlyTrendCard({
+  initialData,
+  filters: externalFilters = {},
+}: {
+  initialData: MonthRow[];
+  filters?: AnalyticsFilters;
+}) {
   const [type, setType] = useState("");
   const [data, setData] = useState<MonthRow[]>(initialData);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);
+    const merged: AnalyticsFilters = {
+      ...externalFilters,
+      ...(type ? { type: type as QueryType } : {}),
+    };
     api.analytics
-      .byMonth(type ? { type: type as QueryType } : undefined)
+      .byMonth(Object.keys(merged).length ? merged : undefined)
       .then(setData)
       .catch(() => setData([]))
       .finally(() => setLoading(false));
-  }, [type]);
+  // Stringify externalFilters so the effect fires when its contents change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, JSON.stringify(externalFilters)]);
+
+  // Sync initialData on first load when no type filter is active
+  useEffect(() => {
+    if (!type) setData(initialData);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialData]);
 
   return (
     <Card>
