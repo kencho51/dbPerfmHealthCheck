@@ -50,6 +50,12 @@ class SeverityType(str, Enum):
     info = "info"
 
 
+class LabelSource(str, Enum):
+    sql = "sql"
+    mongodb = "mongodb"
+    both = "both"
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -69,6 +75,7 @@ class PatternLabel(SQLModel, table=True):
     name: str = Field(index=True, description="Short human-readable label")
     severity: SeverityType = Field(default=SeverityType.warning, index=True)
     description: Optional[str] = Field(default=None)
+    source: LabelSource = Field(default=LabelSource.both, index=True)
 
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -149,6 +156,7 @@ class PatternLabelRead(SQLModel):
     name: str
     severity: SeverityType
     description: Optional[str]
+    source: LabelSource
     created_at: datetime
     updated_at: datetime
 
@@ -157,12 +165,14 @@ class PatternLabelCreate(SQLModel):
     name: str
     severity: SeverityType = SeverityType.warning
     description: Optional[str] = None
+    source: LabelSource = LabelSource.both
 
 
 class PatternLabelUpdate(SQLModel):
     name: Optional[str] = None
     severity: Optional[SeverityType] = None
     description: Optional[str] = None
+    source: Optional[LabelSource] = None
 
 
 # ---- CuratedQuery schemas --------------------------------------------------
