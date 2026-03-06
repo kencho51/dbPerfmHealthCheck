@@ -117,6 +117,22 @@ export interface UploadResult {
 
 // ---- Analytics ------------------------------------------------------------
 
+export interface AnalyticsFilters {
+  host?:        string;
+  db_name?:     string;
+  environment?: string;
+  source?:      string;
+  type?:        string;
+  top_n?:       number;
+}
+
+function buildQS(params?: Record<string, string | number | undefined>): string {
+  if (!params) return "";
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
+  if (!entries.length) return "";
+  return "?" + new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString();
+}
+
 export interface SummaryRow {
   environment: EnvironmentType;
   type: QueryType;
@@ -156,14 +172,26 @@ export interface CurationCoverage {
 
 export const api = {
   analytics: {
-    summary: () => apiFetch<SummaryRow[]>("/analytics/summary"),
-    byHost: (topN = 10) => apiFetch<HostRow[]>(`/analytics/by-host?top_n=${topN}`),
-    byMonth: (params?: { type?: string; environment?: string; source?: string }) => {
-      const qs = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v))).toString() : "";
+    summary: (filters?: AnalyticsFilters) => {
+      const qs = buildQS(filters);
+      return apiFetch<SummaryRow[]>(`/analytics/summary${qs}`);
+    },
+    byHost: (topN = 10, filters?: AnalyticsFilters) => {
+      const qs = buildQS({ top_n: topN, ...filters });
+      return apiFetch<HostRow[]>(`/analytics/by-host${qs}`);
+    },
+    byMonth: (filters?: AnalyticsFilters) => {
+      const qs = buildQS(filters);
       return apiFetch<MonthRow[]>(`/analytics/by-month${qs}`);
     },
-    byDb: (topN = 10) => apiFetch<DbRow[]>(`/analytics/by-db?top_n=${topN}`),
-    curationCoverage: () => apiFetch<CurationCoverage>("/analytics/curation-coverage"),
+    byDb: (topN = 10, filters?: AnalyticsFilters) => {
+      const qs = buildQS({ top_n: topN, ...filters });
+      return apiFetch<DbRow[]>(`/analytics/by-db${qs}`);
+    },
+    curationCoverage: (filters?: AnalyticsFilters) => {
+      const qs = buildQS(filters);
+      return apiFetch<CurationCoverage>(`/analytics/curation-coverage${qs}`);
+    },
   },
 
   queries: {

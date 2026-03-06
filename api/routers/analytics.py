@@ -30,6 +30,8 @@ router = APIRouter()
 async def analytics_summary(
     source:      Optional[SourceType]      = None,
     environment: Optional[EnvironmentType] = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -47,6 +49,10 @@ async def analytics_summary(
         stmt = stmt.where(RawQuery.source == source)
     if environment is not None:
         stmt = stmt.where(RawQuery.environment == environment)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
 
     rows = await session.exec(stmt)
     return [
@@ -70,6 +76,8 @@ async def analytics_by_host(
     top_n: int = Query(default=20, ge=1, le=100),
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -88,6 +96,10 @@ async def analytics_by_host(
         stmt = stmt.where(RawQuery.environment == environment)
     if source is not None:
         stmt = stmt.where(RawQuery.source == source)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
 
     rows = await session.exec(stmt)
     return [
@@ -110,6 +122,8 @@ async def analytics_by_month(
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
     type:        Optional[QueryType]       = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -128,6 +142,10 @@ async def analytics_by_month(
         stmt = stmt.where(RawQuery.source == source)
     if type is not None:
         stmt = stmt.where(RawQuery.type == type)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
 
     rows = await session.exec(stmt)
     return [
@@ -149,6 +167,8 @@ async def analytics_by_db(
     top_n: int = Query(default=20, ge=1, le=100),
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -168,6 +188,10 @@ async def analytics_by_db(
         stmt = stmt.where(RawQuery.environment == environment)
     if source is not None:
         stmt = stmt.where(RawQuery.source == source)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
 
     rows = await session.exec(stmt)
     return [
@@ -187,10 +211,34 @@ async def analytics_by_db(
 
 @router.get("/curation-coverage", summary="Curation coverage statistics")
 async def analytics_curation_coverage(
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    environment: Optional[EnvironmentType] = None,
+    source:      Optional[SourceType]      = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    total_stmt   = select(func.count(RawQuery.id))
-    curated_stmt = select(func.count(CuratedQuery.id))
+    total_stmt = select(func.count(RawQuery.id))
+    if host is not None:
+        total_stmt = total_stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        total_stmt = total_stmt.where(RawQuery.db_name == db_name)
+    if environment is not None:
+        total_stmt = total_stmt.where(RawQuery.environment == environment)
+    if source is not None:
+        total_stmt = total_stmt.where(RawQuery.source == source)
+
+    curated_stmt = (
+        select(func.count(CuratedQuery.id))
+        .join(RawQuery, CuratedQuery.raw_query_id == RawQuery.id)  # type: ignore[arg-type]
+    )
+    if host is not None:
+        curated_stmt = curated_stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        curated_stmt = curated_stmt.where(RawQuery.db_name == db_name)
+    if environment is not None:
+        curated_stmt = curated_stmt.where(RawQuery.environment == environment)
+    if source is not None:
+        curated_stmt = curated_stmt.where(RawQuery.source == source)
 
     total_result   = await session.exec(total_stmt)
     curated_result = await session.exec(curated_stmt)
