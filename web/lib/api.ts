@@ -37,6 +37,7 @@ export type QueryType = "slow_query" | "blocker" | "deadlock" | "slow_query_mong
 export type EnvironmentType = "prod" | "sat";
 export type SourceType = "sql" | "mongodb";
 export type SeverityType = "critical" | "warning" | "info";
+export type LabelSourceType = "sql" | "mongodb" | "both";
 
 export interface RawQuery {
   id: number;
@@ -61,6 +62,7 @@ export interface PatternLabel {
   id: number;
   name: string;
   severity: SeverityType;
+  source: LabelSourceType;
   description: string | null;
   created_at: string;
   updated_at: string;
@@ -179,9 +181,9 @@ export const api = {
 
   labels: {
     list: () => apiFetch<PatternLabel[]>("/labels"),
-    create: (body: { name: string; severity?: SeverityType; description?: string | null }) =>
+    create: (body: { name: string; severity?: SeverityType; source?: LabelSourceType; description?: string | null }) =>
       apiFetch<PatternLabel>("/labels", { method: "POST", body: JSON.stringify(body) }),
-    patch: (id: number, body: { name?: string; severity?: SeverityType; description?: string | null }) =>
+    patch: (id: number, body: { name?: string; severity?: SeverityType; source?: LabelSourceType; description?: string | null }) =>
       apiFetch<PatternLabel>(`/labels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     delete: (id: number) =>
       fetch(`${base()}/labels/${id}`, { method: "DELETE" }).then(async (r) => {
