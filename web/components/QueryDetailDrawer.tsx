@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { X, Link2, Link2Off, Plus, ChevronDown, ChevronUp } from "lucide-react";
+import Link from "next/link";
+import { X, BookmarkPlus, BookmarkX } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type RawQuery, type Pattern, type EnvironmentType, type QueryType } from "@/lib/api";
+import { api, type RawQuery, type PatternLabel, type CuratedQuery, type EnvironmentType, type QueryType } from "@/lib/api";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -30,13 +31,6 @@ const SEV_COLORS: Record<string, string> = {
   info: "text-indigo-600 bg-indigo-50 border-indigo-200",
 };
 
-const DEFAULT_PATTERNS: Pattern[] = [
-  { id: -1, name: "Blocker",            pattern_tag: "blocker",         severity: "warning",  description: null, example_query_hash: null, source: null,      environment: null, type: "blocker",         first_seen: null, last_seen: null, total_occurrences: 0, notes: null, created_at: "", updated_at: "" },
-  { id: -2, name: "Deadlock",           pattern_tag: "deadlock",        severity: "critical", description: null, example_query_hash: null, source: null,      environment: null, type: "deadlock",        first_seen: null, last_seen: null, total_occurrences: 0, notes: null, created_at: "", updated_at: "" },
-  { id: -3, name: "Slow Query (SQL)",   pattern_tag: "slow_query",      severity: "warning",  description: null, example_query_hash: null, source: "sql",     environment: null, type: "slow_query",      first_seen: null, last_seen: null, total_occurrences: 0, notes: null, created_at: "", updated_at: "" },
-  { id: -4, name: "Slow Query (Mongo)", pattern_tag: "slow_query_mongo", severity: "warning", description: null, example_query_hash: null, source: "mongodb", environment: null, type: "slow_query_mongo", first_seen: null, last_seen: null, total_occurrences: 0, notes: null, created_at: "", updated_at: "" },
-];
-
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex gap-3 py-1.5 border-b border-slate-100 last:border-0 text-xs">
@@ -46,87 +40,79 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-// ---- Pattern assignment panel -----------------------------------------------
+// ---- Curation panel ---------------------------------------------------------
 
-function PatternPanel({
+function CurationPanel({
   query,
-  onAssigned,
+  onCurationChange,
 }: {
   query: RawQuery;
-  onAssigned: (updated: RawQuery) => void;
+  onCurationChange: (updated: RawQuery) => void;
 }) {
-  const [patterns, setPatterns] = useState<Pattern[]>([]);
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<number | "">("");
+  const [labels, setLabels] = useState<PatternLabel[]>([]);
+  const [curatedEntry, setCuratedEntry] = useState<CuratedQuery | null>(null);
+  const [loadingEntry, setLoadingEntry] = useState(false);
+
+  // Assign form state
+  const [selectedLabel, setSelectedLabel] = useState<number | "">("");
+  const [notes, setNotes] = useState("");
   const [assigning, setAssigning] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newDesc, setNewDesc] = useState("");
-  const [newTag, setNewTag]   = useState("");
-  const [newSev, setNewSev] = useState<"info" | "warning" | "critical">("info");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+
+  // Edit notes
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [editNotesDraft, setEditNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
+
+  // Unassign confirm
   const [confirmUnassign, setConfirmUnassign] = useState(false);
+  const [unassigning, setUnassigning] = useState(false);
 
-  // Current assigned pattern
-  const [currentPattern, setCurrentPattern] = useState<Pattern | null>(null);
-  const [loadingCurrent, setLoadingCurrent] = useState(false);
+  // Label edit
+  const [editingLabel, setEditingLabel] = useState(false);
+  const [selectedEditLabel, setSelectedEditLabel] = useState<number | "">("");
+  const [savingLabel, setSavingLabel] = useState(false);
 
-  // Reset confirm state when switching to a different query
-  useEffect(() => { setConfirmUnassign(false); }, [query.id]);
 
-  // Fetch current pattern when query.pattern_id changes
+
+  const [error, setError] = useState("");
+
+  // Reset state on query change
   useEffect(() => {
-    if (!query.pattern_id) { setCurrentPattern(null); return; }
-    setLoadingCurrent(true);
-    api.patterns.get(query.pattern_id)
-      .then(setCurrentPattern)
-      .catch(() => setCurrentPattern(null))
-      .finally(() => setLoadingCurrent(false));
-  }, [query.pattern_id]);
-
-  // Fetch all patterns for the picker — seed with defaults when search is empty
-  useEffect(() => {
-    api.patterns.list(search ? { search } : undefined)
-      .then((rows) => setPatterns(search ? rows : [...DEFAULT_PATTERNS, ...rows]))
-      .catch(() => setPatterns(DEFAULT_PATTERNS));
-  }, [search]);
-
-  const handleAssign = async () => {
-    if (selected === "") return;
-    setAssigning(true);
-    setError("");
-    try {
-      let patternId = selected as number;
-      // Negative IDs are defaults that don't exist yet — create them first
-      if (patternId < 0) {
-        const def = DEFAULT_PATTERNS.find((p) => p.id === patternId);
-        if (def) {
-          const created = await api.patterns.create({
-            name: def.name,
-            pattern_tag: def.pattern_tag ?? undefined,
-            severity: def.severity,
-            example_query_hash: query.query_hash ?? undefined,
-          });
-          patternId = created.id;
-        }
-      }
-      const updated = await api.queries.patch(query.id, { pattern_id: patternId });
-      onAssigned(updated);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setAssigning(false);
-    }
-  };
-
-  const handleUnassign = async () => {
     setConfirmUnassign(false);
+    setEditingNotes(false);
+    setEditingLabel(false);
+    setSelectedLabel("");
+    setNotes("");
+    setError("");
+  }, [query.id]);
+
+  // Load labels
+  useEffect(() => {
+    api.labels.list().then(setLabels).catch(() => setLabels([]));
+  }, []);
+
+  // Load curated entry when curated_id is set
+  useEffect(() => {
+    if (!query.curated_id) { setCuratedEntry(null); return; }
+    setLoadingEntry(true);
+    api.curated.get(query.curated_id)
+      .then(setCuratedEntry)
+      .catch(() => setCuratedEntry(null))
+      .finally(() => setLoadingEntry(false));
+  }, [query.curated_id]);
+
+  // ---- Assign -----------------------------------------------------------------
+  const handleAssign = async () => {
     setAssigning(true);
     setError("");
     try {
-      const updated = await api.queries.patch(query.id, { pattern_id: null });
-      onAssigned(updated);
+      const created = await api.curated.create({
+        raw_query_id: query.id,
+        label_id: selectedLabel === "" ? null : (selectedLabel as number),
+        notes: notes.trim() || null,
+      });
+      setCuratedEntry(created);
+      onCurationChange({ ...query, curated_id: created.id });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -134,180 +120,208 @@ function PatternPanel({
     }
   };
 
-  const handleCreate = async () => {
-    if (!newName.trim()) return;
-    setSaving(true);
+  // ---- Unassign ---------------------------------------------------------------
+  const handleUnassign = async () => {
+    if (!query.curated_id) return;
+    setUnassigning(true);
     setError("");
     try {
-      const pat = await api.patterns.create({
-        name: newName.trim(),
-        description: newDesc.trim() || undefined,
-        pattern_tag: newTag.trim() || undefined,
-        severity: newSev,
-        example_query_hash: query.query_hash ?? undefined,
-      });
-      const updated = await api.queries.patch(query.id, { pattern_id: pat.id });
-      onAssigned(updated);
-      setShowCreate(false);
-      setNewName(""); setNewDesc(""); setNewTag(""); setNewSev("info");
+      await api.curated.delete(query.curated_id);
+      setCuratedEntry(null);
+      setConfirmUnassign(false);
+      onCurationChange({ ...query, curated_id: null });
     } catch (e) {
       setError(String(e));
     } finally {
-      setSaving(false);
+      setUnassigning(false);
     }
   };
+
+  // ---- Save notes edit --------------------------------------------------------
+  const handleSaveNotes = async () => {
+    if (!curatedEntry) return;
+    setSavingNotes(true);
+    setError("");
+    try {
+      const updated = await api.curated.patch(curatedEntry.id, { notes: editNotesDraft.trim() || null });
+      setCuratedEntry(updated);
+      setEditingNotes(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingNotes(false);
+    }
+  };
+
+  // ---- Save label edit --------------------------------------------------------
+  const handleSaveLabel = async () => {
+    if (!curatedEntry) return;
+    setSavingLabel(true);
+    setError("");
+    try {
+      const updated = await api.curated.patch(curatedEntry.id, {
+        label_id: selectedEditLabel === "" ? null : (selectedEditLabel as number),
+      });
+      setCuratedEntry(updated);
+      setEditingLabel(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingLabel(false);
+    }
+  };
+
+
+
+  // ---- Render -----------------------------------------------------------------
+
+  const isAssigned = !!query.curated_id;
 
   return (
     <div className="space-y-3">
-      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pattern</h3>
+      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Curation</h3>
 
-      {/* Current assignment */}
-      {loadingCurrent ? (
-        <div className="flex items-center gap-2 text-xs text-slate-400"><Spinner /> Loading…</div>
-      ) : currentPattern ? (
-        <div className="flex items-start justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="space-y-0.5">
-            <div className="text-xs font-medium text-slate-800">{currentPattern.name}</div>
-            {currentPattern.description && (
-              <div className="text-[11px] text-slate-500">{currentPattern.description}</div>
-            )}
-            <span className={`inline-block text-[10px] font-medium rounded border px-1.5 py-0.5 ${SEV_COLORS[currentPattern.severity] ?? ""}`}>
-              {currentPattern.severity}
-            </span>
-          </div>
-          {confirmUnassign ? (
-            <div className="flex items-center gap-1.5 shrink-0 ml-3">
-              <span className="text-[11px] text-slate-500">Unassign?</span>
-              <Button
-                size="sm"
-                className="h-7 text-xs bg-red-500 hover:bg-red-600 text-white border-0"
-                onClick={handleUnassign}
-                disabled={assigning}
-              >
-                {assigning ? <Spinner /> : "Yes"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setConfirmUnassign(false)}
-                disabled={assigning}
-              >
-                Cancel
-              </Button>
+      {isAssigned ? (
+        /* ---- Assigned view -------------------------------------------------- */
+        <>
+          {loadingEntry ? (
+            <div className="flex items-center gap-2 text-xs text-slate-400"><Spinner /> Loading</div>
+          ) : curatedEntry ? (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 space-y-2">
+              {/* Label row */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="space-y-0.5 flex-1 min-w-0">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider">Label</div>
+                  {editingLabel ? (
+                    <div className="flex gap-1.5">
+                      <select
+                        className="h-7 flex-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
+                        value={selectedEditLabel}
+                        onChange={(e) => setSelectedEditLabel(e.target.value === "" ? "" : Number(e.target.value))}
+                      >
+                        <option value=""> no label </option>
+                        {labels.map((l) => (
+                          <option key={l.id} value={l.id}>[{l.severity}] {l.name}</option>
+                        ))}
+                      </select>
+                      <Button size="sm" className="h-7 text-xs" onClick={handleSaveLabel} disabled={savingLabel}>
+                        {savingLabel ? <Spinner /> : "Save"}
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setEditingLabel(false)}></Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {curatedEntry.label ? (
+                        <>
+                          <span className="text-xs font-medium text-slate-800">{curatedEntry.label.name}</span>
+                          <span className={`text-[10px] font-medium rounded border px-1.5 py-0.5 ${SEV_COLORS[curatedEntry.label.severity] ?? ""}`}>
+                            {curatedEntry.label.severity}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-xs text-slate-400 italic">No label</span>
+                      )}
+                      <button
+                        className="text-[10px] text-indigo-500 hover:text-indigo-700 ml-1"
+                        onClick={() => { setSelectedEditLabel(curatedEntry.label_id ?? ""); setEditingLabel(true); }}
+                      >Edit</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Notes row */}
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Notes</div>
+                {editingNotes ? (
+                  <div className="space-y-1.5">
+                    <textarea
+                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:border-indigo-400 resize-none"
+                      rows={3}
+                      value={editNotesDraft}
+                      onChange={(e) => setEditNotesDraft(e.target.value)}
+                    />
+                    <div className="flex gap-1.5">
+                      <Button size="sm" className="h-7 text-xs" onClick={handleSaveNotes} disabled={savingNotes}>
+                        {savingNotes ? <Spinner /> : "Save"}
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setEditingNotes(false)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs text-slate-700 flex-1">{curatedEntry.notes || <span className="italic text-slate-400">No notes</span>}</span>
+                    <button
+                      className="text-[10px] text-indigo-500 hover:text-indigo-700 shrink-0"
+                      onClick={() => { setEditNotesDraft(curatedEntry.notes ?? ""); setEditingNotes(true); }}
+                    >Edit</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Unassign */}
+              <div className="pt-1 border-t border-indigo-100">
+                {confirmUnassign ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500">Remove from curation?</span>
+                    <Button size="sm" className="h-6 text-[11px] bg-red-500 hover:bg-red-600 text-white border-0 px-2" onClick={handleUnassign} disabled={unassigning}>
+                      {unassigning ? <Spinner /> : "Yes, remove"}
+                    </Button>
+                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => setConfirmUnassign(false)} disabled={unassigning}>Cancel</Button>
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => setConfirmUnassign(true)}>
+                    <BookmarkX className="h-3 w-3" />
+                    Remove from curation
+                  </Button>
+                )}
+              </div>
             </div>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1 shrink-0 ml-3"
-              onClick={() => setConfirmUnassign(true)}
-              disabled={assigning}
-            >
-              <Link2Off className="h-3 w-3" />
-              Unassign
-            </Button>
-          )}
-        </div>
+          ) : null}
+        </>
       ) : (
-        <p className="text-xs text-slate-400 italic">No pattern assigned.</p>
-      )}
+        /* ---- Not assigned view ---------------------------------------------- */
+        <div className="space-y-2">
+          <p className="text-xs text-slate-400 italic">Not in curation list.</p>
 
-      {/* Assign picker */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <input
-            className="h-7 flex-1 rounded border border-slate-200 bg-white px-2 text-xs placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-            placeholder="Search patterns…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        <div className="flex gap-2">
-          <select
-            className="h-7 flex-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value === "" ? "" : Number(e.target.value))}
-          >
-            <option value="">— pick a pattern —</option>
-            <optgroup label="Quick defaults (created on assign)">
-              {patterns.filter((p) => p.id < 0).map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
+          {/* Label picker */}
+          <div className="flex gap-2">
+            <select
+              className="h-7 flex-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
+              value={selectedLabel}
+              onChange={(e) => setSelectedLabel(e.target.value === "" ? "" : Number(e.target.value))}
+            >
+              <option value=""> pick a label (optional) </option>
+              {labels.map((l) => (
+                <option key={l.id} value={l.id}>[{l.severity}] {l.name}</option>
               ))}
-            </optgroup>
-            {patterns.some((p) => p.id > 0) && (
-              <optgroup label="Saved patterns">
-                {patterns.filter((p) => p.id > 0).map((p) => (
-                  <option key={p.id} value={p.id}>[{p.severity}] {p.name}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          <Button
-            size="sm"
-            className="h-7 text-xs gap-1 shrink-0"
-            onClick={handleAssign}
-            disabled={selected === "" || assigning}
-          >
-            {assigning ? <Spinner /> : <Link2 className="h-3 w-3" />}
-            Assign
-          </Button>
-        </div>
-      </div>
-
-      {/* Create new pattern */}
-      <div>
-        <button
-          className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800"
-          onClick={() => setShowCreate((v) => !v)}
-        >
-          {showCreate ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          <Plus className="h-3 w-3" />
-          Create new pattern & assign
-        </button>
-        {showCreate && (
-          <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <input
-              className="h-7 w-full rounded border border-slate-200 bg-white px-2 text-xs placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-              placeholder="Pattern name *"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-            />
-            <input
-              className="h-7 w-full rounded border border-slate-200 bg-white px-2 text-xs placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-              placeholder="Description (optional)"
-              value={newDesc}
-              onChange={(e) => setNewDesc(e.target.value)}
-            />
-            <input
-              className="h-7 w-full rounded border border-slate-200 bg-white px-2 text-xs placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
-              placeholder="Tag (optional, e.g. slow_query)"
-              value={newTag}
-              onChange={(e) => setNewTag(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <select
-                className="h-7 flex-1 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
-                value={newSev}
-                onChange={(e) => setNewSev(e.target.value as "info" | "warning" | "critical")}
-              >
-                <option value="info">info</option>
-                <option value="warning">warning</option>
-                <option value="critical">critical</option>
-              </select>
-              <Button
-                size="sm"
-                className="h-7 text-xs gap-1 shrink-0"
-                onClick={handleCreate}
-                disabled={!newName.trim() || saving}
-              >
-                {saving ? <Spinner /> : <Plus className="h-3 w-3" />}
-                Create & Assign
-              </Button>
-            </div>
+            </select>
           </div>
-        )}
-      </div>
+
+          {/* Notes input */}
+          <textarea
+            className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400 resize-none"
+            rows={2}
+            placeholder="Notes (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <Button size="sm" className="h-7 text-xs gap-1" onClick={handleAssign} disabled={assigning}>
+              {assigning ? <Spinner /> : <BookmarkPlus className="h-3 w-3" />}
+              Add to Curation
+            </Button>
+            <Link
+              href="/labels"
+              className="text-xs text-indigo-500 hover:text-indigo-700 hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Manage labels →
+            </Link>
+          </div>
+        </div>
+      )}
 
       {error && <p className="text-xs text-red-500">{error}</p>}
     </div>
@@ -369,13 +383,13 @@ export function QueryDetailDrawer({
           <div>
             <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Metadata</h3>
             <div className="rounded-lg border border-slate-100 bg-slate-50 px-3">
-              <MetaRow label="Host">{query.host ?? "—"}</MetaRow>
-              <MetaRow label="Database">{query.db_name ?? "—"}</MetaRow>
-              <MetaRow label="Month">{query.month_year ?? "—"}</MetaRow>
+              <MetaRow label="Host">{query.host ?? ""}</MetaRow>
+              <MetaRow label="Database">{query.db_name ?? ""}</MetaRow>
+              <MetaRow label="Month">{query.month_year ?? ""}</MetaRow>
               <MetaRow label="Occurrences">{query.occurrence_count.toLocaleString()}</MetaRow>
-              <MetaRow label="First seen">{query.first_seen ? new Date(query.first_seen).toLocaleString() : "—"}</MetaRow>
-              <MetaRow label="Last seen">{query.last_seen ? new Date(query.last_seen).toLocaleString() : "—"}</MetaRow>
-              <MetaRow label="Time">{query.time ?? "—"}</MetaRow>
+              <MetaRow label="First seen">{query.first_seen ? new Date(query.first_seen).toLocaleString() : ""}</MetaRow>
+              <MetaRow label="Last seen">{query.last_seen ? new Date(query.last_seen).toLocaleString() : ""}</MetaRow>
+              <MetaRow label="Time">{query.time ?? ""}</MetaRow>
               <MetaRow label="Query hash"><span className="font-mono text-[10px]">{query.query_hash}</span></MetaRow>
             </div>
           </div>
@@ -384,13 +398,13 @@ export function QueryDetailDrawer({
           <div>
             <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Query Details</h3>
             <pre className="rounded-lg border border-slate-100 bg-slate-950 text-green-400 text-[11px] font-mono p-3 whitespace-pre-wrap break-all leading-relaxed max-h-64 overflow-y-auto">
-              {query.query_details ?? "—"}
+              {query.query_details ?? ""}
             </pre>
           </div>
 
-          {/* Pattern assignment */}
+          {/* Curation panel */}
           <div className="rounded-lg border border-slate-200 p-3">
-            <PatternPanel query={query} onAssigned={onPatternChange} />
+            <CurationPanel query={query} onCurationChange={onPatternChange} />
           </div>
         </div>
       </div>

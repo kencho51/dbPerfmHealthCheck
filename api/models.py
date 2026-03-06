@@ -1,13 +1,17 @@
 """
-SQLModel table definitions for the two-table schema:
-  - RawQuery  : every row extracted from Splunk CSVs (source of truth for analytics)
-  - Pattern   : curated / auto-detected recurring or suspicious patterns
+SQLModel table definitions  three-table schema:
+
+  pattern_label  : user-managed label library (name, severity, description)
+  curated_query  : one row per "promoted" raw_query; holds label FK + notes
+  raw_query      : every row from Splunk CSVs (unchanged source of truth)
+
+Declaration order matters:
+  PatternLabel -> CuratedQuery -> RawQuery
+  (CuratedQuery has FK -> pattern_label; RawQuery back-ref -> curated_query)
 
 NOTE: `from __future__ import annotations` is intentionally NOT imported here.
-SQLModel/SQLAlchemy needs to evaluate relationship type annotations at class-
-definition time (not lazily), so that ForwardRef('RawQuery') can be resolved
-by the mapper during initialisation.  String forward refs ("RawQuery") are used
-only for the one cross-reference that must be forward-declared.
+SQLModel/SQLAlchemy evaluates Relationship type annotations at class-definition
+time; string forward-refs ("RawQuery") are used only where required.
 """
 
 from datetime import datetime, timezone
@@ -55,48 +59,46 @@ def _now() -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Pattern table (declared first — RawQuery holds FK to it)
+# PatternLabel table  (declared first -- CuratedQuery holds FK to it)
 # ---------------------------------------------------------------------------
 
-class Pattern(SQLModel, table=True):
-    __tablename__ = "pattern"
+class PatternLabel(SQLModel, table=True):
+    __tablename__ = "pattern_label"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-
-    # Identity
     name: str = Field(index=True, description="Short human-readable label")
-    description: Optional[str] = Field(default=None)
-    pattern_tag: str = Field(
-        index=True,
-        description="Category key, e.g. 'missing_index', 'bulk_delete', 'deadlock_hotspot'",
-    )
     severity: SeverityType = Field(default=SeverityType.warning, index=True)
+    description: Optional[str] = Field(default=None)
 
-    # Representative raw query
-    example_query_hash: Optional[str] = Field(
-        default=None,
-        description="query_hash of the canonical RawQuery example",
-    )
-
-    # Inherited context (denormalised for quick filtering without a join)
-    source: Optional[SourceType] = Field(default=None, index=True)
-    environment: Optional[EnvironmentType] = Field(default=None, index=True)
-    type: Optional[QueryType] = Field(default=None, index=True)
-
-    # Observation window (denormalised; recomputed when raw rows are linked)
-    first_seen: Optional[datetime] = Field(default=None)
-    last_seen: Optional[datetime] = Field(default=None)
-    total_occurrences: int = Field(default=0)
-
-    # Curation notes
-    notes: Optional[str] = Field(default=None)
-
-    # Timestamps
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
-    # Relationship back to raw queries
-    raw_queries: list["RawQuery"] = Relationship(back_populates="pattern")
+    curated_queries: list["CuratedQuery"] = Relationship(back_populates="label")
+
+
+# ---------------------------------------------------------------------------
+# CuratedQuery table  (declared before RawQuery -- FK raw_query_id is a fwd ref)
+# ---------------------------------------------------------------------------
+
+class CuratedQuery(SQLModel, table=True):
+    __tablename__ = "curated_query"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # One curated row per raw query (enforced at DB level)
+    raw_query_id: int = Field(foreign_key="raw_query.id", unique=True, index=True)
+
+    # Optional label link -- can be set at creation or updated later
+    label_id: Optional[int] = Field(default=None, foreign_key="pattern_label.id", index=True)
+
+    notes: Optional[str] = Field(default=None)
+
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    # Relationships
+    raw_query: Optional["RawQuery"] = Relationship(back_populates="curated_entry")
+    label: Optional[PatternLabel] = Relationship(back_populates="curated_queries")
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +110,7 @@ class RawQuery(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    # Deduplication key — MD5 of (source + host + db_name + environment + type + normalised query)
+    # Deduplication key
     query_hash: str = Field(unique=True, index=True)
 
     # Core fields extracted from CSV
@@ -120,26 +122,89 @@ class RawQuery(SQLModel, table=True):
     type: QueryType = Field(index=True)
     query_details: Optional[str] = Field(default=None)
 
-    # Derived at ingest — "YYYY-MM" — avoids computing in GROUP BY queries
+    # Derived at ingest -- "YYYY-MM"
     month_year: Optional[str] = Field(default=None, index=True)
 
-    # Occurrence tracking (dedup merges repeated uploads into these counters)
+    # Occurrence tracking
     occurrence_count: int = Field(default=1)
     first_seen: datetime = Field(default_factory=_now)
     last_seen: datetime = Field(default_factory=_now)
-
-    # Link to curated pattern (optional; set when a DBA promotes this query)
-    pattern_id: Optional[int] = Field(default=None, foreign_key="pattern.id", index=True)
-    pattern: Optional[Pattern] = Relationship(back_populates="raw_queries")
 
     # Timestamps
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
+    # Back-reference to the single curated entry (if any)
+    curated_entry: Optional[CuratedQuery] = Relationship(back_populates="raw_query")
+
 
 # ---------------------------------------------------------------------------
 # Response / request schemas (not mapped to DB tables)
 # ---------------------------------------------------------------------------
+
+# ---- PatternLabel schemas --------------------------------------------------
+
+class PatternLabelRead(SQLModel):
+    id: int
+    name: str
+    severity: SeverityType
+    description: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class PatternLabelCreate(SQLModel):
+    name: str
+    severity: SeverityType = SeverityType.warning
+    description: Optional[str] = None
+
+
+class PatternLabelUpdate(SQLModel):
+    name: Optional[str] = None
+    severity: Optional[SeverityType] = None
+    description: Optional[str] = None
+
+
+# ---- CuratedQuery schemas --------------------------------------------------
+
+class CuratedQueryRead(SQLModel):
+    """Flat projection: curated row fields + embedded label + raw_query fields."""
+    # curated_query fields
+    id: int
+    raw_query_id: int
+    label_id: Optional[int]
+    label: Optional[PatternLabelRead]
+    notes: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    # raw_query fields (denormalised for display)
+    query_hash: str
+    time: Optional[str]
+    source: SourceType
+    host: Optional[str]
+    db_name: Optional[str]
+    environment: EnvironmentType
+    type: QueryType
+    query_details: Optional[str]
+    month_year: Optional[str]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class CuratedQueryCreate(SQLModel):
+    raw_query_id: int
+    label_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class CuratedQueryUpdate(SQLModel):
+    label_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+# ---- RawQuery schemas ------------------------------------------------------
 
 class RawQueryRead(SQLModel):
     id: int
@@ -155,41 +220,7 @@ class RawQueryRead(SQLModel):
     occurrence_count: int
     first_seen: datetime
     last_seen: datetime
-    pattern_id: Optional[int]
     created_at: datetime
     updated_at: datetime
-
-
-class PatternRead(SQLModel):
-    id: int
-    name: str
-    description: Optional[str]
-    pattern_tag: str
-    severity: SeverityType
-    example_query_hash: Optional[str]
-    source: Optional[SourceType]
-    environment: Optional[EnvironmentType]
-    type: Optional[QueryType]
-    first_seen: Optional[datetime]
-    last_seen: Optional[datetime]
-    total_occurrences: int
-    notes: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-
-
-class PatternCreate(SQLModel):
-    name: str
-    pattern_tag: Optional[str] = None
-    severity: SeverityType = SeverityType.warning
-    description: Optional[str] = None
-    example_query_hash: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class PatternUpdate(SQLModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    pattern_tag: Optional[str] = None
-    severity: Optional[SeverityType] = None
-    notes: Optional[str] = None
+    # Injected at query time (None when no curated entry exists)
+    curated_id: Optional[int] = None

@@ -1,7 +1,7 @@
 """
-GET /api/export  — stream the full RawQuery dataset as a UTF-8 CSV.
+GET /api/export  -- stream the full RawQuery dataset as a UTF-8 CSV.
 
-Joins Pattern (name, pattern_tag, severity) for ML-readiness.
+Left-joins curated_query + pattern_label for ML-readiness.
 Applies the same filter parameters as GET /api/queries so callers can
 export a filtered slice (e.g. only prod + slow_query).
 
@@ -12,7 +12,7 @@ CSV columns (in order):
     id, query_hash, time, source, host, db_name, environment, type,
     month_year, occurrence_count, first_seen, last_seen,
     query_details,
-    pattern_id, pattern_name, pattern_tag, pattern_severity
+    curated_id, label_id, label_name, label_severity, notes
 """
 from __future__ import annotations
 
@@ -24,9 +24,6 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Optional
 
-# session.execute() on a multi-column join select returns SQLAlchemy Row objects
-# (not SQLModel models) — this is the correct path.  Suppress the SQLModel
-# false-positive DeprecationWarning that recommends exec() instead.
 warnings.filterwarnings(
     "ignore",
     message=".*You probably want to use.*session.exec.*",
@@ -35,11 +32,12 @@ warnings.filterwarnings(
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
-from api.models import EnvironmentType, Pattern, QueryType, RawQuery, SourceType
+from api.models import CuratedQuery, EnvironmentType, PatternLabel, QueryType, RawQuery, SourceType
 
 router = APIRouter()
 
@@ -49,7 +47,7 @@ _CSV_FIELDS = [
     "id", "query_hash", "time", "source", "host", "db_name",
     "environment", "type", "month_year", "occurrence_count",
     "first_seen", "last_seen", "query_details",
-    "pattern_id", "pattern_name", "pattern_tag", "pattern_severity",
+    "curated_id", "label_id", "label_name", "label_severity", "notes",
 ]
 
 
@@ -62,8 +60,7 @@ def _apply_filters(
     host:        Optional[str],
     db_name:     Optional[str],
     month_year:  Optional[list[str]],
-    pattern_id:  Optional[int],
-    has_pattern: Optional[bool],
+    is_curated:  Optional[bool],
     search:      Optional[str],
 ):
     if environment is not None:
@@ -78,12 +75,12 @@ def _apply_filters(
         stmt = stmt.where(col(RawQuery.db_name).contains(db_name))
     if month_year:
         stmt = stmt.where(col(RawQuery.month_year).in_(month_year))
-    if pattern_id is not None:
-        stmt = stmt.where(RawQuery.pattern_id == pattern_id)
-    if has_pattern is True:
-        stmt = stmt.where(col(RawQuery.pattern_id).isnot(None))
-    if has_pattern is False:
-        stmt = stmt.where(col(RawQuery.pattern_id).is_(None))
+    if is_curated is True:
+        subq = select(CuratedQuery.raw_query_id)
+        stmt = stmt.where(col(RawQuery.id).in_(subq))
+    if is_curated is False:
+        subq = select(CuratedQuery.raw_query_id)
+        stmt = stmt.where(col(RawQuery.id).not_in(subq))
     if search:
         stmt = stmt.where(col(RawQuery.query_details).contains(search))
     return stmt
@@ -104,11 +101,6 @@ async def _csv_generator(
     session: AsyncSession,
     filter_kwargs: dict,
 ) -> "AsyncGenerator[str, None]":
-    """
-    Async generator that yields CSV text in chunks.
-    The header row is emitted first, then data is fetched in _CHUNK-sized
-    batches using offset pagination to keep memory usage constant.
-    """
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\r\n")
 
@@ -116,7 +108,6 @@ async def _csv_generator(
     writer.writerow(_CSV_FIELDS)
     yield buf.getvalue()
 
-    # ---- Build base SELECT with left-join to Pattern ----
     offset = 0
     while True:
         buf = io.StringIO()
@@ -137,12 +128,14 @@ async def _csv_generator(
                 RawQuery.first_seen,
                 RawQuery.last_seen,
                 RawQuery.query_details,
-                RawQuery.pattern_id,
-                Pattern.name.label("pattern_name"),        # type: ignore[union-attr]
-                Pattern.pattern_tag.label("pattern_tag"),  # type: ignore[union-attr]
-                Pattern.severity.label("pattern_severity"),  # type: ignore[union-attr]
+                CuratedQuery.id.label("curated_id"),           # type: ignore[union-attr]
+                CuratedQuery.label_id.label("label_id"),       # type: ignore[union-attr]
+                PatternLabel.name.label("label_name"),         # type: ignore[union-attr]
+                PatternLabel.severity.label("label_severity"), # type: ignore[union-attr]
+                CuratedQuery.notes.label("notes"),             # type: ignore[union-attr]
             )
-            .join(Pattern, RawQuery.pattern_id == Pattern.id, isouter=True)
+            .join(CuratedQuery, RawQuery.id == CuratedQuery.raw_query_id, isouter=True)
+            .join(PatternLabel, CuratedQuery.label_id == PatternLabel.id, isouter=True)
         )
 
         stmt = _apply_filters(stmt, **filter_kwargs)
@@ -166,12 +159,12 @@ async def _csv_generator(
 
 @router.get(
     "/export",
-    summary="Export RawQuery + Pattern join as UTF-8 CSV (ML-ready)",
+    summary="Export RawQuery + Curation join as UTF-8 CSV (ML-ready)",
     response_class=StreamingResponse,
     responses={
         200: {
             "content": {"text/csv": {}},
-            "description": "Streaming CSV with pattern metadata joined.",
+            "description": "Streaming CSV with curation metadata joined.",
         }
     },
 )
@@ -182,24 +175,21 @@ async def export_csv(
     host:        Optional[str]              = Query(default=None),
     db_name:     Optional[str]              = Query(default=None),
     month_year:  Optional[list[str]]        = Query(default=None),
-    pattern_id:  Optional[int]              = None,
-    has_pattern: Optional[bool]             = None,
+    is_curated:  Optional[bool]             = None,
     search:      Optional[str]              = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """
-    Stream all matching RawQuery rows joined with Pattern metadata as CSV.
+    Stream all matching RawQuery rows joined with curation + label metadata as CSV.
 
-    Suitable for ML training pipelines — labelled rows include
-    `pattern_name`, `pattern_tag`, and `pattern_severity` when a pattern
-    has been assigned.
+    Suitable for ML training pipelines -- curated rows include
+    `label_name` and `label_severity` when a label has been assigned.
 
     Query parameters mirror `GET /api/queries` for consistent filtering.
     """
     filter_kwargs = dict(
         environment=environment, type=type, source=source, host=host,
-        db_name=db_name, month_year=month_year, pattern_id=pattern_id,
-        has_pattern=has_pattern, search=search,
+        db_name=db_name, month_year=month_year, is_curated=is_curated, search=search,
     )
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")

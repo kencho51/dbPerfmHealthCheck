@@ -38,13 +38,13 @@ const columns: ColumnDef<RawQuery>[] = [
   { accessorKey: "occurrence_count", header: "Occ",      size: 48 },
   { accessorKey: "month_year",       header: "Month",    size: 76,  cell: (i) => <span>{i.getValue<string | null>() ?? "—"}</span> },
   {
-    accessorKey: "pattern_id",
-    header: "Pattern",
+    accessorKey: "curated_id",
+    header: "Curated",
     size: 72,
     cell: (i) => {
       const v = i.getValue<number | null>();
       return v
-        ? <Badge variant="outline" className="text-indigo-600 border-indigo-300 bg-indigo-50 font-mono">#{v}</Badge>
+        ? <Badge variant="outline" className="text-indigo-600 border-indigo-300 bg-indigo-50 text-[10px]">✓ curated</Badge>
         : <span className="text-slate-300">—</span>;
     },
   },
@@ -116,7 +116,7 @@ export default function QueriesPage() {
   const [environment, setEnvironment] = useState("");
   const [type, setType] = useState("");
   const [source, setSource] = useState("");
-  const [hasPattern, setHasPattern] = useState("");
+  const [isCurated, setIsCurated] = useState("");
 
   // Dropdown options for host / database
   const [hostOpts, setHostOpts] = useState<string[]>([]);
@@ -132,7 +132,7 @@ export default function QueriesPage() {
   const [search, setSearch] = useState("");
 
   // Reset page on any filter change
-  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir, hasPattern]);
+  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir, isCurated]);
 
   const buildParams = useCallback(() => {
     const p: Record<string, string | number> = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
@@ -144,11 +144,11 @@ export default function QueriesPage() {
     if (dbName)      p.db_name     = dbName;
     if (month)       p.month_year  = month;
     if (search)      p.search      = search;
-    if (hasPattern)  p.has_pattern = hasPattern;
+    if (isCurated)  p.is_curated = isCurated;
     p.sort_by  = "id";
     p.sort_dir = sortDir;
     return p;
-  }, [page, environment, type, source, host, dbName, month, search, sortDir, hasPattern]);
+  }, [page, environment, type, source, host, dbName, month, search, sortDir, isCurated]);
 
   useEffect(() => {
     setLoading(true);
@@ -173,7 +173,7 @@ export default function QueriesPage() {
   const pageCount = Math.ceil(total / PAGE_SIZE);
 
   const resetAll = () => {
-    setEnvironment(""); setType(""); setSource(""); setHasPattern("");
+    setEnvironment(""); setType(""); setSource(""); setIsCurated("");
     setHost(""); setDbName(""); setMonth(""); setSearch("");
   };
 
@@ -268,10 +268,10 @@ export default function QueriesPage() {
                   <FInput value={month} onChange={setMonth} placeholder="YYYY-MM" />
                 </td>
                 <td className="px-2 py-1">
-                  <FSelect value={hasPattern} onChange={setHasPattern}>
+                  <FSelect value={isCurated} onChange={setIsCurated}>
                     <option value="">all</option>
-                    <option value="true">assigned</option>
-                    <option value="false">unassigned</option>
+                    <option value="true">curated</option>
+                    <option value="false">uncurated</option>
                   </FSelect>
                 </td>
                 <td className="px-2 py-1" />
