@@ -38,6 +38,17 @@ const columns: ColumnDef<RawQuery>[] = [
   { accessorKey: "occurrence_count", header: "Occ",      size: 48 },
   { accessorKey: "month_year",       header: "Month",    size: 76,  cell: (i) => <span>{i.getValue<string | null>() ?? "—"}</span> },
   {
+    accessorKey: "pattern_id",
+    header: "Pattern",
+    size: 72,
+    cell: (i) => {
+      const v = i.getValue<number | null>();
+      return v
+        ? <Badge variant="outline" className="text-indigo-600 border-indigo-300 bg-indigo-50 font-mono">#{v}</Badge>
+        : <span className="text-slate-300">—</span>;
+    },
+  },
+  {
     accessorKey: "query_details",
     header: "Query Details",
     cell: (i) => {
@@ -84,6 +95,7 @@ export default function QueriesPage() {
   const [environment, setEnvironment] = useState("");
   const [type, setType] = useState("");
   const [source, setSource] = useState("");
+  const [hasPattern, setHasPattern] = useState("");
 
   // Text inputs (UI state)
   const [hostInput,   setHostInput]   = useState("");
@@ -103,7 +115,7 @@ export default function QueriesPage() {
   useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 300); return () => clearTimeout(t); }, [searchInput]);
 
   // Reset page on any filter change
-  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir]);
+  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir, hasPattern]);
 
   const buildParams = useCallback(() => {
     const p: Record<string, string | number> = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
@@ -115,10 +127,11 @@ export default function QueriesPage() {
     if (dbName)      p.db_name     = dbName;
     if (month)       p.month_year  = month;
     if (search)      p.search      = search;
+    if (hasPattern)  p.has_pattern = hasPattern;
     p.sort_by  = "id";
     p.sort_dir = sortDir;
     return p;
-  }, [page, environment, type, source, host, dbName, month, search, sortDir]);
+  }, [page, environment, type, source, host, dbName, month, search, sortDir, hasPattern]);
 
   useEffect(() => {
     setLoading(true);
@@ -143,7 +156,7 @@ export default function QueriesPage() {
   const pageCount = Math.ceil(total / PAGE_SIZE);
 
   const resetAll = () => {
-    setEnvironment(""); setType(""); setSource("");
+    setEnvironment(""); setType(""); setSource(""); setHasPattern("");
     setHostInput(""); setDbInput(""); setMonthInput(""); setSearchInput("");
     setHost(""); setDbName(""); setMonth(""); setSearch("");
   };
@@ -236,6 +249,13 @@ export default function QueriesPage() {
                 <td className="px-2 py-1" />
                 <td className="px-2 py-1">
                   <FInput value={monthInput} onChange={setMonthInput} placeholder="YYYY-MM" />
+                </td>
+                <td className="px-2 py-1">
+                  <FSelect value={hasPattern} onChange={setHasPattern}>
+                    <option value="">all</option>
+                    <option value="true">assigned</option>
+                    <option value="false">unassigned</option>
+                  </FSelect>
                 </td>
                 <td className="px-2 py-1" />
               </tr>

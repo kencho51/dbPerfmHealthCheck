@@ -1,331 +1,301 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import {
+  useReactTable,
+  getCoreRowModel,
+  flexRender,
+  type ColumnDef,
+} from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type Pattern, type RawQuery, type SeverityType, type QueryType, type EnvironmentType } from "@/lib/api";
-import { Plus, X, Save, List } from "lucide-react";
+import { api, type RawQuery, type EnvironmentType, type QueryType } from "@/lib/api";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
+import { QueryDetailDrawer } from "@/components/QueryDetailDrawer";
 
-function severityBadge(s: SeverityType) {
-  const v = s === "critical" ? "critical" : s === "warning" ? "warning" : "info";
-  return <Badge variant={v}>{s}</Badge>;
+const PAGE_SIZE = 50;
+
+function envBadge(env: EnvironmentType) {
+  return <Badge variant={env === "prod" ? "prod" : "sat"}>{env}</Badge>;
 }
-
-const EMPTY_PATTERN: Partial<Pattern> = {
-  name: "",
-  description: "",
-  pattern_tag: "",
-  severity: "warning",
-  notes: "",
-};
-
-export default function PatternsPage() {
-  const [patterns, setPatterns] = useState<Pattern[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<Pattern | null>(null);
-  const [editing, setEditing] = useState<Partial<Pattern>>(EMPTY_PATTERN);
-  const [isNew, setIsNew] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [filterSeverity, setFilterSeverity] = useState("");
-  const [panelTab, setPanelTab] = useState<"edit" | "queries">("edit");
-
-  const load = useCallback(() => {
-    setLoading(true);
-    api.patterns.list(filterSeverity ? { severity: filterSeverity } : undefined)
-      .then(setPatterns)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [filterSeverity]);
-
-  useEffect(() => { load(); }, [load]);
-
-  function openEdit(p: Pattern) {
-    setSelected(p);
-    setEditing({ ...p });
-    setIsNew(false);
-    setPanelTab("edit");
-  }
-
-  function openNew() {
-    setSelected(null);
-    setEditing({ ...EMPTY_PATTERN });
-    setIsNew(true);
-  }
-
-  function closePanel() {
-    setSelected(null);
-    setIsNew(false);
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      if (isNew) {
-        await api.patterns.create(editing);
-      } else if (selected) {
-        await api.patterns.patch(selected.id, editing);
-      }
-      load();
-      closePanel();
-    } catch (err) {
-      alert(String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const showPanel = selected !== null || isNew;
-
-  return (
-    <div className="flex gap-6 h-full">
-      {/* Left — pattern list */}
-      <div className={panelTab === "queries" && showPanel && !isNew ? "w-72 shrink-0 space-y-4 overflow-y-auto" : "flex-1 space-y-4 min-w-0"}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Patterns</h1>
-            <p className="text-sm text-slate-500 mt-1">{patterns.length} curated patterns</p>
-          </div>
-          <Button size="sm" onClick={openNew}>
-            <Plus className="h-4 w-4" /> New Pattern
-          </Button>
-        </div>
-
-        {/* Filter */}
-        <Select
-          className="w-40"
-          value={filterSeverity}
-          onChange={(e) => setFilterSeverity(e.target.value)}
-        >
-          <option value="">All severities</option>
-          <option value="critical">critical</option>
-          <option value="warning">warning</option>
-          <option value="info">info</option>
-        </Select>
-
-        {loading ? (
-          <div className="flex items-center justify-center h-48">
-            <Spinner />
-          </div>
-        ) : patterns.length === 0 ? (
-          <Card>
-            <CardContent className="py-12">
-              <p className="text-center text-sm text-slate-400">
-                No patterns yet. Promote a raw query or create one manually.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-2">
-            {patterns.map((p) => (
-              <Card
-                key={p.id}
-                className={`cursor-pointer transition-shadow hover:shadow-md ${selected?.id === p.id ? "ring-2 ring-indigo-500" : ""}`}
-                onClick={() => openEdit(p)}
-              >
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {severityBadge(p.severity)}
-                        {p.pattern_tag && (
-                          <Badge variant="outline">{p.pattern_tag}</Badge>
-                        )}
-                        {p.environment && (
-                          <Badge variant={p.environment === "prod" ? "prod" : "sat"}>
-                            {p.environment}
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="font-semibold text-slate-900 text-sm">{p.name}</p>
-                      {p.description && (
-                        <p className="text-xs text-slate-500 line-clamp-2">{p.description}</p>
-                      )}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xl font-bold text-slate-700">{p.total_occurrences.toLocaleString()}</p>
-                      <p className="text-xs text-slate-400">occurrences</p>
-                    </div>
-                  </div>
-                </CardHeader>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Right — edit panel */}
-      {showPanel && (
-        <div className={panelTab === "queries" && !isNew ? "flex-1 min-w-0" : "w-[720px] shrink-0"}>
-          <Card className={panelTab === "queries" && !isNew ? "" : "sticky top-0"}>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>{isNew ? "New Pattern" : "Edit Pattern"}</CardTitle>
-                <div className="flex items-center gap-2">
-                  {!isNew && selected && (
-                    <>
-                      <button
-                        onClick={() => setPanelTab("edit")}
-                        className={`text-xs px-2 py-1 rounded ${panelTab === "edit" ? "bg-indigo-100 text-indigo-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => setPanelTab("queries")}
-                        className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${panelTab === "queries" ? "bg-indigo-100 text-indigo-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}
-                      >
-                        <List className="h-3 w-3" /> Queries
-                      </button>
-                    </>
-                  )}
-                  <button onClick={closePanel} className="text-slate-400 hover:text-slate-600">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {panelTab === "queries" && selected ? (
-                <LinkedQueriesList patternId={selected.id} />
-              ) : (
-              <form
-                className="space-y-3"
-                onSubmit={(e) => { e.preventDefault(); handleSave(); }}
-              >
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Name *</label>
-                  <Input
-                    required
-                    placeholder="COLLSCAN on audit_log"
-                    value={editing.name ?? ""}
-                    onChange={(e) => setEditing((p) => ({ ...p, name: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Pattern Tag</label>
-                  <Input
-                    placeholder="missing_index"
-                    value={editing.pattern_tag ?? ""}
-                    onChange={(e) => setEditing((p) => ({ ...p, pattern_tag: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Severity *</label>
-                  <Select
-                    value={editing.severity ?? "warning"}
-                    onChange={(e) =>
-                      setEditing((p) => ({ ...p, severity: e.target.value as SeverityType }))
-                    }
-                  >
-                    <option value="critical">critical</option>
-                    <option value="warning">warning</option>
-                    <option value="info">info</option>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Description</label>
-                  <textarea
-                    rows={3}
-                    className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-                    placeholder="Collection scan detected…"
-                    value={editing.description ?? ""}
-                    onChange={(e) => setEditing((p) => ({ ...p, description: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Notes</label>
-                  <textarea
-                    rows={2}
-                    className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-                    placeholder="Recommendation…"
-                    value={editing.notes ?? ""}
-                    onChange={(e) => setEditing((p) => ({ ...p, notes: e.target.value }))}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={saving}>
-                  {saving ? <Spinner className="h-4 w-4" /> : <Save className="h-4 w-4" />}
-                  {saving ? "Saving…" : isNew ? "Create" : "Save Changes"}
-                </Button>
-              </form>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function qTypeBadge(t: QueryType) {
-  const v = t === "slow_query" ? "default" : t === "blocker" ? "warning" : t === "deadlock" ? "critical" : "mongo" as const;
+function typeBadge(t: QueryType) {
+  const v =
+    t === "slow_query" ? "default"
+    : t === "blocker" ? "warning"
+    : t === "deadlock" ? "critical"
+    : "mongo" as const;
   return <Badge variant={v as "default"}>{t.replaceAll("_", " ")}</Badge>;
 }
 
-function LinkedQueriesList({ patternId }: { patternId: number }) {
-  const [rows, setRows] = useState<RawQuery[]>([]);
+const columns: ColumnDef<RawQuery>[] = [
+  { accessorKey: "id",               header: "ID",       size: 52 },
+  { accessorKey: "pattern_id",       header: "Pattern",  size: 72,  cell: (i) => { const v = i.getValue<number | null>(); return v ? <Badge variant="outline" className="text-indigo-600 border-indigo-300 bg-indigo-50 font-mono">#{v}</Badge> : <span className="text-slate-300">—</span>; } },
+  { accessorKey: "environment",      header: "Env",      size: 64,  cell: (i) => envBadge(i.getValue<EnvironmentType>()) },
+  { accessorKey: "type",             header: "Type",               cell: (i) => typeBadge(i.getValue<QueryType>()) },
+  { accessorKey: "source",           header: "Src",      size: 60,  cell: (i) => { const v = i.getValue<string>(); return <Badge variant={v === "sql" ? "sql" : "mongo"}>{v === "mongodb" ? "mongo" : v}</Badge>; } },
+  { accessorKey: "host",             header: "Host",     size: 160, cell: (i) => <span className="font-mono truncate block max-w-[148px]" title={i.getValue<string>() ?? ""}>{i.getValue<string>() ?? "—"}</span> },
+  { accessorKey: "db_name",          header: "Database", size: 160, cell: (i) => <span className="font-mono truncate block max-w-[148px]" title={i.getValue<string>() ?? ""}>{i.getValue<string>() ?? "—"}</span> },
+  { accessorKey: "occurrence_count", header: "Occ",      size: 48 },
+  { accessorKey: "month_year",       header: "Month",    size: 76,  cell: (i) => <span>{i.getValue<string | null>() ?? "—"}</span> },
+  {
+    accessorKey: "query_details",
+    header: "Query Details",
+    cell: (i) => {
+      const v = i.getValue<string | null>();
+      return v
+        ? <span className="font-mono text-slate-600 truncate block max-w-[340px]" title={v}>{v}</span>
+        : <span className="text-slate-300">—</span>;
+    },
+  },
+];
+
+function FInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <input
+      className="h-6 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder ?? "filter…"}
+    />
+  );
+}
+function FSelect({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
+  return (
+    <select
+      className="h-6 w-full rounded border border-slate-200 bg-white px-1 text-[11px] text-slate-700 focus:outline-none focus:border-indigo-400"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {children}
+    </select>
+  );
+}
+
+export default function PatternsPage() {
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [data, setData] = useState<RawQuery[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [selectedQuery, setSelectedQuery] = useState<RawQuery | null>(null);
+
+  const [environment, setEnvironment] = useState("");
+  const [type, setType] = useState("");
+  const [source, setSource] = useState("");
+
+  const [hostInput,   setHostInput]   = useState("");
+  const [dbInput,     setDbInput]     = useState("");
+  const [monthInput,  setMonthInput]  = useState("");
+  const [searchInput, setSearchInput] = useState("");
+
+  const [host,   setHost]   = useState("");
+  const [dbName, setDbName] = useState("");
+  const [month,  setMonth]  = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => { const t = setTimeout(() => setHost(hostInput),     300); return () => clearTimeout(t); }, [hostInput]);
+  useEffect(() => { const t = setTimeout(() => setDbName(dbInput),     300); return () => clearTimeout(t); }, [dbInput]);
+  useEffect(() => { const t = setTimeout(() => setMonth(monthInput),   300); return () => clearTimeout(t); }, [monthInput]);
+  useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 300); return () => clearTimeout(t); }, [searchInput]);
+
+  useEffect(() => { setPage(0); }, [environment, type, source, host, dbName, month, search, sortDir]);
+
+  const buildParams = useCallback(() => {
+    const p: Record<string, string | number> = {
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      has_pattern: "true",
+    };
+    if (environment) p.environment = environment;
+    if (type)        p.type        = (type === "slow_query" && source === "mongodb") ? "slow_query_mongo" : type;
+    if (source)      p.source      = source;
+    if (host)        p.host        = host;
+    if (dbName)      p.db_name     = dbName;
+    if (month)       p.month_year  = month;
+    if (search)      p.search      = search;
+    p.sort_by  = "id";
+    p.sort_dir = sortDir;
+    return p;
+  }, [page, environment, type, source, host, dbName, month, search, sortDir]);
 
   useEffect(() => {
     setLoading(true);
-    api.patterns.queries(patternId)
-      .then(setRows)
-      .catch(() => setRows([]))
+    const params = buildParams();
+    const countParams = Object.fromEntries(
+      Object.entries(params).filter(([k]) => !["limit", "offset"].includes(k))
+    ) as Record<string, string>;
+    Promise.all([api.queries.list(params), api.queries.count(countParams)])
+      .then(([rows, cnt]) => { setData(rows); setTotal(cnt.count); })
+      .catch(console.error)
       .finally(() => setLoading(false));
-  }, [patternId]);
+  }, [buildParams]);
 
-  if (loading) return <div className="flex justify-center py-8"><Spinner /></div>;
-  if (rows.length === 0) return <p className="text-xs text-slate-400 py-4 text-center">No queries linked to this pattern yet.</p>;
+  const table = useReactTable({
+    data,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    manualPagination: true,
+    pageCount: Math.ceil(total / PAGE_SIZE),
+  });
+
+  const pageCount = Math.ceil(total / PAGE_SIZE);
+
+  const resetAll = () => {
+    setEnvironment(""); setType(""); setSource("");
+    setHostInput(""); setDbInput(""); setMonthInput(""); setSearchInput("");
+    setHost(""); setDbName(""); setMonth(""); setSearch("");
+  };
+
+  const handlePatternChange = (updated: RawQuery) => {
+    if (updated.pattern_id === null) {
+      setData((prev) => prev.filter((r) => r.id !== updated.id));
+      setTotal((t) => t - 1);
+      setSelectedQuery(null);
+    } else {
+      setData((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+      setSelectedQuery(updated);
+    }
+  };
 
   return (
-    <>
-      <p className="text-xs text-slate-500 mb-2 font-medium">{rows.length.toLocaleString()} linked quer{rows.length === 1 ? "y" : "ies"}</p>
-      <div className="overflow-auto rounded-lg border border-slate-200 bg-white">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-100">
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">ID</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Env</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Type</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Src</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Host</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Database</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Occ</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Month</th>
-              <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap">Query Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-b border-slate-50 hover:bg-indigo-50/50">
-                <td className="px-2 py-0.5 align-middle">{r.id}</td>
-                <td className="px-2 py-0.5 align-middle">
-                  <Badge variant={r.environment === "prod" ? "prod" : "sat"}>{r.environment}</Badge>
-                </td>
-                <td className="px-2 py-0.5 align-middle">{qTypeBadge(r.type)}</td>
-                <td className="px-2 py-0.5 align-middle">
-                  <Badge variant={r.source === "sql" ? "sql" : "mongo"}>{r.source === "mongodb" ? "mongo" : r.source}</Badge>
-                </td>
-                <td className="px-2 py-0.5 align-middle">
-                  <span className="font-mono truncate block max-w-[148px]" title={r.host ?? ""}>{r.host ?? "—"}</span>
-                </td>
-                <td className="px-2 py-0.5 align-middle">
-                  <span className="font-mono truncate block max-w-[148px]" title={r.db_name ?? ""}>{r.db_name ?? "—"}</span>
-                </td>
-                <td className="px-2 py-0.5 align-middle">{r.occurrence_count}</td>
-                <td className="px-2 py-0.5 align-middle">{r.month_year ?? "—"}</td>
-                <td className="px-2 py-0.5 align-middle">
-                  {r.query_details
-                    ? <span className="font-mono text-slate-600 truncate block max-w-[340px]" title={r.query_details}>{r.query_details}</span>
-                    : <span className="text-slate-300">—</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="space-y-3">
+      {/* Header bar */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Assigned Queries</h1>
+          <p className="text-xs text-slate-500 mt-0.5">{total.toLocaleString()} rows with a pattern</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            className="h-7 w-56 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-400"
+            placeholder="Search query text…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+          <Button variant="outline" size="sm" onClick={resetAll} className="h-7 text-xs gap-1">
+            <X className="h-3 w-3" />Reset
+          </Button>
+        </div>
       </div>
-    </>
+
+      {/* Table */}
+      <div className="overflow-auto rounded-lg border border-slate-200 bg-white">
+        {loading ? (
+          <div className="flex items-center justify-center h-48"><Spinner /></div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id} className="border-b border-slate-200 bg-slate-100">
+                  {hg.headers.map((h) => (
+                    <th
+                      key={h.id}
+                      className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap"
+                      style={{ width: h.getSize() }}
+                    >
+                      {h.column.id === "id" ? (
+                        <button
+                          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+                          className="flex items-center gap-0.5 hover:text-indigo-600 cursor-pointer select-none"
+                          title="Sort by ID"
+                        >
+                          ID <span className="text-[10px]">{sortDir === "desc" ? "▼" : "▲"}</span>
+                        </button>
+                      ) : flexRender(h.column.columnDef.header, h.getContext())}
+                    </th>
+                  ))}
+                </tr>
+              ))}
+              {/* Filter row */}
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <td className="px-2 py-1" />
+                <td className="px-2 py-1" />
+                <td className="px-2 py-1 w-16">
+                  <FSelect value={environment} onChange={setEnvironment}>
+                    <option value="">all</option>
+                    <option value="prod">prod</option>
+                    <option value="sat">sat</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1">
+                  <FSelect value={type} onChange={setType}>
+                    <option value="">all</option>
+                    <option value="slow_query">slow query</option>
+                    <option value="blocker">blocker</option>
+                    <option value="deadlock">deadlock</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1 w-16">
+                  <FSelect value={source} onChange={setSource}>
+                    <option value="">all</option>
+                    <option value="sql">sql</option>
+                    <option value="mongodb">mongo</option>
+                  </FSelect>
+                </td>
+                <td className="px-2 py-1">
+                  <FInput value={hostInput} onChange={setHostInput} placeholder="host…" />
+                </td>
+                <td className="px-2 py-1">
+                  <FInput value={dbInput} onChange={setDbInput} placeholder="db…" />
+                </td>
+                <td className="px-2 py-1" />
+                <td className="px-2 py-1">
+                  <FInput value={monthInput} onChange={setMonthInput} placeholder="YYYY-MM" />
+                </td>
+                <td className="px-2 py-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map((row) => (
+                <tr
+                  key={row.id}
+                  className="border-b border-slate-50 hover:bg-indigo-50/50 cursor-pointer"
+                  onClick={() => setSelectedQuery(row.original)}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="px-2 py-0.5 align-middle">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {data.length === 0 && (
+                <tr>
+                  <td colSpan={columns.length} className="py-12 text-center text-xs text-slate-400">
+                    No assigned rows found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between text-xs text-slate-500">
+        <span>Page {page + 1} of {pageCount || 1} &bull; {total.toLocaleString()} rows</span>
+        <div className="flex gap-1">
+          <Button variant="outline" size="icon" onClick={() => setPage(0)} disabled={page === 0}>
+            <ChevronsLeft className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => setPage((p) => p + 1)} disabled={page >= pageCount - 1}>
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => setPage(pageCount - 1)} disabled={page >= pageCount - 1}>
+            <ChevronsRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      <QueryDetailDrawer
+        query={selectedQuery}
+        onClose={() => setSelectedQuery(null)}
+        onPatternChange={handlePatternChange}
+      />
+    </div>
   );
 }
