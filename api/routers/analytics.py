@@ -6,6 +6,7 @@ GET /api/analytics/by-host          — top N hosts by occurrence_count sum
 GET /api/analytics/by-month         — rows per month_year (trend line)
 GET /api/analytics/by-db            — top databases by occurrence count
 GET /api/analytics/curation-coverage — % of raw rows with a curated_query entry
+GET /api/analytics/by-hour          — heatmap: row count by hour-of-day × weekday
 """
 from __future__ import annotations
 
@@ -272,3 +273,160 @@ async def analytics_curation_coverage(
         "uncurated_rows": total - curated,
         "coverage_pct":  coverage_pct,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analytics/by-hour
+# ---------------------------------------------------------------------------
+
+@router.get("/by-hour", summary="Query count heatmap: hour-of-day × day-of-week")
+async def analytics_by_hour(
+    environment: Optional[EnvironmentType] = None,
+    source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    type:        Optional[QueryType]       = None,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """
+    Returns sparse list of cells keyed by {hour, weekday} with:
+      count       — sum of occurrence_count for that cell
+      by_type     — {slow_query: N, blocker: N, ...} breakdown
+      top_hosts   — [{host, count}, ...] top 5 hosts in that cell
+      top_dbs     — [{db_name, count}, ...] top 5 databases in that cell
+
+    hour:    0–23
+    weekday: 0=Monday … 6=Sunday  (ISO weekday − 1)
+
+    Parsing is done in-process with Polars because raw_query.time stores
+    heterogeneous Splunk formats (ISO+tz, US AM/PM, ISO without tz).
+    Missing cells (zero events) are omitted — the frontend fills them with 0.
+    """
+    import polars as pl
+
+    stmt = select(
+        RawQuery.time,
+        RawQuery.occurrence_count,
+        RawQuery.type,
+        RawQuery.host,
+        RawQuery.db_name,
+    ).where(
+        RawQuery.time.isnot(None)  # type: ignore[union-attr]
+    )
+    if environment is not None:
+        stmt = stmt.where(RawQuery.environment == environment)
+    if source is not None:
+        stmt = stmt.where(RawQuery.source == source)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
+    if type is not None:
+        stmt = stmt.where(RawQuery.type == type)
+
+    rows = (await session.exec(stmt)).all()
+    if not rows:
+        return []
+
+    df = pl.DataFrame({
+        "t":       [r.time for r in rows],
+        "occ":     [r.occurrence_count for r in rows],
+        "qtype":   [r.type or "unknown" for r in rows],
+        "host":    [r.host or "" for r in rows],
+        "db_name": [r.db_name or "" for r in rows],
+    })
+
+    # Strip trailing timezone offsets (+0800 / +08:00 / -0500) so we can use
+    # non-TZ format strings while still keeping local hour-of-day information.
+    df = df.with_columns(
+        pl.col("t")
+        .str.replace(r"[+-]\d{2}:?\d{2}$", "")
+        .str.strip_chars()
+        .alias("t_clean")
+    )
+
+    FORMATS = [
+        "%Y-%m-%dT%H:%M:%S%.f",   # 2025-11-30T17:35:54.000  (after TZ strip)
+        "%Y-%m-%dT%H:%M:%S",      # 2025-11-30T17:35:54
+        "%m/%d/%Y %I:%M:%S %p",   # 1/26/2026 8:58:53 AM
+        "%m/%d/%Y %H:%M:%S",      # 1/26/2026 17:35:54
+        "%Y-%m-%d %H:%M:%S%.f",   # 2025-11-30 17:35:54.000
+        "%Y-%m-%d %H:%M:%S",      # 2025-11-30 17:35:54
+        "%Y/%m/%d %H:%M:%S",      # 2025/11/30 17:35:54
+    ]
+
+    df = df.with_columns(
+        pl.coalesce(
+            *[pl.col("t_clean").str.strptime(pl.Datetime, fmt, strict=False) for fmt in FORMATS]
+        ).alias("dt")
+    )
+
+    # Keep only parseable rows and derive hour + weekday
+    base = (
+        df.filter(pl.col("dt").is_not_null())
+        .with_columns(
+            pl.col("dt").dt.hour().alias("hour"),
+            (pl.col("dt").dt.weekday() - 1).alias("weekday"),
+        )
+    )
+
+    # ---- Total count per cell ------------------------------------------------
+    totals = (
+        base.group_by(["hour", "weekday"])
+        .agg(pl.col("occ").sum().alias("count"))
+    )
+
+    # ---- by_type breakdown per cell -----------------------------------------
+    by_type_df = (
+        base.group_by(["hour", "weekday", "qtype"])
+        .agg(pl.col("occ").sum().alias("tc"))
+    )
+    type_lookup: dict[tuple, dict] = {}
+    for row in by_type_df.iter_rows(named=True):
+        key = (row["hour"], row["weekday"])
+        type_lookup.setdefault(key, {})[row["qtype"]] = row["tc"]
+
+    # ---- top_hosts per cell (top 5) -----------------------------------------
+    by_host_df = (
+        base.filter(pl.col("host") != "")
+        .group_by(["hour", "weekday", "host"])
+        .agg(pl.col("occ").sum().alias("hc"))
+    )
+    host_lookup: dict[tuple, list] = {}
+    for row in by_host_df.iter_rows(named=True):
+        key = (row["hour"], row["weekday"])
+        host_lookup.setdefault(key, []).append({"host": row["host"], "count": row["hc"]})
+    for key in host_lookup:
+        host_lookup[key].sort(key=lambda x: -x["count"])
+        host_lookup[key] = host_lookup[key][:5]
+
+    # ---- top_dbs per cell (top 5) -------------------------------------------
+    by_db_df = (
+        base.filter(pl.col("db_name") != "")
+        .group_by(["hour", "weekday", "db_name"])
+        .agg(pl.col("occ").sum().alias("dc"))
+    )
+    db_lookup: dict[tuple, list] = {}
+    for row in by_db_df.iter_rows(named=True):
+        key = (row["hour"], row["weekday"])
+        db_lookup.setdefault(key, []).append({"db_name": row["db_name"], "count": row["dc"]})
+    for key in db_lookup:
+        db_lookup[key].sort(key=lambda x: -x["count"])
+        db_lookup[key] = db_lookup[key][:5]
+
+    # ---- Assemble -----------------------------------------------------------
+    result = []
+    for row in totals.sort(["weekday", "hour"]).iter_rows(named=True):
+        key = (row["hour"], row["weekday"])
+        result.append({
+            "hour":      row["hour"],
+            "weekday":   row["weekday"],
+            "count":     row["count"],
+            "by_type":   type_lookup.get(key, {}),
+            "top_hosts": host_lookup.get(key, []),
+            "top_dbs":   db_lookup.get(key, []),
+        })
+    return result

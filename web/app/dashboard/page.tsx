@@ -10,6 +10,7 @@ import {
   HostBarChart,
 } from "@/components/charts";
 import { MonthlyTrendCard } from "@/components/MonthlyTrendCard";
+import { HourHeatmap } from "@/components/HourHeatmap";
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -350,6 +351,9 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Heatmap row — full width */}
+      <HourHeatmap filters={filters} />
 
       {/* Bottom row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
