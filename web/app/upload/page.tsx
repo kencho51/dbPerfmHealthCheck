@@ -206,7 +206,9 @@ export default function UploadPage() {
                     </div>
                     <div>
                       <dt className="text-slate-400 text-xs">Skipped</dt>
-                      <dd className="text-2xl font-bold text-slate-400">
+                      <dd className={`text-2xl font-bold ${
+                        activeEntry.result.skipped > 0 ? "text-red-500" : "text-slate-400"
+                      }`}>
                         {activeEntry.result.skipped.toLocaleString()}
                       </dd>
                     </div>
@@ -217,6 +219,18 @@ export default function UploadPage() {
                         <li key={i} className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">{w}</li>
                       ))}
                     </ul>
+                  )}
+                  {activeEntry.result.errors?.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-xs font-medium text-red-600 flex items-center gap-1 mb-1">
+                        <XCircle className="h-3 w-3" /> {activeEntry.result.errors.length} row{activeEntry.result.errors.length !== 1 ? "s" : ""} skipped — reasons:
+                      </p>
+                      <ul className="space-y-1 max-h-48 overflow-y-auto">
+                        {activeEntry.result.errors.map((e, i) => (
+                          <li key={i} className="text-xs text-red-700 bg-red-50 rounded px-2 py-1 font-mono break-all">{e}</li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </div>
               )}
