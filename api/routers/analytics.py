@@ -32,6 +32,7 @@ async def analytics_summary(
     environment: Optional[EnvironmentType] = None,
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -53,6 +54,8 @@ async def analytics_summary(
         stmt = stmt.where(RawQuery.host == host)
     if db_name is not None:
         stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
 
     rows = await session.exec(stmt)
     return [
@@ -78,6 +81,7 @@ async def analytics_by_host(
     source:      Optional[SourceType]      = None,
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -100,6 +104,8 @@ async def analytics_by_host(
         stmt = stmt.where(RawQuery.host == host)
     if db_name is not None:
         stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
 
     rows = await session.exec(stmt)
     return [
@@ -124,6 +130,7 @@ async def analytics_by_month(
     type:        Optional[QueryType]       = None,
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -146,6 +153,8 @@ async def analytics_by_month(
         stmt = stmt.where(RawQuery.host == host)
     if db_name is not None:
         stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
 
     rows = await session.exec(stmt)
     return [
@@ -169,6 +178,7 @@ async def analytics_by_db(
     source:      Optional[SourceType]      = None,
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -192,6 +202,8 @@ async def analytics_by_db(
         stmt = stmt.where(RawQuery.host == host)
     if db_name is not None:
         stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
 
     rows = await session.exec(stmt)
     return [
@@ -215,6 +227,7 @@ async def analytics_curation_coverage(
     db_name:     Optional[str]             = None,
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
+    month_year:  Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     total_stmt = select(func.count(RawQuery.id))
@@ -226,6 +239,8 @@ async def analytics_curation_coverage(
         total_stmt = total_stmt.where(RawQuery.environment == environment)
     if source is not None:
         total_stmt = total_stmt.where(RawQuery.source == source)
+    if month_year is not None:
+        total_stmt = total_stmt.where(RawQuery.month_year == month_year)
 
     curated_stmt = (
         select(func.count(CuratedQuery.id))
@@ -239,17 +254,21 @@ async def analytics_curation_coverage(
         curated_stmt = curated_stmt.where(RawQuery.environment == environment)
     if source is not None:
         curated_stmt = curated_stmt.where(RawQuery.source == source)
+    if month_year is not None:
+        curated_stmt = curated_stmt.where(RawQuery.month_year == month_year)
 
     total_result   = await session.exec(total_stmt)
     curated_result = await session.exec(curated_stmt)
 
     total   = total_result.one()
     curated = curated_result.one()
-    coverage = round(curated / total, 4) if total else 0.0
+    # Compute pct with 4 decimal places to preserve precision for small ratios
+    # e.g. 1 curated out of 50 000 = 0.002% rather than 0.0%
+    coverage_pct = round(curated / total * 100, 4) if total else 0.0
 
     return {
         "total_rows":    total,
         "curated_rows":  curated,
         "uncurated_rows": total - curated,
-        "coverage_pct":  round(coverage * 100, 2),
+        "coverage_pct":  coverage_pct,
     }

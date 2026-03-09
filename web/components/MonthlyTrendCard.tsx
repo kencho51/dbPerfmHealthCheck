@@ -37,11 +37,12 @@ export function MonthlyTrendCard({
     // Fetch monthly data and total count in parallel so we can detect
     // rows excluded due to NULL month_year
     const countParams: Record<string, string> = {};
-    if (merged.host)        countParams.host    = merged.host;
-    if (merged.db_name)     countParams.db_name = merged.db_name;
+    if (merged.host)        countParams.host        = merged.host;
+    if (merged.db_name)     countParams.db_name     = merged.db_name;
     if (merged.environment) countParams.environment = merged.environment;
-    if (merged.source)      countParams.source  = merged.source;
-    if (merged.type)        countParams.type    = merged.type;
+    if (merged.source)      countParams.source      = merged.source;
+    if (merged.type)        countParams.type        = merged.type;
+    if (merged.month_year)  countParams.month_year  = merged.month_year;
 
     Promise.all([
       api.analytics.byMonth(hasFilters ? merged : undefined),

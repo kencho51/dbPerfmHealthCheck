@@ -15,6 +15,14 @@ function fmt(n: number) {
   return n.toLocaleString();
 }
 
+/** Format a coverage_pct value that now has 4 decimal places of precision. */
+function fmtPct(pct: number, curated: number): string {
+  if (pct === 0 && curated > 0) return "< 0.01%";
+  if (pct >= 1) return `${pct.toFixed(1)}%`;
+  if (pct >= 0.1) return `${pct.toFixed(2)}%`;
+  return `${pct.toFixed(3)}%`;
+}
+
 interface DashboardData {
   totalQueries: number;
   distinctHosts: number;
@@ -35,22 +43,55 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   // ── Filter state ──────────────────────────────────────────────────────────
-  const [filterHost, setFilterHost] = useState("");
-  const [filterDb,   setFilterDb]   = useState("");
-  const [hostOptions, setHostOptions] = useState<string[]>([]);
-  const [dbOptions,   setDbOptions]   = useState<string[]>([]);
+  const [filterHost,        setFilterHost]        = useState("");
+  const [filterDb,          setFilterDb]          = useState("");
+  const [filterEnvironment, setFilterEnvironment] = useState("");
+  const [filterMonth,       setFilterMonth]       = useState("");
+
+  // ── Dropdown option lists (always unfiltered) ─────────────────────────────
+  const [hostOptions,  setHostOptions]  = useState<string[]>([]);
+  const [dbOptions,    setDbOptions]    = useState<string[]>([]);
+  const [monthOptions, setMonthOptions] = useState<string[]>([]);
+
+  // Fetch dropdown options once at mount (unfiltered)
+  useEffect(() => {
+    Promise.all([api.queries.distinct(), api.analytics.byMonth()])
+      .then(([dist, months]) => {
+        setHostOptions(dist.hosts);
+        setDbOptions(dist.db_names);
+        setMonthOptions(
+          months
+            .map((m) => m.month_year)
+            .filter(Boolean)
+            .sort()
+            .reverse()
+        );
+      })
+      .catch(console.error);
+  }, []);
+
+  // ── Active filters helper ─────────────────────────────────────────────────
+  function activeFilters(): AnalyticsFilters {
+    const f: AnalyticsFilters = {};
+    if (filterHost)        f.host        = filterHost;
+    if (filterDb)          f.db_name     = filterDb;
+    if (filterEnvironment) f.environment = filterEnvironment;
+    if (filterMonth)       f.month_year  = filterMonth;
+    return f;
+  }
 
   async function fetchAll(filters: AnalyticsFilters = {}) {
     setLoading(true);
     setError(null);
     try {
       const countParams: Record<string, string> = {};
-      if (filters.host)    countParams.host    = filters.host;
-      if (filters.db_name) countParams.db_name = filters.db_name;
+      if (filters.host)        countParams.host        = filters.host;
+      if (filters.db_name)     countParams.db_name     = filters.db_name;
+      if (filters.environment) countParams.environment = filters.environment;
+      if (filters.month_year)  countParams.month_year  = filters.month_year;
 
       const [
         queryCount,
-        distinctValues,
         summary,
         hosts,
         months,
@@ -58,17 +99,12 @@ export default function DashboardPage() {
         coverage,
       ] = await Promise.all([
         api.queries.count(Object.keys(countParams).length ? countParams : undefined),
-        api.queries.distinct(),
         api.analytics.summary(filters).catch(() => [] as SummaryRow[]),
         api.analytics.byHost(100, filters).catch(() => [] as HostRow[]),
         api.analytics.byMonth(filters).catch(() => [] as MonthRow[]),
         api.analytics.byDb(10, filters).catch(() => [] as DbRow[]),
         api.analytics.curationCoverage(filters).catch(() => DEFAULT_COVERAGE),
       ]);
-
-      // Populate dropdown options from the full distinct list (unfiltered)
-      setHostOptions(distinctValues.hosts);
-      setDbOptions(distinctValues.db_names);
 
       const uniqueHosts = new Set(hosts.map((h) => h.host)).size;
 
@@ -90,14 +126,13 @@ export default function DashboardPage() {
     }
   }
 
-  // Fetch whenever filters change (also covers initial mount)
+  // Re-fetch whenever any filter changes (also covers initial mount)
   useEffect(() => {
-    const filters: AnalyticsFilters = {};
-    if (filterHost) filters.host    = filterHost;
-    if (filterDb)   filters.db_name = filterDb;
-    fetchAll(filters);
+    fetchAll(activeFilters());
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterHost, filterDb]);
+  }, [filterHost, filterDb, filterEnvironment, filterMonth]);
+
+  const hasActiveFilter = !!(filterHost || filterDb || filterEnvironment || filterMonth);
 
   if (loading) {
     return (
@@ -126,10 +161,7 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
         <p className="text-sm text-red-500">{error ?? "No data"}</p>
         <button
-          onClick={() => fetchAll({
-            ...(filterHost ? { host: filterHost } : {}),
-            ...(filterDb   ? { db_name: filterDb } : {}),
-          })}
+          onClick={() => fetchAll(activeFilters())}
           className="text-sm text-indigo-600 underline"
         >
           Retry
@@ -137,6 +169,8 @@ export default function DashboardPage() {
       </div>
     );
   }
+
+  const filters = activeFilters();
 
   return (
     <div className="space-y-8">
@@ -146,10 +180,7 @@ export default function DashboardPage() {
           <p className="text-sm text-slate-500 mt-1">Database performance overview</p>
         </div>
         <button
-          onClick={() => fetchAll({
-            ...(filterHost ? { host: filterHost } : {}),
-            ...(filterDb   ? { db_name: filterDb } : {}),
-          })}
+          onClick={() => fetchAll(activeFilters())}
           className="text-xs text-slate-400 hover:text-slate-700 border border-slate-200 rounded px-2 py-1 transition-colors"
         >
            Refresh
@@ -190,17 +221,67 @@ export default function DashboardPage() {
           </select>
         </div>
 
-        {/* Active filter badge + clear */}
-        {(filterHost || filterDb) && (
-          <div className="flex items-center gap-2 ml-auto">
-            <span className="text-xs bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-0.5">
-              {filterHost ? `Host: ${filterHost}` : `DB: ${filterDb}`}
-            </span>
+        {/* Environment */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-slate-500">Environment</label>
+          <select
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400"
+            value={filterEnvironment}
+            onChange={(e) => setFilterEnvironment(e.target.value)}
+          >
+            <option value="">All envs</option>
+            <option value="prod">Prod</option>
+            <option value="sat">SAT</option>
+          </select>
+        </div>
+
+        {/* Month */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-slate-500">Month</label>
+          <select
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400"
+            value={filterMonth}
+            onChange={(e) => setFilterMonth(e.target.value)}
+          >
+            <option value="">All months</option>
+            {monthOptions.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Active filter badges + clear */}
+        {hasActiveFilter && (
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {filterHost && (
+              <span className="inline-flex items-center gap-1 text-xs bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-0.5">
+                Host: {filterHost}
+                <button onClick={() => setFilterHost("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
+              </span>
+            )}
+            {filterDb && (
+              <span className="inline-flex items-center gap-1 text-xs bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-0.5">
+                DB: {filterDb}
+                <button onClick={() => setFilterDb("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
+              </span>
+            )}
+            {filterEnvironment && (
+              <span className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded px-2 py-0.5">
+                Env: {filterEnvironment}
+                <button onClick={() => setFilterEnvironment("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
+              </span>
+            )}
+            {filterMonth && (
+              <span className="inline-flex items-center gap-1 text-xs bg-sky-100 text-sky-700 border border-sky-200 rounded px-2 py-0.5">
+                Month: {filterMonth}
+                <button onClick={() => setFilterMonth("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
+              </span>
+            )}
             <button
               className="text-xs text-slate-400 hover:text-red-500 transition-colors"
-              onClick={() => { setFilterHost(""); setFilterDb(""); }}
+              onClick={() => { setFilterHost(""); setFilterDb(""); setFilterEnvironment(""); setFilterMonth(""); }}
             >
-              ✕ Clear
+              ✕ Clear all
             </button>
           </div>
         )}
@@ -258,10 +339,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <MonthlyTrendCard
           initialData={data.months}
-          filters={{
-            ...(filterHost ? { host: filterHost } : {}),
-            ...(filterDb   ? { db_name: filterDb }   : {}),
-          }}
+          filters={filters}
         />
         <Card>
           <CardHeader>
@@ -309,8 +387,11 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <CoverageDonut data={data.coverage} />
-            <p className="text-center text-sm text-slate-500 mt-2">
-              {data.coverage.coverage_pct.toFixed(1)}% of queries curated
+            <p className="text-center text-sm font-medium text-slate-700 mt-2">
+              {fmtPct(data.coverage.coverage_pct, data.coverage.curated_rows)} of queries curated
+            </p>
+            <p className="text-center text-xs text-slate-400 mt-0.5">
+              {fmt(data.coverage.curated_rows)} curated / {fmt(data.coverage.total_rows)} total
             </p>
           </CardContent>
         </Card>
@@ -318,3 +399,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+
