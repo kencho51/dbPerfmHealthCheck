@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
+import polars as pl
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def _detect_file_category(filename: str) -> str:
 
 
 def _clean(val: object) -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if val is None:
         return ""
     s = str(val).strip()
     # normalise whitespace
@@ -84,11 +84,11 @@ def _clean(val: object) -> str:
     return s
 
 
-def _get(row: pd.Series, *keys: str) -> str:
-    """Return the first non-null value found among *keys*."""
+def _get(row: dict, *keys: str) -> str:
+    """Return the first non-null value found among *keys."""
     for k in keys:
-        v = row.get(k, None)
-        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+        v = row.get(k)
+        if v is not None:
             return _clean(v)
     return ""
 
@@ -113,10 +113,10 @@ def _extract_mongodb_command(raw_json: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _process_slow_query_sql(file_path: Path) -> list[dict]:
-    df = pd.read_csv(file_path, encoding="utf-8")
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     rows = []
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         rows.append({
             "time":          _get(row, "creation_time", "last_execution_time"),
             "source":        "sql",
@@ -130,10 +130,10 @@ def _process_slow_query_sql(file_path: Path) -> list[dict]:
 
 
 def _process_blockers(file_path: Path) -> list[dict]:
-    df = pd.read_csv(file_path, encoding="utf-8")
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     rows = []
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         rows.append({
             "time":          _get(row, "_time"),
             "source":        "sql",
@@ -147,13 +147,13 @@ def _process_blockers(file_path: Path) -> list[dict]:
 
 
 def _process_deadlocks(file_path: Path) -> list[dict]:
-    df = pd.read_csv(file_path, encoding="utf-8")
+    df = pl.read_csv(file_path, encoding="utf-8")
     env = _extract_environment(file_path.name)
     rows = []
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         # Use the CSV `count` as occurrence_count — Splunk aggregated occurrences
-        raw_count = row.get("count", None)
-        occ = int(raw_count) if raw_count is not None and not (isinstance(raw_count, float) and pd.isna(raw_count)) else 1
+        raw_count = row.get("count")
+        occ = int(raw_count) if raw_count is not None else 1
         rows.append({
             "time":             _get(row, "earliest", "_time"),
             "source":           "sql",
@@ -169,16 +169,16 @@ def _process_deadlocks(file_path: Path) -> list[dict]:
 
 
 def _process_mongodb_slow(file_path: Path) -> list[dict]:
-    df = pd.read_csv(file_path, encoding="utf-8")
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     rows = []
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         # derive db from namespace  "dbname.collection"
         ns = _get(row, "attr.ns")
         db_name = ns.split(".")[0] if ns else ""
 
-        raw = row.get("_raw", "")
-        raw_str = "" if (raw is None or (isinstance(raw, float) and pd.isna(raw))) else str(raw)
+        raw = row.get("_raw")
+        raw_str = "" if raw is None else str(raw)
 
         rows.append({
             "time":          _get(row, "t.$date"),
