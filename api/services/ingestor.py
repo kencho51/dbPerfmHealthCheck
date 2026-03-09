@@ -52,6 +52,9 @@ def _derive_month_year(time_str: str | None) -> str | None:
     if not time_str:
         return None
 
+    # Normalise whitespace (e.g. "Jan 26 2026  9:00AM" → "Jan 26 2026 9:00AM")
+    time_clean = re.sub(r"\s+", " ", time_str.strip())
+
     # Try common formats — add more as needed
     formats = [
         "%Y-%m-%dT%H:%M:%S.%f",
@@ -67,10 +70,14 @@ def _derive_month_year(time_str: str | None) -> str | None:
         "%m/%d/%Y %I:%M:%S %p",
         "%m/%d/%Y %H:%M:%S",
         "%m/%d/%Y",
+        # Month-name formats: "Jan 26 2026 9:00AM"
+        "%b %d %Y %I:%M%p",
+        "%b %d %Y %I:%M:%S%p",
+        "%b %d %Y",
     ]
     for fmt in formats:
         try:
-            dt = datetime.strptime(time_str.strip()[:26], fmt)
+            dt = datetime.strptime(time_clean[:26], fmt)
             return dt.strftime("%Y-%m")
         except ValueError:
             continue

@@ -176,7 +176,182 @@ dbPerfmHealthCheck/
     - Use case: when curating a pattern tagged `"COLLSCAN"`, the panel can surface relevant MongoDB indexing docs automatically
     - Note: SDK is marked WIP by Upstash — wrap all calls in `try/catch`; fail silently if unavailable; gate behind a feature flag env var `NEXT_PUBLIC_CONTEXT7_ENABLED=true`
 
-**Phase 6 — Neon PostgreSQL Integration**
+---
+
+**Phase 6 — pandas → Polars Migration**
+
+> **Background**: The current codebase uses pandas in `api/services/extractor.py` and `api/services/validator.py` for CSV reading, column detection, row iteration, and null-rate sampling. While pandas is serviceable for small monthly CSV uploads (~1–20 k rows), it exhibits known bottlenecks at scale: single-threaded execution, slow `iterrows()`, high memory overhead from NumPy-backed columns, and no lazy evaluation.
+>
+> Polars is written in Rust, uses the Apache Arrow memory format, parallelises column operations automatically, and provides a query optimizer through its `LazyFrame` API. Migration is additive — Polars DataFrames are interoperable with the rest of the stack (SQLite via Connector-X, pandas via `to_pandas()`/`from_pandas()`, Arrow zero-copy).
+>
+> **Reference**: [docs.pola.rs](https://docs.pola.rs/) · [Python API reference](https://docs.pola.rs/api/python/stable/reference/index.html) · [Coming from pandas](https://docs.pola.rs/user-guide/migration/pandas/)
+
+#### Why Polars Gains for This Project
+
+| Area | pandas (current) | Polars (target) | Gain |
+|---|---|---|---|
+| **CSV read** | `pd.read_csv()` — single-threaded, eager, full load | `pl.scan_csv()` — lazy, only reads needed columns | ~3–8× faster; lower peak RAM |
+| **Row iteration** | `df.iterrows()` — Python loop, ~2 µs/row | Expression API — vectorised Rust kernel | ~50–100× faster per column op |
+| **Column derivation** | `df.assign(col=lambda df_: ...)` — sequential | `df.with_columns(expr1, expr2)` — parallel | All new columns computed in one pass |
+| **Null-rate sampling** | `df.isnull().mean()` — materialises full boolean frame | `df.select(pl.all().null_count() / pl.len())` — Arrow kernel | Less memory, same O(n) work |
+| **Type safety** | Loose — integers silently cast to float on null | Strict — nulls stay as `null`; column type unchanged | Fewer silent conversion bugs |
+| **Memory** | NumPy: ~8 bytes/int regardless of value | Arrow: bit-packed, dictionary-encoded strings | 30–60% smaller in-memory footprint for string-heavy CSVs |
+| **streaming** | `chunksize` iterator — manual chunk management | `LazyFrame.collect(streaming=True)` — automatic | Simple API, handles files larger than RAM |
+| **Validation sampling** | `df.sample(50)` — random, eager | `lf.limit(50).collect()` — lazy head | No need to read entire file for preview |
+
+#### Key Conceptual Differences to Know
+
+- **No index** — Polars has no `.loc`/`.iloc`; use `.filter(pl.col(...) == ...)` and `.select(...)` instead.
+- **Expressions are lazy by default** — `pl.col("host").str.to_uppercase()` describes intent; nothing runs until `.collect()` or used inside `.with_columns()`/`.filter()`.
+- **`iterrows()` is an anti-pattern** — replace row-by-row Python loops with vectorised expressions or `map_elements()` as a last resort.
+- **`null` not `NaN`** — Polars uses `null` for missing data in all types; `NaN` is a floating-point value, not a missing marker.
+- **Expressions run in parallel** — multiple expressions inside a single `.with_columns(...)` call are computed concurrently across CPU cores.
+
+#### Migration Steps
+
+21. **Install Polars**:
+    ```bash
+    uv add polars
+    # Optional: connectorx for zero-copy SQLite → Polars reads (useful for export)
+    uv add connectorx
+    ```
+    Remove pandas if no other dependency needs it after migration:
+    ```bash
+    uv remove pandas
+    ```
+
+22. **Migrate `api/services/extractor.py`** — replace `pd.read_csv` with `pl.scan_csv` and rewrite column operations:
+
+    ```python
+    # BEFORE (pandas)
+    import pandas as pd
+    df = pd.read_csv(path)
+    for _, row in df.iterrows():
+        yield {
+            "host": row.get("host"),
+            "query_details": str(row.get("sql_text", "")),
+            ...
+        }
+
+    # AFTER (polars)
+    import polars as pl
+    lf = pl.scan_csv(path, infer_schema_length=500)
+    df = lf.select(["host", "sql_text", ...]).collect()   # only needed cols
+    for row in df.iter_rows(named=True):
+        yield {
+            "host": row["host"],
+            "query_details": str(row["sql_text"] or ""),
+            ...
+        }
+    ```
+
+    For column renaming and transformations, replace `df.rename(columns={...})` with:
+    ```python
+    df = lf.rename({"sql_text": "query_details"}).with_columns(
+        pl.col("query_details").str.strip_chars(),
+        pl.col("host").str.to_lowercase(),
+    ).collect()
+    ```
+
+23. **Migrate `api/services/validator.py`** — replace the pandas `chunksize` sample approach with Polars lazy head:
+
+    ```python
+    # BEFORE (pandas)
+    df_sample = pd.read_csv(path, nrows=50)
+    null_rates = df_sample.isnull().mean().to_dict()
+    row_count  = sum(1 for _ in pd.read_csv(path, chunksize=1000))
+
+    # AFTER (polars)
+    lf = pl.scan_csv(path, infer_schema_length=200)
+    # Fast null rates over the whole file — no materialisation until .collect()
+    null_rates = (
+        lf.select(
+            (pl.all().null_count() / pl.len()).name.suffix("_null_rate")
+        ).collect()
+        .to_dicts()[0]
+    )
+    # Row count without loading entire file
+    row_count = lf.select(pl.len()).collect().item()
+    # Sample rows for human preview
+    sample_rows = lf.limit(50).collect().to_dicts()
+    ```
+
+24. **Replace `df.assign(...)` chains with `with_columns`** — any sequence of `df.assign(a=...).assign(b=...)` should collapse to:
+    ```python
+    df = df.with_columns(
+        pl.col("time").str.strptime(pl.Datetime, "%m/%d/%Y %I:%M:%S %p", strict=False).alias("parsed_time"),
+        pl.col("host").str.to_lowercase().alias("host"),
+    )
+    ```
+    Both expressions execute in parallel; a sequential `assign` chain would be two serial Python calls.
+
+25. **Replace `df.apply()`/`df.iterrows()` in `ingestor.py`** — the `_derive_month_year()` call that runs per-row is the primary bottleneck candidate. Vectorise with `str.strptime` and `dt.strftime`:
+    ```python
+    # Vectorised month_year derivation — replaces per-row Python function
+    df = df.with_columns(
+        pl.col("time")
+          .str.strptime(pl.Datetime, "%m/%d/%Y %I:%M:%S %p", strict=False)
+          .dt.strftime("%Y-%m")
+          .alias("month_year")
+    )
+    # Rows where time format doesn't match remain null — handled gracefully
+    ```
+    This replaces the entire `_derive_month_year()` Python function with a single Rust kernel call across all rows simultaneously.
+
+26. **Use streaming for large files** — if monthly CSV uploads exceed ~100 k rows, switch to streaming collect to avoid peak RAM spikes:
+    ```python
+    # streaming=True processes data in batches — RAM stays bounded regardless of file size
+    df = pl.scan_csv(path).with_columns(...).collect(engine="streaming")
+    ```
+    Polars automatically picks block size; no manual `chunksize` management needed.
+
+27. **Update `pyproject.toml` dependency group** — record intent:
+    ```toml
+    [project]
+    dependencies = [
+        "fastapi",
+        "sqlmodel",
+        "aiosqlite",       # or asyncpg after Phase 7
+        "alembic",
+        "python-multipart",
+        "polars>=1.0",     # replaces pandas
+        "connectorx",      # optional: SQLite → Polars zero-copy reads
+    ]
+    ```
+
+28. **Verify with existing tests** — run `uv run pytest` after each file migration; the `ValidationResult` dataclass interface is unchanged so FastAPI response schemas stay the same. Key assertions to add:
+    ```python
+    import polars as pl
+    from polars.testing import assert_frame_equal
+
+    def test_extractor_yields_correct_columns(tmp_path):
+        # write a minimal test CSV, run extractor, assert output dicts
+        ...
+
+    def test_derive_month_year_vectorised():
+        df = pl.DataFrame({"time": ["1/26/2026 8:58:53 AM", None, "bad-value"]})
+        result = df.with_columns(
+            pl.col("time")
+              .str.strptime(pl.Datetime, "%m/%d/%Y %I:%M:%S %p", strict=False)
+              .dt.strftime("%Y-%m")
+              .alias("month_year")
+        )
+        assert result["month_year"].to_list() == ["2026-01", None, None]
+    ```
+
+#### Expected Gains Summary
+
+| Metric | Before (pandas) | After (polars) | Notes |
+|---|---|---|---|
+| Ingest 10 k-row CSV | ~2–4 s | ~0.3–0.6 s | `scan_csv` + vectorised hash |
+| Ingest 100 k-row CSV | ~20–40 s | ~2–4 s | streaming mode |
+| Validation preview (50 rows) | ~0.8 s (full load) | ~0.05 s (`limit(50)`) | Lazy head |
+| Memory peak (20 k rows, 10 cols) | ~80 MB | ~25 MB | Arrow vs NumPy |
+| `_derive_month_year` (10 k rows) | ~0.5 s (Python loop) | ~3 ms (Rust kernel) | `str.strptime` vectorised |
+
+---
+
+**Phase 7 — Neon PostgreSQL Integration**
 
 > **Context**: Neon project `hkjc-db-perfm` already exists (ap-southeast-1). Two branches are configured: `main` (production) and `dev` (development). The architecture keeps all DB access through the FastAPI backend — Next.js never connects to Neon directly. The FastAPI backend swaps `aiosqlite` (SQLite) → `asyncpg` (PostgreSQL).
 
@@ -191,18 +366,18 @@ Each branch has its own independent connection string and compute endpoint. The 
 
 ---
 
-21. **Install VS Code Neon extension**
+29. **Install VS Code Neon extension**
     - Search `Neon` in Extensions marketplace → install **Neon Database Explorer**
     - Sign in and confirm project `hkjc-db-perfm` appears with both branches
 
-22. **Install Python PostgreSQL driver** — replace `aiosqlite` with `asyncpg`:
+30. **Install Python PostgreSQL driver** — replace `aiosqlite` with `asyncpg`:
     ```bash
     uv remove aiosqlite
     uv add asyncpg
     ```
     `pyproject.toml` dependencies become: `fastapi`, `sqlmodel`, `asyncpg`, `alembic`, `python-multipart`
 
-23. **Update `api/database.py`** — swap SQLite URL for PostgreSQL:
+31. **Update `api/database.py`** — swap SQLite URL for PostgreSQL:
     ```python
     from sqlmodel import create_engine
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -221,7 +396,7 @@ Each branch has its own independent connection string and compute endpoint. The 
             yield session
     ```
 
-24. **Update Alembic to target Neon** — edit `alembic.ini`:
+32. **Update Alembic to target Neon** — edit `alembic.ini`:
     ```ini
     # Leave blank — we set it dynamically in env.py
     sqlalchemy.url =
@@ -242,7 +417,7 @@ Each branch has its own independent connection string and compute endpoint. The 
     uv add psycopg2-binary
     ```
 
-25. **Set environment variables**
+33. **Set environment variables**
 
     **Backend** — create `api/.env` (gitignored):
     ```dotenv
@@ -262,7 +437,7 @@ Each branch has its own independent connection string and compute endpoint. The 
     ```
     The frontend never connects to Neon directly — it calls FastAPI only.
 
-26. **Run Alembic migration against Neon** — generate and apply the initial schema:
+34. **Run Alembic migration against Neon** — generate and apply the initial schema:
     ```bash
     # Ensure DATABASE_URL is set in shell for the Alembic CLI
     $env:DATABASE_URL = "postgresql://neondb_owner:npg_zxZFetn6S3rP@ep-orange-meadow-a1p2p3mi.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
@@ -275,12 +450,12 @@ Each branch has its own independent connection string and compute endpoint. The 
     ```
     Verify in the Neon Console → **Tables** tab that `raw_query`, `pattern_label`, and `curated_query` tables exist.
 
-27. **Seed labels into Neon**:
+35. **Seed labels into Neon**:
     ```bash
     uv run python -m api.seed_labels
     ```
 
-28. **Install Neon serverless driver in Next.js** (optional, for future direct queries from Server Components):
+36. **Install Neon serverless driver in Next.js** (optional, for future direct queries from Server Components):
     ```bash
     cd web
     npm install @neondatabase/serverless
@@ -298,7 +473,7 @@ Each branch has its own independent connection string and compute endpoint. The 
     ```
     > **Note**: Keep `DATABASE_URL` server-only (no `NEXT_PUBLIC_` prefix). All data mutations go through FastAPI; `@neondatabase/serverless` is only used for lightweight read-only Server Component queries if needed.
 
-29. **Update `next.config.ts`** — add the Neon serverless driver WebSocket config required for Edge/serverless runtimes:
+37. **Update `next.config.ts`** — add the Neon serverless driver WebSocket config required for Edge/serverless runtimes:
     ```typescript
     import type { NextConfig } from "next";
 
@@ -312,7 +487,7 @@ Each branch has its own independent connection string and compute endpoint. The 
     export default nextConfig;
     ```
 
-30. **Branch workflow for ongoing development**:
+38. **Branch workflow for ongoing development**:
     - All local development runs against the `dev` Neon branch — safe to run migrations and seed without affecting `main`
     - When a new Alembic migration is ready:
       1. Test against `dev`: `uv run alembic upgrade head`
@@ -320,7 +495,7 @@ Each branch has its own independent connection string and compute endpoint. The 
       3. In Neon Console → **Branches**, merge or apply the same migration to `main` before production deploy
     - To reset `dev` to match `main`: Neon Console → **Branches** → `dev` → **Reset from parent**
 
-31. **Remove SQLite artifacts** (once Neon is confirmed working):
+39. **Remove SQLite artifacts** (once Neon is confirmed working):
     - Delete `db/master.db`
     - Remove `add_source_col.py` migration script
     - Remove `aiosqlite` from any remaining references
@@ -362,8 +537,8 @@ Each branch has its own independent connection string and compute endpoint. The 
 
 #### FastAPI / Python
 - **Batch ingest with `INSERT OR IGNORE ... ON CONFLICT DO UPDATE`** — use SQLite's `UPSERT` syntax in a single parameterised batch statement instead of per-row Python loops; reduces round-trips by 100×
-- **Stream CSV validation** in chunks (pandas `chunksize=1000`) — avoids loading a 20k-row CSV fully into memory during the validate step
-- **`QueryExtractor` refactor** — replace the per-handler `for _, row in df.iterrows()` loops with vectorised pandas operations (`df.assign(...)`, `df.apply(...)`) for ~5–10× speed improvement on large files
+- **Stream CSV validation** using Polars lazy API (`pl.scan_csv(...).limit(50).collect()`) — avoids loading the full file for previews; use `collect(engine="streaming")` for large-file row counts. See Phase 6 for full migration steps.
+- **`QueryExtractor` refactor** — replace the per-handler `for _, row in df.iterrows()` loops with Polars vectorised expressions (`with_columns`, `filter`, `select`) for ~50–100× speed improvement on large files. `iterrows()` is an anti-pattern in both pandas and Polars; the Polars expression API eliminates it entirely.
 - **Typed `ValidationResult` with Pydantic** — share the same model between FastAPI response schema and the CLI `validate_csv.py` output; single source of truth
 - **`asynccontextmanager` lifespan** in `api/main.py` — create DB tables and run `PRAGMA` settings once at startup; avoid per-request overhead
 

@@ -13,11 +13,10 @@ Returns a `ValidationResult` dataclass consumed by:
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from api.services.extractor import EXPECTED_COLUMNS, detect_file_category, _extract_environment
 
@@ -92,7 +91,7 @@ def validate_csv(path: Path) -> ValidationResult:
 
     # -- 2. Read CSV -------------------------------------------------------------
     try:
-        df = pd.read_csv(path, encoding="utf-8")
+        df = pl.read_csv(path, encoding="utf-8", infer_schema_length=0)
     except Exception as exc:
         return ValidationResult(
             is_valid=False,
@@ -102,7 +101,7 @@ def validate_csv(path: Path) -> ValidationResult:
             errors=[f"Failed to read CSV: {exc}"],
         )
 
-    row_count = len(df)
+    row_count = df.height
 
     if row_count == 0:
         return ValidationResult(
@@ -123,7 +122,7 @@ def validate_csv(path: Path) -> ValidationResult:
     null_rates: dict[str, float] = {}
     for col in required:
         if col in df.columns:
-            null_rate = df[col].isna().mean()
+            null_rate = df[col].is_null().mean()
             null_rates[col] = round(float(null_rate), 4)
             if null_rate > 0.5:
                 warnings.append(
@@ -131,20 +130,14 @@ def validate_csv(path: Path) -> ValidationResult:
                 )
 
     # -- 5. Sample rows ----------------------------------------------------------
-    sample_df = df.head(SAMPLE_SIZE)
-    # Use pandas' own JSON encoder (handles numpy int64/float64/NaN/inf) then
-    # parse back to get native Python types that are safe for json.dumps.
     try:
-        # Truncate large string columns (e.g. _raw) so the JSON response stays reasonable
-        str_cols = sample_df.select_dtypes(include="object").columns
-        for _c in str_cols:
-            sample_df = sample_df.copy()
-            sample_df[_c] = sample_df[_c].apply(
-                lambda v: (v[:500] + "…[truncated]") if isinstance(v, str) and len(v) > 500 else v
-            )
-        sample_rows: list[dict] = json.loads(
-            sample_df.to_json(orient="records", date_format="iso", default_handler=str)
-        )
+        sample_rows: list[dict] = [
+            {
+                k: (v[:500] + "\u2026[truncated]") if isinstance(v, str) and len(v) > 500 else v
+                for k, v in rdict.items()
+            }
+            for rdict in df.head(SAMPLE_SIZE).to_dicts()
+        ]
     except Exception:
         sample_rows = []
 
