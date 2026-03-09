@@ -503,7 +503,95 @@ Each branch has its own independent connection string and compute endpoint. The 
 
 ---
 
-### Verification
+**Phase 8 — Advanced Analytics & Query Pattern Intelligence**
+
+> **Background**: With Polars powering the ingestion layer and the full `raw_query` dataset available in the DB, the next analytics tier focuses on *time-based patterns* and *query structural similarity* — the two questions DBAs ask most: "When does load peak?" and "Which query keeps reappearing?". All new endpoints are added to `api/routers/analytics.py` and consume existing ingested data with zero schema changes.
+
+#### 8A — Peak Hour Heatmap
+
+The primary use case: identify whether slow queries cluster around morning batch jobs, end-of-day reporting, midnight maintenance windows, or real-time wagering load. A 24×7 grid (hour × weekday) makes this instantly visible.
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/analytics/by-hour` | Returns `{hour, weekday, count}` cells; Polars parses mixed `time` formats server-side |
+
+**Frontend**: `HourHeatmap` component — CSS grid, no extra library. Color scale: white (0 events) → deep indigo (max). Tooltip shows exact day + hour + count on hover.
+
+**Time parsing strategy**: `raw_query.time` stores raw Splunk strings in 3+ formats (`ISO+TZ`, `M/D/YYYY h:MM:SS AM/PM`, ISO without TZ). The endpoint:
+1. Fetches all `(time, occurrence_count)` rows matching filters
+2. Strips trailing `+HHMM` / `+HH:MM` timezone offsets via Polars `str.replace`
+3. Tries 7 datetime formats in order using `pl.coalesce(str.strptime(..., strict=False), ...)`
+4. Groups by `(hour, weekday)` and sums `occurrence_count`
+
+40. **Add `GET /api/analytics/by-hour`** in `api/routers/analytics.py`:
+    - Accepts same filter params as other analytics endpoints
+    - Uses Polars in-process to parse `time` strings and extract `dt.hour()` + `dt.weekday()`
+    - Returns `list[{hour: int, weekday: int, count: int}]` (168 cells max, sparse — missing cells mean zero)
+
+41. **Add `HourHeatmap` component** in `web/components/HourHeatmap.tsx`:
+    - Fetches `/api/analytics/by-hour` with current dashboard filters
+    - Renders a 24 (rows) × 7 (cols) CSS grid
+    - Color intensity: `count / max_count` mapped to 7 opacity levels (Tailwind `bg-indigo-{100..700}`)
+    - Row labels: `0h`–`23h` on left; column headers: Mon–Sun
+    - Tooltip: `{Day}, {Hour}:00 — {N} events` on hover
+
+42. **Wire into dashboard** — add below the monthly trend row; accepts `filters` prop identical to `MonthlyTrendCard`
+
+#### 8B — Query Fingerprint Top-N
+
+Identical query structures called with different parameters (different IDs, dates, amounts) appear as hundreds of distinct rows in `raw_query`. Fingerprinting normalises literals away to reveal the true repeat-offender queries.
+
+**Fingerprint algorithm** (server-side, Polars):
+```python
+pl.col("query_details")
+  .str.replace_all(r"'[^']*'", "'?'")      # string literals
+  .str.replace_all(r"\b\d+\b", "?")        # numeric literals
+  .str.replace_all(r"@P\?+", "@P?")        # param placeholders (already normalised)
+  .str.replace_all(r"\s+", " ")            # collapse whitespace
+  .str.to_lowercase()
+  .str.slice(0, 300)                        # cap fingerprint length
+  .alias("fingerprint")
+```
+
+43. **Add `GET /api/analytics/top-fingerprints`** — fetches `(query_details, occurrence_count, type, source, host, db_name)`, normalises to fingerprints in Polars, groups by fingerprint, returns top-N `{fingerprint, total_occurrences, distinct_hosts, distinct_dbs, query_type, source, example_raw}` sorted by `total_occurrences` desc
+
+44. **Add `TopFingerprintsTable`** component — sortable table showing rank, truncated fingerprint (expandable), occurrence count, host count, and query type badge; highlights rows with `distinct_hosts > 3` (cross-host pattern = likely shared stored proc problem)
+
+#### 8C — P50/P95 Occurrence Distribution per Host
+
+Averages hide heavy-tail problems. A host with P50=1 but P95=800 has a few catastrophically repeated queries that average out to look normal. Polars `quantile()` makes this a single aggregation.
+
+45. **Add `GET /api/analytics/host-stats`** — returns `{host, p50, p95, p99, max, total_occurrences, row_count}` per host; Polars aggregation over `occurrence_count` grouped by `host`; no new DB columns needed
+
+46. **Add host stats row to dashboard** — small table below Top Hosts bar chart; cells coloured by P95 threshold (green < 10, amber 10–100, red > 100)
+
+#### 8D — Blocker + Deadlock Co-occurrence
+
+Hosts with both blocking and deadlocking events within the same clock-hour are the most critical infrastructure problems — they indicate resource contention building to actual lock cycles.
+
+47. **Add `GET /api/analytics/co-occurrence`** — self-join `raw_query` on `host` where one row is `type=blocker` and another is `type=deadlock` within the same `month_year`; returns `{host, month_year, blocker_count, deadlock_count, combined_score}` sorted by combined_score desc
+
+48. **Add `CoOccurrenceTable`** component — compact host × event-type matrix; red badge when both > 0 in same month
+
+#### 8E — Month-over-Month Delta
+
+Absolute counts are less actionable than trend direction. A database with 500 slow queries/month is fine if it was 800 last month; alarming if it was 200.
+
+49. **Extend `GET /api/analytics/by-month`** — add a `delta` field: `row_count - previous_month_row_count`; computed as a window function `LAG(row_count, 1)` over `month_year`; or computed in Polars with `df.sort("month_year").with_columns(pl.col("row_count").diff().alias("delta"))`
+
+50. **Update `MonthlyTrendCard`** — overlay delta as a dashed secondary line or add colour coding to bars (green = decreasing, red = increasing vs prior month)
+
+#### Implementation Priority
+
+| Feature | Effort | DBA Value | Build Order |
+|---|---|---|---|
+| Peak hour heatmap (8A) | Medium | High — scheduling insight | **1st** (done below) |
+| Query fingerprint top-N (8B) | Medium | Very high — finds repeat offenders | 2nd |
+| P50/P95 per host (8C) | Low | Medium — needs explanation | 3rd |
+| MoM delta (8E) | Low | Medium — trend direction | 4th |
+| Co-occurrence (8D) | High | High — critical infra signal | 5th |
+
+
 
 - `uv run scripts/validate_csv.py --file data/Jan2026/maxElapsedQueriesProdJan26.csv` → shows row count, column check, sample rows; no errors
 - Upload same file via UI validate step → preview table shows pass badge

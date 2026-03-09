@@ -169,6 +169,15 @@ export interface CurationCoverage {
   coverage_pct: number;
 }
 
+export interface HourCell {
+  hour: number;     // 0–23
+  weekday: number;  // 0=Monday … 6=Sunday
+  count: number;
+  by_type:   Record<string, number>;            // e.g. {slow_query: 800, blocker: 300}
+  top_hosts: Array<{ host: string; count: number }>;
+  top_dbs:   Array<{ db_name: string; count: number }>;
+}
+
 // ---- API calls ------------------------------------------------------------
 
 export const api = {
@@ -192,6 +201,10 @@ export const api = {
     curationCoverage: (filters?: AnalyticsFilters) => {
       const qs = buildQS(filters);
       return apiFetch<CurationCoverage>(`/analytics/curation-coverage${qs}`);
+    },
+    byHour: (filters?: AnalyticsFilters) => {
+      const qs = buildQS(filters);
+      return apiFetch<HourCell[]>(`/analytics/by-hour${qs}`);
     },
   },
 
