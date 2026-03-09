@@ -176,9 +176,156 @@ dbPerfmHealthCheck/
     - Use case: when curating a pattern tagged `"COLLSCAN"`, the panel can surface relevant MongoDB indexing docs automatically
     - Note: SDK is marked WIP by Upstash — wrap all calls in `try/catch`; fail silently if unavailable; gate behind a feature flag env var `NEXT_PUBLIC_CONTEXT7_ENABLED=true`
 
-**Phase 6 -- NEON database integration**
-21. check official doc: https://neon.com/docs/guides/nextjs
-22. install Neon vscode extension
+**Phase 6 — Neon PostgreSQL Integration**
+
+> **Context**: Neon project `hkjc-db-perfm` already exists (ap-southeast-1). Two branches are configured: `main` (production) and `dev` (development). The architecture keeps all DB access through the FastAPI backend — Next.js never connects to Neon directly. The FastAPI backend swaps `aiosqlite` (SQLite) → `asyncpg` (PostgreSQL).
+
+**Branch strategy**
+
+| Neon branch | FastAPI env | Purpose |
+|---|---|---|
+| `main` | `DATABASE_URL` (production) | Stable, deployed data |
+| `dev` | `DATABASE_URL` (local dev) | Safe to reset / experiment |
+
+Each branch has its own independent connection string and compute endpoint. The `dev` branch is a copy of `main` at branch time, so schemas stay in sync.
+
+---
+
+21. **Install VS Code Neon extension**
+    - Search `Neon` in Extensions marketplace → install **Neon Database Explorer**
+    - Sign in and confirm project `hkjc-db-perfm` appears with both branches
+
+22. **Install Python PostgreSQL driver** — replace `aiosqlite` with `asyncpg`:
+    ```bash
+    uv remove aiosqlite
+    uv add asyncpg
+    ```
+    `pyproject.toml` dependencies become: `fastapi`, `sqlmodel`, `asyncpg`, `alembic`, `python-multipart`
+
+23. **Update `api/database.py`** — swap SQLite URL for PostgreSQL:
+    ```python
+    from sqlmodel import create_engine
+    from sqlmodel.ext.asyncio.session import AsyncSession
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    import os
+
+    DATABASE_URL = os.environ["DATABASE_URL"]
+    # asyncpg requires postgresql+asyncpg:// scheme
+    ASYNC_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    engine = create_async_engine(ASYNC_URL, echo=False, pool_size=5, max_overflow=10)
+    AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def get_session():
+        async with AsyncSessionLocal() as session:
+            yield session
+    ```
+
+24. **Update Alembic to target Neon** — edit `alembic.ini`:
+    ```ini
+    # Leave blank — we set it dynamically in env.py
+    sqlalchemy.url =
+    ```
+    In `api/migrations/env.py`, read from environment:
+    ```python
+    import os
+    from api.models import SQLModel   # so metadata is populated
+
+    config.set_main_option(
+        "sqlalchemy.url",
+        os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg2://", 1),
+    )
+    target_metadata = SQLModel.metadata
+    ```
+    Install sync driver for Alembic (Alembic doesn't support asyncpg in the CLI):
+    ```bash
+    uv add psycopg2-binary
+    ```
+
+25. **Set environment variables**
+
+    **Backend** — create `api/.env` (gitignored):
+    ```dotenv
+    # DEV branch (local development)
+    DATABASE_URL=postgresql://neondb_owner:npg_zxZFetn6S3rP@ep-orange-meadow-a1p2p3mi.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+    ```
+    Load in `api/main.py` lifespan:
+    ```python
+    from dotenv import load_dotenv
+    load_dotenv("api/.env")
+    ```
+    Add `python-dotenv` dependency: `uv add python-dotenv`
+
+    **Frontend** — `web/.env.local` (already gitignored by Next.js):
+    ```dotenv
+    NEXT_PUBLIC_API_BASE=http://localhost:8000
+    ```
+    The frontend never connects to Neon directly — it calls FastAPI only.
+
+26. **Run Alembic migration against Neon** — generate and apply the initial schema:
+    ```bash
+    # Ensure DATABASE_URL is set in shell for the Alembic CLI
+    $env:DATABASE_URL = "postgresql://neondb_owner:npg_zxZFetn6S3rP@ep-orange-meadow-a1p2p3mi.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+
+    # Generate first migration from current SQLModel metadata
+    uv run alembic revision --autogenerate -m "initial schema"
+
+    # Apply to Neon dev branch
+    uv run alembic upgrade head
+    ```
+    Verify in the Neon Console → **Tables** tab that `raw_query`, `pattern_label`, and `curated_query` tables exist.
+
+27. **Seed labels into Neon**:
+    ```bash
+    uv run python -m api.seed_labels
+    ```
+
+28. **Install Neon serverless driver in Next.js** (optional, for future direct queries from Server Components):
+    ```bash
+    cd web
+    npm install @neondatabase/serverless
+    ```
+    Create `web/lib/neon.ts`:
+    ```typescript
+    import { neon } from "@neondatabase/serverless";
+
+    // Only used server-side (Server Components / Server Actions)
+    export const sql = neon(process.env.DATABASE_URL!);
+    ```
+    Add to `web/.env.local` if direct queries are needed:
+    ```dotenv
+    DATABASE_URL=postgresql://neondb_owner:npg_zxZFetn6S3rP@ep-orange-meadow-a1p2p3mi.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+    ```
+    > **Note**: Keep `DATABASE_URL` server-only (no `NEXT_PUBLIC_` prefix). All data mutations go through FastAPI; `@neondatabase/serverless` is only used for lightweight read-only Server Component queries if needed.
+
+29. **Update `next.config.ts`** — add the Neon serverless driver WebSocket config required for Edge/serverless runtimes:
+    ```typescript
+    import type { NextConfig } from "next";
+
+    const nextConfig: NextConfig = {
+      async rewrites() {
+        return [{ source: "/api/:path*", destination: "http://localhost:8000/api/:path*" }];
+      },
+      serverExternalPackages: ["@neondatabase/serverless"],
+    };
+
+    export default nextConfig;
+    ```
+
+30. **Branch workflow for ongoing development**:
+    - All local development runs against the `dev` Neon branch — safe to run migrations and seed without affecting `main`
+    - When a new Alembic migration is ready:
+      1. Test against `dev`: `uv run alembic upgrade head`
+      2. Verify app behaviour
+      3. In Neon Console → **Branches**, merge or apply the same migration to `main` before production deploy
+    - To reset `dev` to match `main`: Neon Console → **Branches** → `dev` → **Reset from parent**
+
+31. **Remove SQLite artifacts** (once Neon is confirmed working):
+    - Delete `db/master.db`
+    - Remove `add_source_col.py` migration script
+    - Remove `aiosqlite` from any remaining references
+    - Update `README.md` to reflect PostgreSQL/Neon setup
+
 ---
 
 ### Verification
