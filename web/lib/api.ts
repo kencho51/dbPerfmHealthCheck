@@ -180,12 +180,15 @@ export interface HourCell {
 }
 
 export interface FingerprintRow {
-  fingerprint:  string;
-  count:        number;   // sum of occurrence_count
-  row_count:    number;   // distinct raw_query rows sharing this fingerprint
-  by_type:      Record<string, number>;
-  example_host: string;
-  example_db:   string;
+  fingerprint:     string;
+  count:           number;   // sum of occurrence_count — ranking criterion
+  row_count:       number;   // distinct raw_query rows sharing this fingerprint
+  by_type:         Record<string, number>;
+  example_host:    string;
+  example_db:      string;
+  months:          string[];  // sorted distinct month_year values (e.g. ["2025-11", "2025-12"])
+  environments:    string[];  // distinct environments (e.g. ["prod"] or ["prod", "sat"])
+  example_source:  string;    // most-common source ("mssql" / "mongodb")
 }
 
 // ---- API calls ------------------------------------------------------------
