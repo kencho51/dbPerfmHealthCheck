@@ -14,6 +14,7 @@ from sqlmodel import col, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
+from api.host_system import apply_system_filter
 from api.models import (
     CuratedQuery,
     EnvironmentType,
@@ -43,6 +44,7 @@ def _apply_filters(
     month_year: Optional[list[str]],
     is_curated: Optional[bool],
     search: Optional[str],
+    system: Optional[str] = None,
 ):
     if environment is not None:
         stmt = stmt.where(RawQuery.environment == environment)
@@ -64,6 +66,7 @@ def _apply_filters(
         stmt = stmt.where(col(RawQuery.id).not_in(curated_ids))
     if search:
         stmt = stmt.where(col(RawQuery.query_details).contains(search))
+    stmt = apply_system_filter(stmt, system)
     return stmt
 
 
@@ -156,12 +159,14 @@ async def count_queries(
     month_year: Optional[list[str]] = Query(default=None),
     is_curated: Optional[bool] = None,
     search: Optional[str] = Query(default=None),
+    system: Optional[str] = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = _apply_filters(
         select(func.count(RawQuery.id)),
         environment=environment, type=type, source=source, host=host,
         db_name=db_name, month_year=month_year, is_curated=is_curated, search=search,
+        system=system,
     )
     total = (await session.exec(stmt)).one()
     return {"count": total}

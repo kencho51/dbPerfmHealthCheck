@@ -39,6 +39,12 @@ interface DashboardData {
 
 const DEFAULT_COVERAGE: CurationCoverage = { total_rows: 0, curated_rows: 0, uncurated_rows: 0, coverage_pct: 0 };
 
+// Static infrastructure system list (from ITWS_DB_Hosts.csv)
+const SYSTEMS = [
+  "AP", "BCS-AA", "BCS-BA", "CMGC", "FO",
+  "IDA", "PMU.COL", "PMU.ODPS", "PTRM", "TRD.QFM", "WCR",
+];
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,6 +55,7 @@ export default function DashboardPage() {
   const [filterDb,          setFilterDb]          = useState("");
   const [filterEnvironment, setFilterEnvironment] = useState("");
   const [filterMonth,       setFilterMonth]       = useState("");
+  const [filterSystem,      setFilterSystem]      = useState("");
 
   // ── Dropdown option lists (always unfiltered) ─────────────────────────────
   const [hostOptions,  setHostOptions]  = useState<string[]>([]);
@@ -79,6 +86,7 @@ export default function DashboardPage() {
     if (filterDb)          f.db_name     = filterDb;
     if (filterEnvironment) f.environment = filterEnvironment;
     if (filterMonth)       f.month_year  = filterMonth;
+    if (filterSystem)      f.system      = filterSystem;
     return f;
   }
 
@@ -91,6 +99,7 @@ export default function DashboardPage() {
       if (filters.db_name)     countParams.db_name     = filters.db_name;
       if (filters.environment) countParams.environment = filters.environment;
       if (filters.month_year)  countParams.month_year  = filters.month_year;
+      if (filters.system)      countParams.system      = filters.system;
 
       const [
         queryCount,
@@ -132,9 +141,9 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchAll(activeFilters());
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterHost, filterDb, filterEnvironment, filterMonth]);
+  }, [filterHost, filterDb, filterEnvironment, filterMonth, filterSystem]);
 
-  const hasActiveFilter = !!(filterHost || filterDb || filterEnvironment || filterMonth);
+  const hasActiveFilter = !!(filterHost || filterDb || filterEnvironment || filterMonth || filterSystem);
 
   if (loading) {
     return (
@@ -193,13 +202,28 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center gap-3 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
         <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Filter</span>
 
+        {/* System */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-slate-500">System</label>
+          <select
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400"
+            value={filterSystem}
+            onChange={(e) => { setFilterSystem(e.target.value); setFilterHost(""); }}
+          >
+            <option value="">All systems</option>
+            {SYSTEMS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+
         {/* Host */}
         <div className="flex items-center gap-1.5">
           <label className="text-xs text-slate-500">Host</label>
           <select
             className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:border-indigo-400 min-w-[160px]"
             value={filterHost}
-            onChange={(e) => { setFilterHost(e.target.value); setFilterDb(""); }}
+            onChange={(e) => { setFilterHost(e.target.value); setFilterDb(""); setFilterSystem(""); }}
           >
             <option value="">All hosts</option>
             {hostOptions.map((h) => (
@@ -279,9 +303,15 @@ export default function DashboardPage() {
                 <button onClick={() => setFilterMonth("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
               </span>
             )}
+            {filterSystem && (
+              <span className="inline-flex items-center gap-1 text-xs bg-teal-100 text-teal-700 border border-teal-200 rounded px-2 py-0.5">
+                System: {filterSystem}
+                <button onClick={() => setFilterSystem("")} className="ml-0.5 hover:text-red-500 transition-colors leading-none">✕</button>
+              </span>
+            )}
             <button
               className="text-xs text-slate-400 hover:text-red-500 transition-colors"
-              onClick={() => { setFilterHost(""); setFilterDb(""); setFilterEnvironment(""); setFilterMonth(""); }}
+              onClick={() => { setFilterHost(""); setFilterDb(""); setFilterEnvironment(""); setFilterMonth(""); setFilterSystem(""); }}
             >
               ✕ Clear all
             </button>
