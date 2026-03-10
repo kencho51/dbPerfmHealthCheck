@@ -43,6 +43,7 @@ export function MonthlyTrendCard({
     if (merged.source)      countParams.source      = merged.source;
     if (merged.type)        countParams.type        = merged.type;
     if (merged.month_year)  countParams.month_year  = merged.month_year;
+    if (merged.system)      countParams.system      = merged.system;
 
     Promise.all([
       api.analytics.byMonth(hasFilters ? merged : undefined),

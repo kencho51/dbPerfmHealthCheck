@@ -19,6 +19,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
+from api.host_system import apply_system_filter
 from api.models import CuratedQuery, EnvironmentType, QueryType, RawQuery, SourceType
 
 router = APIRouter()
@@ -35,6 +36,7 @@ async def analytics_summary(
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -58,6 +60,7 @@ async def analytics_summary(
         stmt = stmt.where(RawQuery.db_name == db_name)
     if month_year is not None:
         stmt = stmt.where(RawQuery.month_year == month_year)
+    stmt = apply_system_filter(stmt, system)
 
     rows = await session.exec(stmt)
     return [
@@ -84,6 +87,7 @@ async def analytics_by_host(
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -108,6 +112,7 @@ async def analytics_by_host(
         stmt = stmt.where(RawQuery.db_name == db_name)
     if month_year is not None:
         stmt = stmt.where(RawQuery.month_year == month_year)
+    stmt = apply_system_filter(stmt, system)
 
     rows = await session.exec(stmt)
     return [
@@ -133,6 +138,7 @@ async def analytics_by_month(
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -157,6 +163,7 @@ async def analytics_by_month(
         stmt = stmt.where(RawQuery.db_name == db_name)
     if month_year is not None:
         stmt = stmt.where(RawQuery.month_year == month_year)
+    stmt = apply_system_filter(stmt, system)
 
     rows = await session.exec(stmt)
     return [
@@ -181,6 +188,7 @@ async def analytics_by_db(
     host:        Optional[str]             = None,
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     stmt = (
@@ -206,6 +214,7 @@ async def analytics_by_db(
         stmt = stmt.where(RawQuery.db_name == db_name)
     if month_year is not None:
         stmt = stmt.where(RawQuery.month_year == month_year)
+    stmt = apply_system_filter(stmt, system)
 
     rows = await session.exec(stmt)
     return [
@@ -230,6 +239,7 @@ async def analytics_curation_coverage(
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
     month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     total_stmt = select(func.count(RawQuery.id))
@@ -243,6 +253,7 @@ async def analytics_curation_coverage(
         total_stmt = total_stmt.where(RawQuery.source == source)
     if month_year is not None:
         total_stmt = total_stmt.where(RawQuery.month_year == month_year)
+    total_stmt = apply_system_filter(total_stmt, system)
 
     curated_stmt = (
         select(func.count(CuratedQuery.id))
@@ -258,6 +269,7 @@ async def analytics_curation_coverage(
         curated_stmt = curated_stmt.where(RawQuery.source == source)
     if month_year is not None:
         curated_stmt = curated_stmt.where(RawQuery.month_year == month_year)
+    curated_stmt = apply_system_filter(curated_stmt, system)
 
     total_result   = await session.exec(total_stmt)
     curated_result = await session.exec(curated_stmt)
@@ -288,6 +300,7 @@ async def analytics_by_hour(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     type:        Optional[QueryType]       = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """
@@ -327,6 +340,7 @@ async def analytics_by_hour(
         stmt = stmt.where(RawQuery.month_year == month_year)
     if type is not None:
         stmt = stmt.where(RawQuery.type == type)
+    stmt = apply_system_filter(stmt, system)
 
     rows = (await session.exec(stmt)).all()
     if not rows:
@@ -446,6 +460,7 @@ async def analytics_top_fingerprints(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     type:        Optional[QueryType]       = None,
+    system:      Optional[str]             = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """
@@ -482,6 +497,7 @@ async def analytics_top_fingerprints(
         stmt = stmt.where(RawQuery.month_year == month_year)
     if type is not None:
         stmt = stmt.where(RawQuery.type == type)
+    stmt = apply_system_filter(stmt, system)
 
     rows = (await session.exec(stmt)).all()
     if not rows:

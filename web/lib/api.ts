@@ -123,6 +123,7 @@ export interface AnalyticsFilters {
   environment?: string;
   source?:      string;
   type?:        string;
+  system?:      string;
   month_year?:  string;
   top_n?:       number;
 }
