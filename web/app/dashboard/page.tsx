@@ -11,6 +11,7 @@ import {
 } from "@/components/charts";
 import { MonthlyTrendCard } from "@/components/MonthlyTrendCard";
 import { HourHeatmap } from "@/components/HourHeatmap";
+import { TopFingerprintsTable } from "@/components/TopFingerprintsTable";
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -354,6 +355,9 @@ export default function DashboardPage() {
 
       {/* Heatmap row — full width */}
       <HourHeatmap filters={filters} />
+
+      {/* Fingerprints table — full width */}
+      <TopFingerprintsTable filters={filters} />
 
       {/* Bottom row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
