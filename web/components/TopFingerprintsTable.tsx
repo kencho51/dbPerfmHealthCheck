@@ -77,6 +77,9 @@ export function TopFingerprintsTable({
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle>Top Query Fingerprints</CardTitle>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Ranked by total occurrence count (sum across all matching rows)
+          </p>
 
           <div className="flex items-center gap-2">
             {/* Top-N picker */}
@@ -127,6 +130,7 @@ export function TopFingerprintsTable({
                   <th className="pb-2 pr-3 text-center">Types</th>
                   <th className="pb-2 pr-3 text-right">Occurrences</th>
                   <th className="pb-2 pr-3 text-right hidden sm:table-cell">Rows</th>
+                  <th className="pb-2 pr-3 hidden lg:table-cell">Months</th>
                   <th className="pb-2 pr-3 hidden md:table-cell">Host</th>
                   <th className="pb-2 hidden md:table-cell">Database</th>
                 </tr>
@@ -179,6 +183,21 @@ export function TopFingerprintsTable({
                           {row.row_count.toLocaleString()}
                         </td>
 
+                        {/* Months */}
+                        <td className="py-2 pr-3 align-top hidden lg:table-cell">
+                          <div className="flex flex-wrap gap-0.5">
+                            {row.months.length === 0 ? (
+                              <span className="text-slate-300">—</span>
+                            ) : (
+                              row.months.map((m) => (
+                                <span key={m} className="inline-block rounded bg-slate-100 px-1 py-0.5 text-[10px] font-mono text-slate-600">
+                                  {m}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </td>
+
                         {/* Host */}
                         <td className="py-2 pr-3 align-top text-xs text-slate-500 hidden md:table-cell">
                           {row.example_host || <span className="text-slate-300">—</span>}
@@ -194,12 +213,34 @@ export function TopFingerprintsTable({
                       {isExpanded && (
                         <tr key={`${idx}-detail`} className="bg-slate-50">
                           <td />
-                          <td colSpan={6} className="pb-3 pr-3">
+                          <td colSpan={7} className="pb-3 pr-3">
                             <div className="space-y-2">
                               {/* Full fingerprint */}
                               <pre className="whitespace-pre-wrap break-all text-xs font-mono text-slate-700 bg-white border border-slate-100 rounded p-2">
                                 {row.fingerprint}
                               </pre>
+
+                              {/* Meta row: months · environments · source */}
+                              <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
+                                {row.months.length > 0 && (
+                                  <span>
+                                    <span className="font-medium text-slate-600">Months: </span>
+                                    {row.months.join(", ")}
+                                  </span>
+                                )}
+                                {row.environments.length > 0 && (
+                                  <span>
+                                    <span className="font-medium text-slate-600">Env: </span>
+                                    {row.environments.join(", ")}
+                                  </span>
+                                )}
+                                {row.example_source && (
+                                  <span>
+                                    <span className="font-medium text-slate-600">Source: </span>
+                                    {row.example_source}
+                                  </span>
+                                )}
+                              </div>
 
                               {/* Type breakdown */}
                               {Object.keys(row.by_type).length > 0 && (

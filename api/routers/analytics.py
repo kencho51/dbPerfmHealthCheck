@@ -482,6 +482,9 @@ async def analytics_top_fingerprints(
         RawQuery.host,
         RawQuery.db_name,
         RawQuery.occurrence_count,
+        RawQuery.month_year,
+        RawQuery.environment,
+        RawQuery.source,
     ).where(
         RawQuery.query_details.isnot(None)  # type: ignore[union-attr]
     )
@@ -509,6 +512,9 @@ async def analytics_top_fingerprints(
         "host":  [r.host or ""          for r in rows],
         "db":    [r.db_name or ""       for r in rows],
         "occ":   [r.occurrence_count    for r in rows],
+        "month": [r.month_year or ""    for r in rows],
+        "env":   [r.environment or ""   for r in rows],
+        "src":   [r.source or ""        for r in rows],
     })
 
     # Vectorised fingerprinting via Polars regex
@@ -549,14 +555,25 @@ async def analytics_top_fingerprints(
     # most-common host / db per fingerprint (Python-level: simpler than nested Polars sort+group)
     host_agg: dict[str, dict[str, int]] = {}
     db_agg:   dict[str, dict[str, int]] = {}
+    months_agg:  dict[str, set]         = {}
+    env_agg:     dict[str, set]         = {}
+    source_agg:  dict[str, dict[str, int]] = {}
     for row in top_df.iter_rows(named=True):
         fp, h, d, occ = row["fp"], row["host"], row["db"], row["occ"]
+        m, e, s       = row["month"], row["env"], row["src"]
         if h:
             host_agg.setdefault(fp, {})
             host_agg[fp][h] = host_agg[fp].get(h, 0) + occ
         if d:
             db_agg.setdefault(fp, {})
             db_agg[fp][d] = db_agg[fp].get(d, 0) + occ
+        if m:
+            months_agg.setdefault(fp, set()).add(m)
+        if e:
+            env_agg.setdefault(fp, set()).add(e)
+        if s:
+            source_agg.setdefault(fp, {})
+            source_agg[fp][s] = source_agg[fp].get(s, 0) + occ
 
     host_lookup = {
         fp: max(hosts.keys(), key=lambda k: hosts[k])
@@ -566,16 +583,25 @@ async def analytics_top_fingerprints(
         fp: max(dbs.keys(), key=lambda k: dbs[k])
         for fp, dbs in db_agg.items()
     }
+    months_lookup = {fp: sorted(months) for fp, months in months_agg.items()}
+    env_lookup    = {fp: sorted(envs)   for fp, envs   in env_agg.items()}
+    source_lookup = {
+        fp: max(srcs.keys(), key=lambda k: srcs[k])
+        for fp, srcs in source_agg.items()
+    }
 
     result = []
     for row in totals.iter_rows(named=True):
         fp = row["fp"]
         result.append({
-            "fingerprint":  fp,
-            "count":        row["count"],
-            "row_count":    row["row_count"],
-            "by_type":      type_lookup.get(fp, {}),
-            "example_host": host_lookup.get(fp, ""),
-            "example_db":   db_lookup.get(fp, ""),
+            "fingerprint":    fp,
+            "count":          row["count"],
+            "row_count":      row["row_count"],
+            "by_type":        type_lookup.get(fp, {}),
+            "example_host":   host_lookup.get(fp, ""),
+            "example_db":     db_lookup.get(fp, ""),
+            "months":         months_lookup.get(fp, []),
+            "environments":   env_lookup.get(fp, []),
+            "example_source": source_lookup.get(fp, ""),
         })
     return result
