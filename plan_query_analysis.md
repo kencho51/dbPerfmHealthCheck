@@ -553,9 +553,9 @@ pl.col("query_details")
   .alias("fingerprint")
 ```
 
-43. **Add `GET /api/analytics/top-fingerprints`** — fetches `(query_details, occurrence_count, type, source, host, db_name)`, normalises to fingerprints in Polars, groups by fingerprint, returns top-N `{fingerprint, total_occurrences, distinct_hosts, distinct_dbs, query_type, source, example_raw}` sorted by `total_occurrences` desc
+43. ✅ **Add `GET /api/analytics/top-fingerprints`** — fetches `(query_details, occurrence_count, type, source, host, db_name)`, normalises to fingerprints in Polars, groups by fingerprint, returns top-N `{fingerprint, count, row_count, by_type, example_host, example_db}` sorted by `count` desc. Supports all standard filters (`environment`, `source`, `host`, `db_name`, `month_year`, `type`) plus `top_n` (default 20, max 200).
 
-44. **Add `TopFingerprintsTable`** component — sortable table showing rank, truncated fingerprint (expandable), occurrence count, host count, and query type badge; highlights rows with `distinct_hosts > 3` (cross-host pattern = likely shared stored proc problem)
+44. ✅ **Add `TopFingerprintsTable`** component — full-width card with `<select>` type filter + Top-N picker (10/20/50). Table shows rank, fingerprint (mono, line-clamp-2, click to expand full text + type breakdown), type badges, occurrence count, row count, example host, example database. Uses `React.Fragment key={idx}` for expand/collapse detail row pairs.
 
 #### 8C — P50/P95 Occurrence Distribution per Host
 
@@ -600,6 +600,516 @@ Absolute counts are less actionable than trend direction. A database with 500 sl
 - Promote a raw query row to a pattern → it appears in `/patterns` with correct tag and severity
 - Context7 panel on a pattern tagged `"COLLSCAN"` surfaces MongoDB index documentation (if `NEXT_PUBLIC_CONTEXT7_ENABLED=true`)
 - `GET /api/export` CSV includes `pattern_name`, `pattern_tag`, `severity`, `occurrence_count` columns
+
+---
+
+**Phase 9 — Cloudflare Workers / Pages Migration**
+
+> **Feasibility verdict: Workable with targeted rewrites.** Both FastAPI and Next.js have official first-party Cloudflare support. The two non-trivial blockers are (1) **Polars** — which uses native Rust extensions incompatible with Pyodide/WebAssembly — and (2) **asyncpg** — which requires native binaries. Both are solvable by pushing aggregation logic into SQL (D1 or Neon HTTP) and using Neon's HTTPS query API respectively. Python Workers are in **open beta** — appropriate for an internal tool but not a public production service.
+
+#### Architecture After Migration
+
+Two database options are viable — choose based on whether you want to keep the Neon PostgreSQL investment from Phase 7:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                       Cloudflare Edge Network                         │
+│                                                                        │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────┐  │
+│  │  Workers (Next.js)        │  │  Workers (FastAPI Python)           │  │
+│  │  @opennextjs/cloudflare   │  │  WorkerEntrypoint + asgi.fetch()   │  │
+│  │  App Router / RSC / SSR   │  │  pywrangler CLI                    │  │
+│  │  → /api/* (Service Bind)  │──▶  POST /api/upload                  │  │
+│  └──────────────────────────┘  │  GET  /api/analytics/*              │  │
+│                                 │  GET  /api/queries                  │  │
+│                                 └──────────┬──────────────────────────┘  │
+│                                            │                              │
+│  Option A (simpler)           Option B (keep Neon from Phase 7)          │
+│  ┌──────────────────┐         ┌────────────▼───────────────────────┐     │
+│  │  Cloudflare D1   │         │  Cloudflare Hyperdrive              │     │
+│  │  (SQLite-compat) │         │  (edge connection pool → Neon PG)  │     │
+│  │  raw_query       │         │  pg8000 pure-Python driver          │     │
+│  │  pattern_label   │         └────────────┬───────────────────────┘     │
+│  │  curated_query   │                      │                              │
+│  └──────────────────┘              ┌───────▼──────────────────────┐      │
+│                                    │  Neon PostgreSQL (ap-se-1)    │      │
+│                                    │  hkjc-db-perfm / dev branch  │      │
+│                                    └──────────────────────────────┘      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Compatibility Matrix
+
+| Component | Current | After Migration | Notes |
+|---|---|---|---|
+| **Next.js frontend** | `npm run dev` locally | `@opennextjs/cloudflare` Worker | App Router, RSC, SSR all ✅ supported |
+| **FastAPI backend** | `uvicorn` process | Python Worker + `asgi.fetch()` | FastAPI is officially supported package |
+| **SQLite / aiosqlite** | Local file `db/master.db` | Cloudflare **D1** binding | D1 is SQLite-wire-compatible; schema unchanged |
+| **asyncpg (Neon)** | Native binary driver | **Hyperdrive + `pg8000`** (Option B) or replace with D1 (Option A) | `asyncpg` needs native extension → blocked; `pg8000` is pure Python |
+| **Polars** | In-process analytics | **Replaced by D1 SQL** | Native Rust extension → Pyodide blocked ❌ |
+| **SQLModel ORM** | Full async engine | Models/schemas only; D1 calls raw | SQLite engine replaced by D1 binding |
+| **Alembic** | Schema migrations | Option A: `wrangler d1 execute` scripts · Option B: Alembic still runs locally against Neon (unchanged from Phase 7) | Alembic CLI can't run inside a Worker |
+| **python-multipart** | Multipart CSV uploads | Pure-Python ✅ | No native extensions |
+| **Pydantic** | Request/response validation | ✅ Officially supported | |
+| **R2** | n/a (uploads direct to DB) | Optional: buffer large CSVs | Workers have 100 MB request limit |
+
+#### Key Blockers and Mitigations
+
+**Blocker 1 — Polars** (hard)
+Python Workers run on Pyodide, a WebAssembly port of CPython. Packages with native compiled extensions (Rust, C) that are not pre-compiled for WASM cannot be loaded. Polars is Rust-compiled and is not in Pyodide's supported package list.
+
+*Mitigation*: Move all aggregation currently done in Polars **into D1 SQL**:
+- `by-hour` time parsing → use SQLite `strftime('%H', time)` with a `CASE` for the AM/PM format variant (or pre-derive `hour`/`weekday` columns at ingest time)
+- Fingerprinting → SQLite `REPLACE(REPLACE(...))` expressions or a lightweight pure-Python regex normaliser
+- `by-month`, `by-host`, `by-db` → already plain `GROUP BY` queries; no Polars needed today
+- Null-rate sampling in validator → pure Python with stdlib `csv` module (`itertools.islice`)
+
+**Blocker 2 — asyncpg** (medium)
+asyncpg requires `libpq` native binary, not available in Pyodide.
+
+*Mitigation (Option A — D1)*: Replace Neon/asyncpg entirely with Cloudflare D1. The SQLite-compatible wire protocol means the existing schema and queries work largely as-is. Simpler setup, no external dependency.
+
+*Mitigation (Option B — Neon + Hyperdrive + pg8000)*: **Recommended if you want to keep the Neon PostgreSQL investment from Phase 7.** Cloudflare Hyperdrive acts as an edge-local connection pool that speaks standard PostgreSQL wire protocol — it exposes a regular `postgres://` connection string to your Worker. The Python Worker connects to it using **`pg8000`**, a fully pure-Python PostgreSQL driver with zero native extensions (Pyodide-compatible):
+```python
+import pg8000.native, os
+
+def get_conn():
+    # env.HYPERDRIVE.connectionString is injected by the Hyperdrive binding
+    # Format: postgres://user:pass@hyperdrive-host:5432/dbname
+    return pg8000.native.Connection(
+        host=..., port=5432, database=...,
+        user=..., password=..., ssl_context=True,
+    )
+```
+Hyperdrive maintains a warm connection pool across Cloudflare's PoPs, so each Worker request avoids the full TLS + PostgreSQL handshake overhead. Neon's branch strategy (Phase 7) is fully preserved.
+
+> **Note**: Cloudflare recommends `node-postgres` (`pg`) for JS Workers — for Python Workers use `pg8000` against the same Hyperdrive connection string. The Hyperdrive binding is database-driver-agnostic.
+
+**Blocker 3 — Python Workers open beta** (low risk for internal tool)
+The `python_workers` compatibility flag is required and the feature is explicitly beta. Cloudflare's own FastAPI example works correctly; the risk is API churn before GA.
+
+---
+
+#### Migration Steps
+
+**Sub-phase 9A — Frontend (Next.js → Cloudflare Workers)**
+
+51. **Install OpenNext Cloudflare adapter**:
+    ```bash
+    cd web
+    npm i @opennextjs/cloudflare@latest
+    npm i -D wrangler@latest
+    ```
+
+52. **Create `web/wrangler.jsonc`**:
+    ```jsonc
+    {
+      "$schema": "./node_modules/wrangler/config-schema.json",
+      "name": "hkjc-dbperfm-web",
+      "main": ".open-next/worker.js",
+      "compatibility_date": "2026-03-10",
+      "compatibility_flags": ["nodejs_compat"],
+      "assets": {
+        "directory": ".open-next/assets",
+        "binding": "ASSETS"
+      },
+      "services": [
+        {
+          "binding": "API",
+          "service": "hkjc-dbperfm-api"
+        }
+      ]
+    }
+    ```
+    The `services` binding wires the frontend Worker directly to the backend Python Worker — no public internet hop between them, no CORS required.
+
+53. **Create `web/open-next.config.ts`**:
+    ```typescript
+    import { defineCloudflareConfig } from "@opennextjs/cloudflare";
+    export default defineCloudflareConfig();
+    ```
+
+54. **Update `web/package.json` scripts**:
+    ```json
+    {
+      "scripts": {
+        "dev":     "next dev",
+        "build":   "next build",
+        "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+        "deploy":  "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+        "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+      }
+    }
+    ```
+
+55. **Update `web/next.config.ts`** — remove the local `uvicorn` rewrite; in Workers, service bindings handle routing instead:
+    ```typescript
+    import type { NextConfig } from "next";
+    const nextConfig: NextConfig = {
+      // Rewrites only needed for local dev (npm run dev)
+      // In Cloudflare preview/deploy, the service binding routes /api/*
+      ...(process.env.NODE_ENV === "development" ? {
+        async rewrites() {
+          return [{ source: "/api/:path*", destination: "http://localhost:8000/api/:path*" }];
+        },
+      } : {}),
+    };
+    export default nextConfig;
+    ```
+
+56. **Test locally with Cloudflare adapter**:
+    ```bash
+    npm run preview   # builds + starts miniflare (Cloudflare local sim)
+    ```
+    Verify all dashboard pages load and `/api/*` calls reach the backend.
+
+57. **Deploy frontend Worker**:
+    ```bash
+    npm run deploy
+    ```
+    Note the deployed URL (e.g. `hkjc-dbperfm-web.workers.dev`).
+
+---
+
+**Sub-phase 9B — Database** (choose Option A or Option B)
+
+---
+
+**Option A — Cloudflare D1** (simpler, recommended if dropping Neon)
+
+58a. **Create D1 database**:
+    ```bash
+    npx wrangler d1 create hkjc-dbperfm-db
+    ```
+    Note the `database_id` from the output. Add to both `web/wrangler.jsonc` and the API `wrangler.jsonc` (step 62):
+    ```jsonc
+    "d1_databases": [
+      { "binding": "DB", "database_name": "hkjc-dbperfm-db", "database_id": "<id>" }
+    ]
+    ```
+
+59a. **Export existing SQLite schema** from `db/master.db`:
+    ```bash
+    sqlite3 db/master.db .schema > db/schema.sql
+    ```
+    Apply to D1:
+    ```bash
+    npx wrangler d1 execute hkjc-dbperfm-db --file db/schema.sql
+    ```
+
+60a. **Migrate existing data** (one-time):
+    ```bash
+    sqlite3 db/master.db .dump > db/data.sql
+    grep "^INSERT" db/data.sql > db/inserts.sql
+    npx wrangler d1 execute hkjc-dbperfm-db --file db/inserts.sql
+    ```
+
+61a. **Local development** — D1's local simulation:
+    ```bash
+    npx wrangler d1 execute hkjc-dbperfm-db --local --file db/schema.sql
+    ```
+    Wrangler stores the local D1 as a SQLite file in `.wrangler/state/` — identical behaviour to production. Skip to Sub-phase 9C after this step.
+
+---
+
+**Option B — Neon PostgreSQL + Cloudflare Hyperdrive** (recommended if keeping Phase 7 Neon investment)
+
+58b. **Create a dedicated Hyperdrive user in Neon**:
+    - In Neon Console → your project → **Roles** → **New Role** → name it `hyperdrive-user`, copy the password
+    - Go to **Dashboard** → **Connection Details** → select branch (`dev` or `main`), database `neondb`, role `hyperdrive-user` → uncheck **Connection pooling** → copy the `postgres://` connection string
+
+59b. **Create a Hyperdrive configuration** in the Cloudflare dashboard:
+    - Go to **Workers & Pages** → **Hyperdrive** → **Create Configuration**
+    - Paste the Neon connection string and name it `hkjc-neon`
+    - Note the `hyperdrive_id` shown after creation
+
+    Or via CLI:
+    ```bash
+    npx wrangler hyperdrive create hkjc-neon \
+      --connection-string "postgres://hyperdrive-user:<password>@<neon-host>/neondb?sslmode=require"
+    ```
+
+60b. **Add Hyperdrive binding to the API Worker's `wrangler.jsonc`**:
+    ```jsonc
+    {
+      "name": "hkjc-dbperfm-api",
+      "compatibility_flags": ["python_workers", "nodejs_compat"],
+      "hyperdrive": [
+        { "binding": "HYPERDRIVE", "id": "<your-hyperdrive-id>" }
+      ]
+    }
+    ```
+
+61b. **Install `pg8000`** (pure-Python PostgreSQL driver, Pyodide-compatible):
+    ```bash
+    uv add pg8000
+    ```
+    Replace `api/database.py`'s asyncpg engine with a `pg8000.native` connection factory:
+    ```python
+    # api/database.py — Hyperdrive + pg8000 version
+    import pg8000.native
+    from urllib.parse import urlparse
+    from fastapi import Request
+
+    def get_conn(request: Request):
+        """Dependency: opens a pg8000 connection via Hyperdrive."""
+        # Hyperdrive injects a standard postgres:// connection string
+        cs = request.scope["env"].HYPERDRIVE.connectionString
+        p = urlparse(cs)
+        return pg8000.native.Connection(
+            host=p.hostname, port=p.port or 5432,
+            database=p.path.lstrip("/"),
+            user=p.username, password=p.password,
+            ssl_context=True,
+        )
+    ```
+    All existing router SQL stays unchanged (Neon is PostgreSQL; queries are identical). Replace `session.exec(select(...))` calls with `conn.run(sql, params)` returning lists of tuples:
+    ```python
+    # BEFORE (SQLModel)
+    rows = (await session.exec(select(RawQuery).where(...))).all()
+
+    # AFTER (pg8000)
+    rows = conn.run("SELECT * FROM raw_query WHERE environment = :env", env=environment)
+    ```
+    Neon's schema from Phase 7 (Alembic migrations) is already applied — **no data migration needed**.
+
+61c. **Local development** with Hyperdrive:
+    Hyperdrive has no local emulation — during local `pywrangler dev`, connect directly to the Neon `dev` branch instead:
+    ```python
+    # In pywrangler dev, HYPERDRIVE binding is absent; fall back to direct Neon URL
+    import os
+    cs = getattr(getattr(request.scope.get("env"), "HYPERDRIVE", None), "connectionString", None) \
+        or os.environ["DATABASE_URL"]
+    ```
+    Set `DATABASE_URL` in `api/.env` pointing to the Neon `dev` branch (already configured in Phase 7).
+
+---
+
+**Sub-phase 9C — Backend (FastAPI → Python Worker)**
+
+62. **Initialise Python Worker project**:
+    ```bash
+    # From project root (not web/)
+    uv tool install workers-py
+    uv run pywrangler init
+    ```
+    This creates a `wrangler.toml` for the Python Worker. Rename/edit to `wrangler.jsonc`:
+    ```jsonc
+    {
+      "name": "hkjc-dbperfm-api",
+      "main": "api/worker.py",
+      "compatibility_date": "2026-03-10",
+      "compatibility_flags": ["python_workers"],
+      "d1_databases": [
+        { "binding": "DB", "database_name": "hkjc-dbperfm-db", "database_id": "<id>" }
+      ]
+    }
+    ```
+
+63. **Create `api/worker.py`** — the Worker entrypoint that bridges FastAPI via ASGI:
+    ```python
+    from workers import WorkerEntrypoint
+    import asgi
+    # Import the existing FastAPI app — no changes needed to app definition
+    from api.main import app
+
+    class Default(WorkerEntrypoint):
+        async def fetch(self, request):
+            return await asgi.fetch(app, request, self.env)
+    ```
+    The existing `api/main.py` FastAPI app, routers, and models are reused unchanged. Only the database access layer changes (see step 64).
+
+64. **Replace `api/database.py`** — swap `aiosqlite`/`asyncpg` engine for D1 binding access:
+    ```python
+    # api/database.py — D1 version
+    # D1 is accessed via the Workers binding (self.env.DB) injected into the ASGI scope.
+    # FastAPI dependencies retrieve it from request.scope["env"].
+
+    from fastapi import Request
+
+    def get_db(request: Request):
+        """Dependency: returns the D1 binding from the Worker environment."""
+        return request.scope["env"].DB
+
+    # Usage in routers:
+    # async def my_route(db = Depends(get_db)):
+    #     result = await db.prepare("SELECT * FROM raw_query WHERE id = ?").bind(42).first()
+    ```
+
+65. **Rewrite DB calls in all routers** — replace SQLModel `session.exec(select(...))` with D1 binding calls. Pattern per router:
+
+    ```python
+    # BEFORE (SQLModel + aiosqlite)
+    stmt = select(RawQuery).where(RawQuery.environment == environment)
+    rows = (await session.exec(stmt)).all()
+
+    # AFTER (D1 binding)
+    sql = "SELECT * FROM raw_query WHERE environment = ?"
+    result = await db.prepare(sql).bind(environment).all()
+    rows = result.results  # list of dicts
+    ```
+
+    D1 Python binding API mirrors the JS API:
+    - `db.prepare(sql)` → `PreparedStatement`
+    - `.bind(*params)` → parameterised
+    - `.first()` → single row dict or None
+    - `.all()` → `{results: list[dict], meta: dict}`
+    - `.run()` → for INSERT/UPDATE/DELETE (returns `{meta}`)
+
+66. **Replace Polars analytics with SQL aggregations** — the `analytics.py` `by-hour` endpoint is the main rewrite. Push all date extraction and grouping into D1 SQL:
+
+    ```python
+    # BEFORE (Polars in-process parsing)
+    # — fetched raw time strings, parsed in Polars, grouped in Python
+
+    # AFTER (D1 SQL with SQLite strftime)
+    # SQLite can parse ISO timestamps natively with strftime.
+    # For Splunk's US AM/PM format, add a computed column at ingest time (see step 67).
+
+    sql = """
+        SELECT
+            CAST(strftime('%H', parsed_time) AS INTEGER) AS hour,
+            CAST((strftime('%w', parsed_time) + 6) % 7 AS INTEGER) AS weekday,
+            SUM(occurrence_count) AS count
+        FROM raw_query
+        WHERE parsed_time IS NOT NULL
+        GROUP BY hour, weekday
+        ORDER BY hour, weekday
+    """
+    result = await db.prepare(sql).all()
+    ```
+
+67. **Add `parsed_time` column at ingest time** — store a normalised ISO timestamp alongside the raw `time` string so D1's `strftime` can use it reliably. This replaces the Polars multi-format parsing:
+
+    ```python
+    # api/services/ingestor.py — add normalised timestamp at ingest
+    import re
+    from datetime import datetime
+
+    _FORMATS = [
+        "%m/%d/%Y %I:%M:%S %p",   # Splunk US: 1/26/2026 8:58:53 AM
+        "%Y-%m-%dT%H:%M:%S",       # ISO without TZ
+        "%Y-%m-%d %H:%M:%S",       # ISO space-separated
+    ]
+
+    def parse_time(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        # Strip trailing TZ offset (+0800, +08:00, -05:00)
+        clean = re.sub(r"[+-]\d{2}:?\d{2}$", "", raw.strip())
+        for fmt in _FORMATS:
+            try:
+                return datetime.strptime(clean, fmt).isoformat()
+            except ValueError:
+                continue
+        return None
+    ```
+    Add `parsed_time TEXT` column to the schema and populate it during `INSERT` in `ingestor.py`. This is a one-time schema migration (step 59 already runs the schema, so add the column there).
+
+68. **Handle `by_type`/`top_hosts`/`top_dbs` breakdown** for heatmap tooltip — replace the Polars groupby approach with separate SQL queries per dimension:
+    ```python
+    # Fetch all three breakdowns in parallel using D1 batch()
+    batch_result = await db.batch([
+        db.prepare(hour_weekday_total_sql),
+        db.prepare(by_type_sql),
+        db.prepare(top_hosts_sql),
+    ])
+    ```
+    D1's `db.batch()` sends multiple statements in a single HTTP round-trip to the D1 edge node.
+
+69. **Remove Polars from `pyproject.toml`**:
+    ```bash
+    uv remove polars
+    ```
+    The D1 approach is actually simpler — no in-process computation, all aggregation happens at the database layer where it belongs.
+
+70. **Rewrite `api/services/validator.py`** — replace Polars lazy CSV reading with stdlib:
+    ```python
+    import csv, io
+    from itertools import islice
+
+    def validate_csv(content: bytes, filename: str) -> ValidationResult:
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+        sample = list(islice(reader, 50))
+        # null rates over sample
+        if sample:
+            null_rates = {
+                col: sum(1 for r in sample if not r.get(col)) / len(sample)
+                for col in sample[0].keys()
+            }
+        ...
+    ```
+    Row count requires reading the whole file — acceptable for typical CSV sizes (< 5 MB); Workers have a 30-second CPU time limit on the paid tier.
+
+71. **Test Python Worker locally**:
+    ```bash
+    uv run pywrangler dev
+    ```
+    Verify all API endpoints respond correctly against the local D1 simulation. Check `/api/analytics/by-hour`, `/api/upload`, and `/api/queries`.
+
+72. **Deploy Python Worker**:
+    ```bash
+    uv run pywrangler deploy
+    ```
+
+---
+
+**Sub-phase 9D — Wiring, Environment Variables, CI/CD**
+
+73. **Set Worker secrets** — add Neon or other secrets (if kept) via Wrangler:
+    ```bash
+    # For the API Worker
+    npx wrangler secret put NEON_API_KEY      # if using Neon HTTP fallback
+    # For the frontend Worker
+    npx wrangler secret put CONTEXT7_API_KEY   # if Context7 enabled
+    ```
+    D1 is accessed via binding (no credential needed — it's scoped to your Cloudflare account).
+
+74. **Configure service binding** — the frontend Worker calls the API Worker directly (no public URL needed):
+    In `web/wrangler.jsonc`, the `"services"` binding (step 52) already routes `API.*` calls to the Python Worker. Update `web/lib/api.ts` base URL logic:
+    ```typescript
+    // In Cloudflare Workers environment, NEXT_PUBLIC_API_BASE is not needed —
+    // the service binding handles it. Keep the env var only for local dev.
+    const CLIENT_BASE = process.env.NEXT_PUBLIC_API_BASE
+      ? `${process.env.NEXT_PUBLIC_API_BASE}/api`
+      : "/api";
+    ```
+
+75. **Set up Workers Builds (CI/CD)** — connect the GitHub repo in the Cloudflare dashboard:
+    - **Frontend**: Cloudflare Pages/Workers Builds → root dir `web/` → build command `npm run deploy` → env vars `NEXT_PUBLIC_API_BASE` (blank — uses service binding in prod)
+    - **Backend**: Workers Builds → root dir `.` → build command `uv run pywrangler deploy`
+    - D1 migrations run as a pre-deploy step: `npx wrangler d1 execute hkjc-dbperfm-db --file db/schema.sql`
+
+76. **Local development workflow post-migration**:
+    ```bash
+    # Terminal 1: API Worker (local D1 simulation)
+    uv run pywrangler dev
+
+    # Terminal 2: Next.js dev server (proxies /api/* to localhost:8787)
+    cd web && npm run dev
+    ```
+    This keeps the fast Next.js HMR dev experience while testing against real Worker behaviour.
+
+    For full end-to-end Cloudflare simulation (both Workers + D1):
+    ```bash
+    cd web && npm run preview    # builds OpenNext + starts miniflare
+    # Also start: uv run pywrangler dev  (in another terminal)
+    ```
+
+---
+
+#### Limitations and Remaining Risks
+
+| Item | Risk | Mitigation |
+|---|---|---|
+| **Python Workers open beta** | API may change before GA | Pin `pywrangler` version; follow #python-workers Discord channel |
+| **D1 row limits** | D1 free tier: 100k writes/day, 5M reads/day; Paid: 50M writes | Batch upserts (single `executeBatch`); acceptable for internal monthly uploads |
+| **Worker CPU time** | 10ms free / 30s paid (per request) | Paid plan needed; CSV validator with 10k-row file well within 30s |
+| **Bundle size** | Python Worker packages counted toward CPU startup time | `pywrangler` pre-compiles packages via Pyodide; FastAPI cold start ~200ms |
+| **No Polars** | Analytics expressiveness reduced | D1 SQL `GROUP BY` + `strftime` covers all current use cases; fingerprinting via pure Python |
+| **Alembic** | Can't run inside a Worker | Option A: `wrangler d1 execute` for schema changes · Option B: Alembic runs locally against Neon unchanged (Phase 7 workflow preserved) |
+| **File uploads > 100 MB** | Workers request body limit | Monthly Splunk CSVs are typically < 10 MB — not an issue in practice |
+| **miniflare vs Pyodide differences** | Local sim may not catch all Pyodide-specific failures | Use `pywrangler dev` for Python, `npm run preview` only for frontend integration |
 
 ---
 
