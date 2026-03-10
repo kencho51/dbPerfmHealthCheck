@@ -7,6 +7,7 @@ GET /api/analytics/by-month         — rows per month_year (trend line)
 GET /api/analytics/by-db            — top databases by occurrence count
 GET /api/analytics/curation-coverage — % of raw rows with a curated_query entry
 GET /api/analytics/by-hour          — heatmap: row count by hour-of-day × weekday
+GET /api/analytics/top-fingerprints — top N normalised query fingerprints by occurrence count
 """
 from __future__ import annotations
 
@@ -428,5 +429,137 @@ async def analytics_by_hour(
             "by_type":   type_lookup.get(key, {}),
             "top_hosts": host_lookup.get(key, []),
             "top_dbs":   db_lookup.get(key, []),
+        })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analytics/top-fingerprints
+# ---------------------------------------------------------------------------
+
+@router.get("/top-fingerprints", summary="Top normalised query fingerprints by occurrence count")
+async def analytics_top_fingerprints(
+    top_n:       int                    = Query(default=20, ge=1, le=200),
+    environment: Optional[EnvironmentType] = None,
+    source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    type:        Optional[QueryType]       = None,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """
+    Normalises each ``query_details`` value to a stable fingerprint by:
+      1. Lowercasing
+      2. Collapsing single-quoted string literals → ``'?'``
+      3. Collapsing standalone numeric literals → ``?``
+      4. Collapsing whitespace runs to a single space
+      5. Truncating to 300 characters
+
+    Returns the top ``top_n`` fingerprints by total ``occurrence_count`` sum,
+    with a per-type breakdown and the most-common host / database for each.
+    """
+    import polars as pl
+
+    stmt = select(
+        RawQuery.query_details,
+        RawQuery.type,
+        RawQuery.host,
+        RawQuery.db_name,
+        RawQuery.occurrence_count,
+    ).where(
+        RawQuery.query_details.isnot(None)  # type: ignore[union-attr]
+    )
+    if environment is not None:
+        stmt = stmt.where(RawQuery.environment == environment)
+    if source is not None:
+        stmt = stmt.where(RawQuery.source == source)
+    if host is not None:
+        stmt = stmt.where(RawQuery.host == host)
+    if db_name is not None:
+        stmt = stmt.where(RawQuery.db_name == db_name)
+    if month_year is not None:
+        stmt = stmt.where(RawQuery.month_year == month_year)
+    if type is not None:
+        stmt = stmt.where(RawQuery.type == type)
+
+    rows = (await session.exec(stmt)).all()
+    if not rows:
+        return []
+
+    df = pl.DataFrame({
+        "q":     [r.query_details or "" for r in rows],
+        "qtype": [r.type or "unknown"   for r in rows],
+        "host":  [r.host or ""          for r in rows],
+        "db":    [r.db_name or ""       for r in rows],
+        "occ":   [r.occurrence_count    for r in rows],
+    })
+
+    # Vectorised fingerprinting via Polars regex
+    df = df.with_columns(
+        pl.col("q")
+        .str.to_lowercase()
+        .str.replace_all(r"'[^']*'", "'?'")
+        .str.replace_all(r"\b\d+\.?\d*\b", "?")
+        .str.replace_all(r"\s+", " ")
+        .str.strip_chars()
+        .str.slice(0, 300)
+        .alias("fp")
+    )
+
+    # Total occurrences per fingerprint → take top N
+    totals = (
+        df.group_by("fp")
+        .agg(
+            pl.col("occ").sum().alias("count"),
+            pl.len().alias("row_count"),
+        )
+        .sort("count", descending=True)
+        .head(top_n)
+    )
+
+    top_fps = set(totals["fp"].to_list())
+    top_df  = df.filter(pl.col("fp").is_in(top_fps))
+
+    # per-type breakdown
+    by_type_df = (
+        top_df.group_by(["fp", "qtype"])
+        .agg(pl.col("occ").sum().alias("tc"))
+    )
+    type_lookup: dict[str, dict] = {}
+    for row in by_type_df.iter_rows(named=True):
+        type_lookup.setdefault(row["fp"], {})[row["qtype"]] = row["tc"]
+
+    # most-common host / db per fingerprint (Python-level: simpler than nested Polars sort+group)
+    host_agg: dict[str, dict[str, int]] = {}
+    db_agg:   dict[str, dict[str, int]] = {}
+    for row in top_df.iter_rows(named=True):
+        fp, h, d, occ = row["fp"], row["host"], row["db"], row["occ"]
+        if h:
+            host_agg.setdefault(fp, {})
+            host_agg[fp][h] = host_agg[fp].get(h, 0) + occ
+        if d:
+            db_agg.setdefault(fp, {})
+            db_agg[fp][d] = db_agg[fp].get(d, 0) + occ
+
+    host_lookup = {
+        fp: max(hosts.keys(), key=lambda k: hosts[k])
+        for fp, hosts in host_agg.items()
+    }
+    db_lookup = {
+        fp: max(dbs.keys(), key=lambda k: dbs[k])
+        for fp, dbs in db_agg.items()
+    }
+
+    result = []
+    for row in totals.iter_rows(named=True):
+        fp = row["fp"]
+        result.append({
+            "fingerprint":  fp,
+            "count":        row["count"],
+            "row_count":    row["row_count"],
+            "by_type":      type_lookup.get(fp, {}),
+            "example_host": host_lookup.get(fp, ""),
+            "example_db":   db_lookup.get(fp, ""),
         })
     return result

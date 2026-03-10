@@ -178,6 +178,15 @@ export interface HourCell {
   top_dbs:   Array<{ db_name: string; count: number }>;
 }
 
+export interface FingerprintRow {
+  fingerprint:  string;
+  count:        number;   // sum of occurrence_count
+  row_count:    number;   // distinct raw_query rows sharing this fingerprint
+  by_type:      Record<string, number>;
+  example_host: string;
+  example_db:   string;
+}
+
 // ---- API calls ------------------------------------------------------------
 
 export const api = {
@@ -205,6 +214,10 @@ export const api = {
     byHour: (filters?: AnalyticsFilters) => {
       const qs = buildQS(filters);
       return apiFetch<HourCell[]>(`/analytics/by-hour${qs}`);
+    },
+    topFingerprints: (topN = 20, filters?: AnalyticsFilters) => {
+      const qs = buildQS({ top_n: topN, ...filters });
+      return apiFetch<FingerprintRow[]>(`/analytics/top-fingerprints${qs}`);
     },
   },
 
