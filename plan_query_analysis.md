@@ -495,10 +495,7 @@ Each branch has its own independent connection string and compute endpoint. The 
       3. In Neon Console → **Branches**, merge or apply the same migration to `main` before production deploy
     - To reset `dev` to match `main`: Neon Console → **Branches** → `dev` → **Reset from parent**
 
-39. **Remove SQLite artifacts** (once Neon is confirmed working):
-    - Delete `db/master.db`
-    - Remove `add_source_col.py` migration script
-    - Remove `aiosqlite` from any remaining references
+39. **Keep SQLite artifacts for future development** (once Neon is confirmed working):
     - Update `README.md` to reflect PostgreSQL/Neon setup
 
 ---
