@@ -3,19 +3,27 @@ Alembic environment script.
 
 Key changes from the generated default:
   - Imports SQLModel metadata from api.models so autogenerate works.
-  - Reads the DB URL from the .ini file (falls back to SQLITE_PATH env var).
-  - Uses the synchronous SQLite driver for the Alembic CLI; the app uses
-    aiosqlite at runtime (see api/database.py).
+  - Loads DATABASE_URL from api/.env via python-dotenv.
+  - Converts the asyncpg URL to psycopg2 for the synchronous Alembic CLI.
+    (Runtime uses asyncpg; migrations CLI uses psycopg2-binary.)
 """
 from __future__ import annotations
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from alembic import context
+
+# ---------------------------------------------------------------------------
+# Load env file before anything else
+# ---------------------------------------------------------------------------
+_ENV_FILE = Path(__file__).parent.parent / ".env"   # api/.env
+load_dotenv(_ENV_FILE)
 
 # ---------------------------------------------------------------------------
 # Import models so SQLModel.metadata is populated for autogenerate
@@ -38,10 +46,14 @@ target_metadata = SQLModel.metadata
 # Optionally override the URL from the environment (e.g. in CI)
 # ---------------------------------------------------------------------------
 def _get_url() -> str:
-    env_path = os.getenv("SQLITE_PATH")
-    if env_path:
-        return f"sqlite:///{env_path}"
-    return config.get_main_option("sqlalchemy.url")
+    raw = os.environ.get("DATABASE_URL", "")
+    if not raw:
+        raise RuntimeError(
+            "DATABASE_URL is not set. "
+            "Ensure api/.env exists with DATABASE_URL=postgresql://..."
+        )
+    # Alembic CLI needs psycopg2 (sync) scheme
+    return raw.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +66,6 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -77,8 +88,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            # Needed for ALTER TABLE support in SQLite (batch mode)
-            render_as_batch=True,
         )
         with context.begin_transaction():
             context.run_migrations()

@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.database import apply_pragmas, create_db_and_tables
+from api.database import ASYNC_DATABASE_URL, create_db_and_tables
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +31,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — applying SQLite PRAGMAs & ensuring tables exist …")
-    await apply_pragmas()
+    logger.info("Starting up — connecting to Neon PostgreSQL …")
     await create_db_and_tables()
-    logger.info("DB ready: %s", app.state.db_url if hasattr(app.state, "db_url") else "see SQLITE_PATH env")
+    logger.info("DB ready — connected to Neon (asyncpg)")
     yield
     logger.info("Shutting down …")
 
@@ -130,8 +129,9 @@ app = create_app()
 
 @app.get("/health", tags=["system"])
 async def health() -> dict:
-    from api.database import SQLITE_PATH
+    # Mask credentials in the displayed URL
+    display_url = ASYNC_DATABASE_URL.split("@")[-1] if "@" in ASYNC_DATABASE_URL else ASYNC_DATABASE_URL
     return {
         "status": "ok",
-        "db": str(SQLITE_PATH),
+        "db": f"postgresql+asyncpg://<credentials>@{display_url}",
     }

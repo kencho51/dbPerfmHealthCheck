@@ -1,12 +1,19 @@
 """
-SQLite engine and async session factory.
+PostgreSQL (Neon) engine and async session factory.
 
-The database file lives at  db/master.db  (relative to the project root).
-Override at runtime with the SQLITE_PATH env var.
+Connection string is read from  api/.env  (DATABASE_URL).
+The driver chain is:
+  - Runtime   : asyncpg  (postgresql+asyncpg://)
+  - Alembic   : psycopg2 (handled in api/migrations/env.py)
 
-Usage in a FastAPI route:
-    async with get_session() as session:
-        result = await session.exec(select(RawQuery))
+The public interface is intentionally identical to the previous SQLite version
+so that routers and services require no changes:
+    get_session()          — FastAPI Depends generator
+    open_session()         — async context manager for scripts / tests
+    create_db_and_tables() — idempotent schema bootstrap (Alembic owns this in prod)
+
+Start the dev server from the project root:
+    uv run uvicorn api.main:app --port 8000 --reload
 """
 from __future__ import annotations
 
@@ -14,39 +21,63 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
+from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 # ---------------------------------------------------------------------------
-# Resolve DB path
+# Load environment variables from api/.env (no-op if already loaded / not found)
 # ---------------------------------------------------------------------------
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_DB = _PROJECT_ROOT / "db" / "master.db"
-
-SQLITE_PATH: Path = Path(os.getenv("SQLITE_PATH", str(_DEFAULT_DB)))
-SQLITE_URL: str = f"sqlite+aiosqlite:///{SQLITE_PATH}"
+_ENV_FILE = Path(__file__).parent / ".env"
+load_dotenv(_ENV_FILE)
 
 # ---------------------------------------------------------------------------
-# Engine (created once at module import; reused across requests)
+# Resolve PostgreSQL connection URL
 # ---------------------------------------------------------------------------
+_raw_url: str = os.environ.get("DATABASE_URL", "")
+if not _raw_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set. "
+        "Create api/.env with DATABASE_URL=postgresql://... "
+        "or export the variable in your shell before starting the server."
+    )
 
+# asyncpg requires the  postgresql+asyncpg://  scheme.
+# asyncpg does NOT accept sslmode= or channel_binding= as URL query params —
+# strip them and pass ssl=True via connect_args instead.
+def _build_async_url(raw: str) -> tuple[str, dict]:
+    """Return (async_url, connect_args) for asyncpg, handling sslmode/channel_binding."""
+    pg_url = raw.replace("postgresql://", "postgresql+asyncpg://", 1)
+    parsed = urlparse(pg_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    ssl_needed = params.pop("sslmode", ["disable"])[0].lower() in ("require", "verify-ca", "verify-full")
+    params.pop("channel_binding", None)   # asyncpg does not support this param
+    clean_query = urlencode({k: v[0] for k, v in params.items()})
+    clean_url = urlunparse(parsed._replace(query=clean_query))
+    connect_args = {"ssl": ssl_needed} if ssl_needed else {}
+    return clean_url, connect_args
+
+ASYNC_DATABASE_URL, _connect_args = _build_async_url(_raw_url)
+
+# ---------------------------------------------------------------------------
+# Engine — created once at import time; reused across requests
+# ---------------------------------------------------------------------------
 engine: AsyncEngine = create_async_engine(
-    SQLITE_URL,
-    echo=False,           # set True to log SQL for debugging
-    connect_args={
-        "check_same_thread": False,
-        "timeout": 30,
-    },
+    ASYNC_DATABASE_URL,
+    echo=False,        # set True to log SQL for debugging
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,  # discard stale connections from the pool
+    connect_args=_connect_args,
 )
 
 
 # ---------------------------------------------------------------------------
-# Session: FastAPI Depends (async generator) + direct use (context manager)
+# Session: FastAPI Depends (async generator)
 # ---------------------------------------------------------------------------
-
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Async generator — for use with FastAPI `Depends(get_session)`."""
     async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -58,11 +89,13 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+# ---------------------------------------------------------------------------
+# Session: direct programmatic use (scripts, tests, services)
+# ---------------------------------------------------------------------------
 @asynccontextmanager
 async def open_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    Async context manager — for direct programmatic use (scripts, tests,
-    services that are called outside a FastAPI request lifecycle).
+    Async context manager — for scripts / tests outside the FastAPI lifecycle.
 
     Usage:
         async with open_session() as session:
@@ -80,25 +113,14 @@ async def open_session() -> AsyncGenerator[AsyncSession, None]:
 # ---------------------------------------------------------------------------
 # DB initialisation helpers (called from app lifespan)
 # ---------------------------------------------------------------------------
-
-async def apply_pragmas() -> None:
-    """Set SQLite performance/safety PRAGMAs once per connection."""
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
-        await conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
-        await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
-        await conn.exec_driver_sql("PRAGMA cache_size=-64000")   # 64 MB page cache
-        await conn.exec_driver_sql("PRAGMA temp_store=MEMORY")
-
-
 async def create_db_and_tables() -> None:
-    """Create all SQLModel tables if they don't yet exist.
-
-    In production this is handled by Alembic migrations; this function is
-    kept as a fallback for fresh dev setups without running 'alembic upgrade'.
     """
-    # Import models so SQLModel metadata is populated before create_all
-    import api.models  # noqa: F401
+    Create all SQLModel tables if they don't yet exist.
+
+    In production, Alembic manages schema; this is kept as a dev convenience
+    so a fresh checkout can start without running 'alembic upgrade head'.
+    """
+    import api.models  # noqa: F401 — registers RawQuery + Pattern tables
 
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
