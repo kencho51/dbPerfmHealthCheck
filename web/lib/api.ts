@@ -118,6 +118,7 @@ export interface UploadResult {
 // ---- Analytics ------------------------------------------------------------
 
 export interface AnalyticsFilters {
+  [key: string]: string | number | undefined;  // index signature — allows passing directly to buildQS
   host?:        string;
   db_name?:     string;
   environment?: string;
