@@ -1,7 +1,7 @@
 # Neon PostgreSQL Implementation Guide
 
 > **Branch**: `migrate-to-neon-psql-db`
-> **Status**: Schema applied ✅ | App role configured ✅ | All SQL via HTTPS port 443 ✅
+> **Status**: Schema applied ✅ | App role configured ✅ | All SQL via HTTPS port 443 ✅ | CSV upload working ✅
 
 ---
 
@@ -19,11 +19,17 @@ Next.js (web/)
 FastAPI (api/)
     │  NeonSession.exec/execute() → urllib.request (HTTPS POST)
     ▼
-Neon REST API  →  POST /api/v2/projects/{id}/query   (port 443)
+Neon HTTP SQL endpoint  →  POST https://{endpoint}.aws.neon.tech/sql   (port 443)
+    │  Header: Neon-Connection-String: postgresql://user:pass@host/db?sslmode=require
+    │  Body:   { "query": "INSERT ... ($1, $2, ...)", "params": [...] }
     ▼
 Neon PostgreSQL (perfmdb)
     └── Branch: production  →  ep-rough-morning-a1v4c224
 ```
+
+> ⚠️ **NOT used**: `https://console.neon.tech/api/v2/projects/{id}/query` — this management API is
+> blocked by Zscaler IPS (classified as "malicious content"). The direct compute endpoint above
+> (`ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech`) is **not blocked**.
 
 ---
 
@@ -67,7 +73,13 @@ PGDATABASE=perfmdb
 PGUSER=perfmdb_owner
 PGPASSWORD=<password>
 
-# Neon REST API (HTTPS port 443 — bypasses corporate proxy port 5432 block)
+# HTTP SQL endpoint password — MUST match PGPASSWORD.
+# Password MUST be reset via Neon Console UI (Roles → perfmdb_owner → Reset password).
+# Passwords created via SQL (CREATE ROLE / ALTER ROLE ... PASSWORD) are NOT
+# SCRAM-SHA-256 and will fail with "missing authentication credentials".
+NEON_SQL_PASS=<password>
+
+# Neon API key (used by dev tooling / migration scripts only)
 NEON_ORG_ID=org-bitter-tree-45878282
 NEON_API_KEY=<api_key>
 
@@ -77,6 +89,89 @@ NEON_PROD_BRANCH=production
 ```
 
 > `api/.env` is gitignored. Never commit credentials.
+
+---
+
+## DB Backend Switcher
+
+The app supports two backends selected entirely by `DB_BACKEND` in `api/.env`. No code changes required.
+
+| `DB_BACKEND` | Session class | Connection | Use case |
+|---|---|---|---|
+| `neon` **(default)** | `NeonSession` | Neon HTTPS REST API (port 443) | Production, behind corporate proxy |
+| `sqlite` | SQLModel `AsyncSession` | Local `master.db` via `aiosqlite` | Offline dev, unit tests |
+
+### Switching to SQLite (offline dev)
+
+**Step 1** — Edit `api/.env`:
+```dotenv
+DB_BACKEND=sqlite
+SQLITE_URL=sqlite+aiosqlite:///./master.db   # path relative to project root
+```
+
+**Step 2** — Create the SQLite schema (first time only):
+```powershell
+# From the project root (dbPerfmHealthCheck/)
+uv run python - <<'EOF'
+import asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlmodel import SQLModel
+from api.models import RawQuery, PatternLabel, CuratedQuery  # adjust imports if needed
+
+async def main():
+    engine = create_async_engine("sqlite+aiosqlite:///./master.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+
+asyncio.run(main())
+EOF
+```
+
+Or use Alembic if you have a working migration (SQLite-compatible):
+```powershell
+uv run alembic upgrade head
+```
+
+**Step 3** — Restart the dev server:
+```powershell
+uv run uvicorn api.main:app --port 8000 --reload
+```
+
+**Step 4** — Verify via `/health`:
+```
+GET http://127.0.0.1:8000/health
+```
+Expected response:
+```json
+{
+  "status": "ok",
+  "backend": "sqlite",
+  "db": "sqlite+aiosqlite:///./master.db"
+}
+```
+Startup log will confirm: `INFO: Starting up — DB_BACKEND=sqlite`
+
+---
+
+### Switching back to Neon
+
+**Step 1** — Edit `api/.env`:
+```dotenv
+DB_BACKEND=neon
+```
+
+**Step 2** — Restart the dev server.
+
+**Step 3** — Verify via `/health`:
+```json
+{
+  "status": "ok",
+  "backend": "neon",
+  "db": "ep-rough-morning-a1v4c224-pooler.ap-southeast-1.aws.neon.tech/perfmdb?sslmode=require"
+}
+```
+
+---
 
 ### Role Separation
 
@@ -126,18 +221,76 @@ Public generators: `get_session()` (FastAPI Depends), `open_session()` (context 
 
 ### `api/neon_http.py`
 
-Low-level HTTP executor. `_sync_http_sql(sql)` tries the direct `/sql` Neon endpoint first
-(HTTP SQL API), then falls back to the management REST API.
+Low-level HTTP executor. Sends all SQL to the **direct Neon compute endpoint** (`/sql`),
+not the management REST API.
 
 ```python
 class NeonHTTPSession:
-    async def exec(self, stmt)     → _NeonResult    # SELECT
-    async def execute(self, stmt)  → _NeonExecResult   # DML
+    async def exec(self, stmt)     → _NeonResult     # SELECT  (literal_binds — our values only)
+    async def execute(self, stmt)  → _NeonExecResult # DML     (parameterized $1/$2 — see below)
     async def get(self, model, pk) → model instance or None  # PK lookup
 ```
 
-`get()` maps the returned row tuple to a proper model instance using
-`sa_inspect(model).mapper.columns` ordering — routers can call `setattr()` safely.
+#### Auth — `Neon-Connection-String` header only
+
+The endpoint authenticates via the connection string URL in `Neon-Connection-String`.
+Do **NOT** send `Authorization: Basic` — it causes a 400 error:
+
+```python
+headers={
+    # ✅ Correct — credentials embedded in the connection-string URL
+    "Content-Type": "application/json",
+    "Neon-Connection-String": "postgresql://perfmdb_owner:<pass>@<endpoint>/perfmdb?sslmode=require",
+    # ❌ WRONG — adding Authorization: Basic breaks auth (returns 400 "missing authentication credentials")
+}
+```
+
+#### Parameterized queries for DML — Zscaler IPS workaround
+
+CSV files contain real SQL query text (captured from `sys.dm_exec_query_stats`, MongoDB slow query
+logs, etc.). When this text was inlined into INSERT statements via `literal_binds=True`, Zscaler's
+IPS engine flagged the HTTPS request body as SQL injection → **HTTP 403 Forbidden**.
+
+Fix: `execute()` uses `_compile_parameterized()` which compiles to `$1/$2/...` style SQL
+(asyncpg dialect) and sends user data in the JSON `params` array:
+
+```python
+def _compile_parameterized(stmt) -> tuple[str, list]:
+    """Compile INSERT/UPDATE to $1/$2/... SQL — user data in params, not inline."""
+    dialect = _pg_asyncpg.dialect()
+    compiled = stmt.compile(dialect=dialect, compile_kwargs={"render_postcompile": True})
+    params = []
+    for key in (compiled.positiontup or []):
+        val = (compiled.params or {}).get(key)
+        if hasattr(val, "isoformat"):   # datetime → ISO string
+            val = val.isoformat()
+        params.append(val)
+    return str(compiled), params
+
+# HTTP body sent to Neon:
+# { "query": "INSERT INTO raw_query ... VALUES ($1, $2, ...) ON CONFLICT ...",
+#   "params": ["abc123", null, "sql", "WINFODB06HV11", "fb_db_v2", ...] }
+```
+
+`exec()` (SELECT) still uses `literal_binds=True` — those values come from our own code,
+never from user-supplied CSV content.
+
+#### Response format
+
+```json
+{
+  "fields":   [{"name": "col", "dataTypeID": 19}],
+  "rows":     [{"col": "value"}],
+  "command":  "SELECT",
+  "rowCount": 1,
+  "rowAsArray": false
+}
+```
+
+Rows come back as **dicts** (keyed by column name). `rowCount` = server-reported affected count,
+used directly for INSERT/UPDATE/DELETE (e.g. `{"command": "INSERT", "rowCount": 50, "rows": []}`).
+
+`get()` maps the returned row to a model instance using `sa_inspect(model).mapper.columns` ordering.
 
 ### `api/services/ingestor.py`
 
@@ -220,67 +373,50 @@ Indexes on: `pattern_label(name, severity, source)`, `raw_query(query_hash UNIQU
 
 ---
 
-## Neon REST API Usage
+## Neon HTTP SQL Endpoint
 
-Because the **corporate proxy blocks the PostgreSQL wire protocol on port 5432** (SSL handshake is reset after TCP connect), all management operations use the Neon REST API over **HTTPS port 443**.
-
-### Base URL
+All runtime SQL is sent to the **direct compute endpoint** (not the management API):
 
 ```
-https://console.neon.tech/api/v2
-```
+POST https://ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech/sql
+Content-Type: application/json
+Neon-Connection-String: postgresql://perfmdb_owner:<pass>@<endpoint>/perfmdb?sslmode=require
 
-Authentication: `Authorization: Bearer <NEON_API_KEY>`
-
-### Query Execution
-
-```python
-body = {
-    "query":       "SELECT ...",
-    "db_name":     "perfmdb",
-    "endpoint_id": "ep-rough-morning-a1v4c224",
-    "role_name":   "neondb_owner",
+{
+  "query":  "SELECT current_user",
+  "params": []
 }
-# POST https://console.neon.tech/api/v2/projects/{project_id}/query
 ```
 
-**Response format** (always HTTP 200, SQL errors return `success: false`):
+**Response** (HTTP 200 on success, 4xx on SQL or auth error):
 
 ```json
 {
-  "success": true,
-  "duration": 1206729,
-  "response": [
-    {
-      "query": "#1: SELECT ...",
-      "data": {
-        "fields": ["col1", "col2"],
-        "rows":   [["val1", "val2"]],
-        "truncated": false
-      }
-    }
-  ]
+  "fields":   [{"name": "current_user", "dataTypeID": 19}],
+  "rows":     [{"current_user": "perfmdb_owner"}],
+  "command":  "SELECT",
+  "rowCount": 1,
+  "rowAsArray": false
 }
 ```
 
-> ⚠️ Rows are accessed at `response[0]["data"]["rows"]` — **not** the top-level `rows`.
-> Empty results return `None` for the `rows` key — handled with `.get("rows") or []`.
+> `rowCount` is the actual affected-row count for DML — not the number of rows in the response body.
 
-### Project & Branch Management
+### Password requirements
 
-```python
-# List projects (org_id required for org-scoped API keys)
-GET /projects?org_id=org-bitter-tree-45878282
+> ⚠️ Password MUST be generated via **Neon Console UI → Roles → Reset password**.
+> Passwords set via SQL (`ALTER ROLE ... PASSWORD '...'`) do not use SCRAM-SHA-256
+> and will be rejected with `{"message": "missing authentication credentials: required password"}`.
 
-# List branches
-GET /projects/{project_id}/branches
+### What about the management REST API?
 
-# List databases on a branch
-GET /projects/{project_id}/branches/{branch_id}/databases
+`https://console.neon.tech/api/v2/projects/{id}/query` was considered early in development but
+is **not used** for two reasons:
+1. **Blocked by Zscaler IPS** — classified as "malicious content"
+2. **SQL-created roles not recognised** — `perfmdb_owner` (created via `CREATE ROLE`) was rejected with 403
 
-# Delete a database
-DELETE /projects/{project_id}/branches/{branch_id}/databases/{db_name}
-```
+The direct compute endpoint (`ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech`) is **not
+blocked** and authenticates any Console-reset password correctly.
 
 ---
 
@@ -356,9 +492,43 @@ When ready → apply same migration to production branch
 |---|---|---|
 | asyncpg direct | 5432 | ❌ SSL reset by proxy |
 | psycopg2 / Alembic CLI | 5432 | ❌ SSL reset by proxy |
-| **NeonHTTPSession (app runtime)** | **443 HTTPS** | **✅ All SQL works** |
-| Neon REST API (schema scripts) | 443 HTTPS | ✅ Works |
+| Neon management API (`console.neon.tech`) | 443 HTTPS | ❌ Zscaler IPS block ("malicious content") |
+| **NeonHTTPSession — direct `/sql` endpoint** | **443 HTTPS** | **✅ All SQL works** |
 | Neon Console SQL Editor (browser) | 443 HTTPS | ✅ Works |
+
+### Why two different Zscaler blocks?
+
+**Block 1 — Port 5432:** The corporate proxy performs SSL inspection and resets the TCP connection
+after the TLS handshake for any non-HTTPS traffic. PostgreSQL wire protocol on port 5432 is dropped.
+
+**Block 2 — Management API (`console.neon.tech`):** Zscaler IPS classifies `console.neon.tech`
+as malicious content (possibly due to shared SaaS abuse patterns). Any request to this domain
+returns 403 even over HTTPS port 443.
+
+**Not blocked:** The compute endpoint `ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech`
+is standard AWS infrastructure and passes through Zscaler unblocked.
+
+### Why CSV upload was still 403 after switching to the compute endpoint
+
+CSV files contain captured SQL query text (from `sys.dm_exec_query_stats`, MongoDB slow query logs,
+etc.). When that text was embedded **inline** in the INSERT body (`literal_binds=True`), the full
+SQL text appeared in the HTTPS request — Zscaler IPS pattern-matched it as SQL injection → 403.
+
+**Fix:** `execute()` now uses `_compile_parameterized()`. The SQL template uses `$1/$2/...`
+placeholders; actual values (including query text) go in the `params` JSON array. Zscaler no longer
+pattern-matches user data because it is in a structured JSON field, not inline SQL text.
+
+```
+Before (blocked):
+  POST /sql  {"query": "INSERT ... VALUES ('SELECT /* captured */ * FROM sys.dm_exec...', ...)", "params": []}
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                           SQL injection pattern → Zscaler IPS → 403
+
+After (working):
+  POST /sql  {"query": "INSERT ... VALUES ($1, $2, ...)", "params": ["SELECT /* captured */ * FROM sys.dm_exec..."]}
+                                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                                      In params array → passes through
+```
 
 The FastAPI app is **fully operational** using `NeonHTTPSession`.
 No code changes are needed if/when port 5432 is eventually unblocked —

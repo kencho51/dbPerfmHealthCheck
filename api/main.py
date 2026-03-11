@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.database import ASYNC_DATABASE_URL
+from api.database import ASYNC_DATABASE_URL, DB_BACKEND
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Schema is managed externally via migration.sql applied through the Neon REST API.
     # All SQL runs over Neon HTTPS REST API — no port 5432 connection at startup.
-    logger.info("Starting up — Neon PostgreSQL via HTTPS REST API")
+    logger.info("Starting up — DB_BACKEND=%s", DB_BACKEND)
     yield
     logger.info("Shutting down …")
 
@@ -132,6 +132,7 @@ async def health() -> dict:
     # Mask credentials in the displayed URL
     display_url = ASYNC_DATABASE_URL.split("@")[-1] if "@" in ASYNC_DATABASE_URL else ASYNC_DATABASE_URL
     return {
-        "status": "ok",
-        "db": f"postgresql+asyncpg://<credentials>@{display_url}",
+        "status":   "ok",
+        "backend":  DB_BACKEND,                 # "neon" or "sqlite"
+        "db":       display_url,                # host/path without credentials
     }

@@ -1,13 +1,16 @@
 """
-Neon PostgreSQL session — all SQL sent via HTTPS REST API (port 443).
+Database session factory — supports two backends selected by DB_BACKEND env var:
 
-Port 5432 is blocked by the corporate proxy, so psycopg2/asyncpg wire protocol
-is never used at runtime.  Schema migrations are applied via
-migration.sql applied via the Neon REST API (see _test_neon.py for an apply script).
+  DB_BACKEND=neon   (default) — all SQL via Neon HTTPS REST API (port 443).
+                                 Port 5432 is blocked by the corporate proxy.
+  DB_BACKEND=sqlite            — local SQLite file (SQLITE_URL or ./master.db).
+                                 Useful for offline development / unit tests.
 
 Public interface:
-    get_session()  — FastAPI Depends generator
-    open_session() — async context manager for scripts / tests
+    get_session()       — FastAPI Depends generator
+    open_session()      — async context manager for scripts / tests
+    DB_BACKEND          — "neon" | "sqlite"  (for /health display)
+    ASYNC_DATABASE_URL  — sanitised connection URL  (for /health display)
 """
 from __future__ import annotations
 
@@ -31,12 +34,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 _ENV_FILE = Path(__file__).parent / ".env"
 load_dotenv(_ENV_FILE)
 
-_raw_url: str = os.environ.get("DATABASE_URL", "")
-if not _raw_url:
-    raise RuntimeError(
-        "DATABASE_URL is not set. "
-        "Create api/.env with DATABASE_URL=postgresql://..."
-    )
+DB_BACKEND: str = os.environ.get("DB_BACKEND", "neon").lower().strip()
+
+if DB_BACKEND not in ("neon", "sqlite"):
+    raise RuntimeError(f"DB_BACKEND must be 'neon' or 'sqlite', got: {DB_BACKEND!r}")
 
 
 def _build_pg_url(raw: str) -> str:
@@ -49,8 +50,31 @@ def _build_pg_url(raw: str) -> str:
     return urlunparse(parsed._replace(query=clean_query))
 
 
-# Kept as a public constant for the /health endpoint display in main.py
-ASYNC_DATABASE_URL: str = _build_pg_url(_raw_url)
+# ---------------------------------------------------------------------------
+# Backend-specific setup
+# ---------------------------------------------------------------------------
+if DB_BACKEND == "neon":
+    _raw_url: str = os.environ.get("DATABASE_URL", "")
+    if not _raw_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. "
+            "Create api/.env with DATABASE_URL=postgresql://..."
+        )
+    ASYNC_DATABASE_URL: str = _build_pg_url(_raw_url)
+else:  # sqlite
+    _sqlite_raw = os.environ.get("SQLITE_URL", "sqlite+aiosqlite:///./master.db")
+    ASYNC_DATABASE_URL = _sqlite_raw
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlmodel.ext.asyncio.session import AsyncSession as _SQLModelAsyncSession
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    _sqlite_engine = create_async_engine(ASYNC_DATABASE_URL, echo=False)
+    _SQLiteSessionFactory = _sessionmaker(
+        _sqlite_engine,
+        class_=_SQLModelAsyncSession,
+        expire_on_commit=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,20 +203,29 @@ Psycopg2Session = NeonSession
 
 
 # ---------------------------------------------------------------------------
-# FastAPI Depends generator
+# FastAPI Depends generator  — dispatches on DB_BACKEND
 # ---------------------------------------------------------------------------
 
-async def get_session() -> AsyncGenerator[NeonSession, None]:
-    """Yield a NeonSession; commit on success, rollback on exception."""
-    session = NeonSession()
-    try:
-        yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+async def get_session() -> AsyncGenerator:  # type: ignore[type-arg]
+    """
+    Yield the active DB session.
+
+    DB_BACKEND=neon   → NeonSession  (Neon HTTPS REST API)
+    DB_BACKEND=sqlite → SQLModel AsyncSession (local SQLite via aiosqlite)
+    """
+    if DB_BACKEND == "neon":
+        session = NeonSession()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+    else:
+        async with _SQLiteSessionFactory() as session:  # type: ignore[operator]
+            yield session
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +233,7 @@ async def get_session() -> AsyncGenerator[NeonSession, None]:
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
-async def open_session() -> AsyncGenerator[NeonSession, None]:
+async def open_session() -> AsyncGenerator:  # type: ignore[type-arg]
     """
     Async context manager — for scripts / tests outside the FastAPI lifecycle.
 
@@ -208,14 +241,18 @@ async def open_session() -> AsyncGenerator[NeonSession, None]:
         async with open_session() as session:
             result = await session.exec(select(RawQuery))
     """
-    session = NeonSession()
-    try:
-        yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    if DB_BACKEND == "neon":
+        session = NeonSession()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+    else:
+        async with _SQLiteSessionFactory() as session:  # type: ignore[operator]
+            yield session
 
 
