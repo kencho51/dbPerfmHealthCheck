@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.database import ASYNC_DATABASE_URL, create_db_and_tables
+from api.database import ASYNC_DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — connecting to Neon PostgreSQL …")
-    await create_db_and_tables()
-    logger.info("DB ready — connected to Neon (asyncpg)")
+    # Schema is managed externally via migration.sql applied through the Neon REST API.
+    # All SQL runs over Neon HTTPS REST API — no port 5432 connection at startup.
+    logger.info("Starting up — Neon PostgreSQL via HTTPS REST API")
     yield
     logger.info("Shutting down …")
 

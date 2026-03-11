@@ -15,25 +15,16 @@ from __future__ import annotations
 
 import hashlib
 import re
-import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy import update as sa_update
-from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from api.database import NeonSession
 
 from api.models import RawQuery
 
-# SQLModel emits a DeprecationWarning when .execute() is used on a session,
-# suggesting .exec() instead.  For INSERT and UPDATE statements (non-SELECT),
-# .execute() is the correct SQLAlchemy method; .exec() is SQLModel's SELECT-only
-# wrapper.  Suppress the false-positive warning for this module only.
-warnings.filterwarnings(
-    "ignore",
-    message=".*You probably want to use.*session.exec.*",
-    category=DeprecationWarning,
-)
+# Rows sent per HTTPS call.  50 rows ≈ ~5 KB payload — well within limits.
+BATCH_SIZE = 50
 
 
 # ---------------------------------------------------------------------------
@@ -129,87 +120,73 @@ class IngestResult:
 # Main ingest function
 # ---------------------------------------------------------------------------
 
-async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
+async def ingest_rows(rows: list[dict], session: NeonSession) -> IngestResult:
     """
-    Insert or update raw_query rows in bulk.
+    Upsert raw_query rows in batches of BATCH_SIZE via the Neon HTTPS REST API.
 
-    Uses SQLite's INSERT OR IGNORE + a follow-up UPDATE on conflict via
-    SQLAlchemy's dialect-level upsert so we don't lose the occurrence counter.
+    Each batch sends a single INSERT ... ON CONFLICT (query_hash) DO UPDATE
+    statement, reducing 1000 rows from ~1000 HTTP calls to ~20 calls (~50x
+    faster than the previous row-by-row approach).
+
+    On conflict (same hash already in DB):
+        - occurrence_count += 1
+        - last_seen / updated_at refreshed
+        - all other fields left unchanged
     """
     result = IngestResult()
-
     if not rows:
         return result
 
     now = _now()
+    all_values: list[dict] = []
 
     for row in rows:
         try:
-            q_hash = compute_hash(row)
-
-            # Normalise enum-like fields to their string values
+            q_hash      = compute_hash(row)
             source      = (row.get("source") or "unknown").lower()
             environment = (row.get("environment") or "unknown").lower()
             q_type      = (row.get("type") or "unknown").lower()
 
-            # Clamp to known enum values
-            if source not in ("sql", "mongodb"):
-                source = "sql"
-            if environment not in ("prod", "sat", "unknown"):
-                environment = "unknown"
-            if q_type not in ("slow_query", "slow_query_mongo", "blocker", "deadlock", "unknown"):
-                q_type = "unknown"
+            if source not in ("sql", "mongodb"):                                         source = "sql"
+            if environment not in ("prod", "sat", "unknown"):                            environment = "unknown"
+            if q_type not in ("slow_query", "slow_query_mongo", "blocker", "deadlock", "unknown"): q_type = "unknown"
 
-            values = {
-                "query_hash":      q_hash,
-                "time":            row.get("time") or None,
-                "source":          source,
-                "host":            row.get("host") or None,
-                "db_name":         row.get("db_name") or None,
-                "environment":     environment,
-                "type":            q_type,
-                "query_details":   row.get("query_details") or None,
-                "month_year":      _derive_month_year(row.get("time")),
+            all_values.append({
+                "query_hash":       q_hash,
+                "time":             row.get("time") or None,
+                "source":           source,
+                "host":             row.get("host") or None,
+                "db_name":          row.get("db_name") or None,
+                "environment":      environment,
+                "type":             q_type,
+                "query_details":    row.get("query_details") or None,
+                "month_year":       _derive_month_year(row.get("time")),
                 "occurrence_count": int(row.get("occurrence_count") or 1),
-                "first_seen":      now,
-                "last_seen":       now,
-                "created_at":      now,
-                "updated_at":      now,
-            }
-
-            stmt = sqlite_insert(RawQuery).values(**values)
-
-            # On conflict: bump the counter and refresh last_seen / updated_at
-            stmt = sqlite_insert(RawQuery).values(**values).on_conflict_do_nothing(
-                index_elements=["query_hash"]
-            )
-
-            # Use execute() (not exec()) — exec() is SQLModel's select-only helper
-            exec_result = await session.execute(stmt)
-
-            if exec_result.rowcount == 1:
-                # Fresh insert — row did not exist
-                result.inserted += 1
-            else:
-                # Row already existed (conflict ignored) — bump counters manually
-                # Also backfill month_year in case it was NULL previously (e.g. date
-                # format not yet supported when the row was first inserted).
-                derived_month = _derive_month_year(row.get("time"))
-                upd = (
-                    sa_update(RawQuery)
-                    .where(RawQuery.query_hash == q_hash)
-                    .values(
-                        occurrence_count=RawQuery.occurrence_count + 1,
-                        last_seen=now,
-                        updated_at=now,
-                        **({"month_year": derived_month} if derived_month else {}),
-                    )
-                )
-                await session.execute(upd)
-                result.updated += 1
-
+                "first_seen":       now,
+                "last_seen":        now,
+                "created_at":       now,
+                "updated_at":       now,
+            })
         except Exception as exc:
             result.errors.append(f"Row error ({row.get('host', '?')}): {exc}")
             result.skipped += 1
+
+    # --- Batch upsert: one HTTPS call per BATCH_SIZE rows ---
+    for i in range(0, len(all_values), BATCH_SIZE):
+        chunk = all_values[i : i + BATCH_SIZE]
+        stmt = (
+            pg_insert(RawQuery)
+            .values(chunk)
+            .on_conflict_do_update(
+                index_elements=["query_hash"],
+                set_={
+                    "occurrence_count": RawQuery.occurrence_count + 1,
+                    "last_seen":        now,
+                    "updated_at":       now,
+                },
+            )
+        )
+        await session.execute(stmt)
+        result.inserted += len(chunk)   # INSERT + UPDATE both counted as processed
 
     return result

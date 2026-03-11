@@ -28,7 +28,7 @@ load_dotenv(_ENV_FILE)
 # ---------------------------------------------------------------------------
 # Import models so SQLModel.metadata is populated for autogenerate
 # ---------------------------------------------------------------------------
-import api.models  # noqa: F401  — registers RawQuery + Pattern tables
+import api.models  # noqa: F401  — registers PatternLabel, CuratedQuery, RawQuery tables
 
 # ---------------------------------------------------------------------------
 # Alembic config object

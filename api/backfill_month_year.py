@@ -10,15 +10,14 @@ from __future__ import annotations
 import asyncio
 
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
 
-from api.database import engine
+from api.database import open_session
 from api.models import RawQuery
 from api.services.ingestor import _derive_month_year
 
 
 async def backfill() -> None:
-    async with AsyncSession(engine) as session:
+    async with open_session() as session:
         # Fetch only rows missing month_year that have a non-null time
         stmt = (
             select(RawQuery)

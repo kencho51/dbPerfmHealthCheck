@@ -6,8 +6,7 @@ Idempotent — skips labels that already exist (matched by name).
 
 import asyncio
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
-from api.database import engine
+from api.database import open_session
 from api.models import PatternLabel
 
 DEFAULT_LABELS = [
@@ -253,7 +252,7 @@ DEFAULT_LABELS = [
 
 
 async def seed() -> None:
-    async with AsyncSession(engine) as session:
+    async with open_session() as session:
         # Build lookup: name -> existing row
         result = await session.exec(select(PatternLabel))
         existing: dict[str, PatternLabel] = {r.name: r for r in result.all()}

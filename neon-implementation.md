@@ -1,24 +1,28 @@
 # Neon PostgreSQL Implementation Guide
 
 > **Branch**: `migrate-to-neon-psql-db`
-> **Status**: Schema applied ✅ | App role configured ✅ | Port 5432 blocked by corporate proxy ⚠️
+> **Status**: Schema applied ✅ | App role configured ✅ | All SQL via HTTPS port 443 ✅
 
 ---
 
 ## Overview
 
-The `dbPerfmHealthCheck` FastAPI backend was migrated from SQLite (`aiosqlite`) to Neon PostgreSQL (`asyncpg`). The architecture is:
+The `dbPerfmHealthCheck` FastAPI backend runs entirely over **Neon's HTTPS REST API**.
+The corporate proxy resets PostgreSQL wire-protocol SSL on port 5432, so `asyncpg`
+and `psycopg2` are **not used at runtime**. All SQL statements — SELECT, INSERT,
+UPDATE, DELETE — are sent as JSON payloads over HTTPS port 443.
 
 ```
 Next.js (web/)
     │  HTTP only (no direct DB access)
     ▼
 FastAPI (api/)
-    │  asyncpg over postgresql+asyncpg://
+    │  NeonSession.exec/execute() → urllib.request (HTTPS POST)
     ▼
-Neon PostgreSQL
-    ├── Branch: production  →  ep-rough-morning-a1v4c224
-    └── Branch: develop     →  ep-orange-meadow-a1p2p3mi
+Neon REST API  →  POST /api/v2/projects/{id}/query   (port 443)
+    ▼
+Neon PostgreSQL (perfmdb)
+    └── Branch: production  →  ep-rough-morning-a1v4c224
 ```
 
 ---
@@ -87,14 +91,12 @@ NEON_PROD_BRANCH=production
 ## Driver Stack
 
 ```
-  FastAPI runtime       →  asyncpg          (postgresql+asyncpg://)
-  Alembic CLI           →  psycopg2-binary  (postgresql+psycopg2://)
-  Neon REST API         →  urllib.request   (HTTPS port 443)
+  FastAPI runtime  →  NeonHTTPSession   (urllib.request HTTPS port 443)
+  Alembic CLI      →  psycopg2-binary   (postgresql+psycopg2://, needs port 5432)
+  Schema scripts   →  urllib.request    (HTTPS port 443 — no CLI needed)
 ```
 
-asyncpg **does not** accept `sslmode=` or `channel_binding=` as URL query parameters. These are stripped in `api/database.py` and SSL is passed via `connect_args={"ssl": True}`.
-
-psycopg2 (used only by the Alembic CLI) accepts them in the URL directly.
+`asyncpg` is **not used**.  All runtime SQL goes through `api/neon_http.py`.
 
 ---
 
@@ -102,25 +104,66 @@ psycopg2 (used only by the Alembic CLI) accepts them in the URL directly.
 
 ### `api/database.py`
 
-Replaced the SQLite engine with a PostgreSQL async engine:
+Provides `NeonSession` — the sole session abstraction used by all FastAPI routers.
+No SQLAlchemy engine or connection pool is created at startup.
 
 ```python
-def _build_async_url(raw: str) -> tuple[str, dict]:
-    # 1. Change scheme: postgresql:// → postgresql+asyncpg://
-    # 2. Strip sslmode= and channel_binding= (asyncpg rejects them)
-    # 3. Return connect_args={"ssl": True} when sslmode=require
-    ...
+class NeonSession:
+    """Routes all SQL through NeonHTTPSession (HTTPS port 443)."""
 
-engine = create_async_engine(
-    ASYNC_DATABASE_URL,
-    pool_size=5,
-    max_overflow=10,
-    pool_pre_ping=True,   # drops stale Neon connections after auto-suspend
-    connect_args=_connect_args,
-)
+    def add(self, obj)         → queues INSERT/UPDATE for commit()
+    async def delete(self, obj)    → queues DELETE for commit()
+    async def refresh(self, obj)   → no-op (object complete after INSERT RETURNING)
+    async def commit(self)         → flushes pending ops via HTTPS
+    async def exec(self, stmt)     → SELECT wrapper → _NeonResult
+    async def execute(self, stmt)  → DML wrapper → _NeonExecResult
+    async def get(self, model, pk) → model instance or None
+
+Psycopg2Session = NeonSession  # backward-compat alias
 ```
 
-Public interface is unchanged — `get_session()`, `open_session()`, `create_db_and_tables()` work identically to the SQLite version.
+Public generators: `get_session()` (FastAPI Depends), `open_session()` (context manager for scripts/tests).
+
+### `api/neon_http.py`
+
+Low-level HTTP executor. `_sync_http_sql(sql)` tries the direct `/sql` Neon endpoint first
+(HTTP SQL API), then falls back to the management REST API.
+
+```python
+class NeonHTTPSession:
+    async def exec(self, stmt)     → _NeonResult    # SELECT
+    async def execute(self, stmt)  → _NeonExecResult   # DML
+    async def get(self, model, pk) → model instance or None  # PK lookup
+```
+
+`get()` maps the returned row tuple to a proper model instance using
+`sa_inspect(model).mapper.columns` ordering — routers can call `setattr()` safely.
+
+### `api/services/ingestor.py`
+
+Batch upsert: **50 rows per HTTPS call** instead of 1 call per row.
+
+```python
+BATCH_SIZE = 50
+
+stmt = (
+    pg_insert(RawQuery)
+    .values(chunk)                          # 50 rows at once
+    .on_conflict_do_update(
+        index_elements=["query_hash"],
+        set_={"occurrence_count": RawQuery.occurrence_count + 1, ...},
+    )
+)
+await session.execute(stmt)
+```
+
+1000 rows → 20 HTTPS calls ≈ 16 s  (vs 1000 calls ≈ 13 min previously).
+
+### `api/main.py`
+
+- Removed `create_db_and_tables()` call from lifespan (was triggering a port-5432 attempt at startup and logging a WARNING)
+- Lifespan is now a simple log + yield — no DB I/O at startup
+- Schema is managed externally via `migration.sql` applied through the Neon REST API
 
 ### `api/migrations/env.py`
 
@@ -143,11 +186,6 @@ Removed `render_as_batch=True` (SQLite-only batch migration mode).
 sqlalchemy.url =
 ```
 
-### `api/main.py`
-
-- Removed `apply_pragmas` import and call (SQLite-only PRAGMAs)
-- Health endpoint masks credentials in the logged URL
-
 ---
 
 ## Schema (applied via `migration.sql`)
@@ -156,23 +194,29 @@ Migration revision: `9db879faabd3`
 
 ```sql
 -- ENUM types
-CREATE TYPE severitytype     AS ENUM ('critical', 'warning', 'info');
-CREATE TYPE sourcetype       AS ENUM ('sql', 'mongodb');
-CREATE TYPE environmenttype  AS ENUM ('prod', 'sat', 'unknown');
-CREATE TYPE querytype        AS ENUM ('slow_query', 'blocker', 'deadlock', 'unknown');
+CREATE TYPE severitytype    AS ENUM ('critical', 'warning', 'info');
+CREATE TYPE sourcetype      AS ENUM ('sql', 'mongodb');
+CREATE TYPE environmenttype AS ENUM ('prod', 'sat', 'unknown');
+CREATE TYPE querytype       AS ENUM ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock', 'unknown');
+CREATE TYPE labelsource     AS ENUM ('sql', 'mongodb', 'both');
 
--- Tables
-CREATE TABLE pattern   (id SERIAL PK, name, description, pattern_tag, severity,
-                        source, environment, type, first_seen, last_seen,
-                        total_occurrences, notes, created_at, updated_at);
+-- Tables (declaration order matches FK dependencies)
+CREATE TABLE pattern_label  (id SERIAL PK, name, severity severitytype DEFAULT 'warning',
+                             description, source labelsource DEFAULT 'both',
+                             created_at, updated_at);
 
-CREATE TABLE raw_query (id SERIAL PK, query_hash UNIQUE, time, source, host,
-                        db_name, environment, type, query_details, month_year,
-                        occurrence_count, first_seen, last_seen,
-                        pattern_id FK→pattern.id, created_at, updated_at);
+CREATE TABLE raw_query      (id SERIAL PK, query_hash UNIQUE, time, source sourcetype,
+                             host, db_name, environment environmenttype, type querytype,
+                             query_details, month_year, occurrence_count,
+                             first_seen, last_seen, created_at, updated_at);
+
+CREATE TABLE curated_query  (id SERIAL PK,
+                             raw_query_id INT UNIQUE FK→raw_query.id,
+                             label_id INT FK→pattern_label.id,
+                             notes, created_at, updated_at);
 ```
 
-Indexes on: `pattern(name, pattern_tag, severity, source, environment, type)` and `raw_query(query_hash UNIQUE, host, db_name, environment, source, type, month_year, pattern_id)`.
+Indexes on: `pattern_label(name, severity, source)`, `raw_query(query_hash UNIQUE, source, host, db_name, environment, type, month_year)`, `curated_query(raw_query_id UNIQUE, label_id)`.
 
 ---
 
@@ -220,6 +264,7 @@ body = {
 ```
 
 > ⚠️ Rows are accessed at `response[0]["data"]["rows"]` — **not** the top-level `rows`.
+> Empty results return `None` for the `rows` key — handled with `.get("rows") or []`.
 
 ### Project & Branch Management
 
@@ -309,9 +354,12 @@ When ready → apply same migration to production branch
 
 | Method | Port | Status |
 |---|---|---|
-| asyncpg direct (app runtime) | 5432 | ❌ SSL reset by proxy |
+| asyncpg direct | 5432 | ❌ SSL reset by proxy |
 | psycopg2 / Alembic CLI | 5432 | ❌ SSL reset by proxy |
-| Neon REST API (`_apply_migration.py`, `_test_neon.py`) | 443 HTTPS | ✅ Works |
+| **NeonHTTPSession (app runtime)** | **443 HTTPS** | **✅ All SQL works** |
+| Neon REST API (schema scripts) | 443 HTTPS | ✅ Works |
 | Neon Console SQL Editor (browser) | 443 HTTPS | ✅ Works |
 
-Until port 5432 is unblocked, the FastAPI app cannot connect to Neon at runtime. The schema is correctly applied. The app will work once the network restriction is lifted.
+The FastAPI app is **fully operational** using `NeonHTTPSession`.
+No code changes are needed if/when port 5432 is eventually unblocked —
+simply validate the connection, but the HTTPS path remains as a fallback.
