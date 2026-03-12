@@ -1,124 +1,49 @@
 """
-Ingestor service — deduplicates extracted rows and upserts into raw_query table.
+Ingestor service — bulk-ingest extracted rows into raw_query.
+
+Architecture (bring-in-duckdb-for-analysis branch)
+---------------------------------------------------
+Previous implementation:  row-by-row Python loop with SQLAlchemy
+  • One INSERT + one conditional UPDATE per row
+
+New implementation:  DuckDB (compute) + sqlite3 (writes)
+  • Polars DataFrame registered as an in-memory DuckDB view (zero-copy)
+  • MD5 hash computed in DuckDB via md5(concat_ws(...)) — vectorised
+  • month_year derived via try_strptime(col, [format_list]) in SQL
+  • Staging result collected from DuckDB as Python tuples
+  • sqlite3 executemany for bulk INSERT / UPDATE (no DuckDB extension needed)
+
+DuckDB is used ONLY for pure in-memory computation — no LOAD sqlite,
+no ATTACH.  This avoids corporate file-permission errors when DuckDB
+tries to move extension files into its local cache directory.
 
 Deduplication key (query_hash):
-    MD5( source | host | db_name | environment | type | query_details )
+    MD5( source | host | db_name | environment | type | time | query_details )
 
-On conflict (same hash already in DB):
-    - occurrence_count += 1
-    - last_seen updated to now
-    - all other fields left unchanged
-
-Returns `IngestResult` with inserted / updated / skipped counts.
+On conflict (hash already in raw_query):
+    occurrence_count  +=  1
+    last_seen          =  now
+    month_year backfilled if currently NULL
 """
 from __future__ import annotations
 
-import hashlib
-import re
-import warnings
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy import update as sa_update
-from sqlmodel.ext.asyncio.session import AsyncSession
-
-from api.models import RawQuery
-
-# SQLModel emits a DeprecationWarning when .execute() is used on a session,
-# suggesting .exec() instead.  For INSERT and UPDATE statements (non-SELECT),
-# .execute() is the correct SQLAlchemy method; .exec() is SQLModel's SELECT-only
-# wrapper.  Suppress the false-positive warning for this module only.
-warnings.filterwarnings(
-    "ignore",
-    message=".*You probably want to use.*session.exec.*",
-    category=DeprecationWarning,
-)
+import polars as pl
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
-
-
-def _derive_month_year(time_str: str | None) -> str | None:
-    """
-    Attempt to extract 'YYYY-MM' from a timestamp string.
-    Returns None if the string is empty or unparseable.
-    """
-    if not time_str:
-        return None
-
-    # Normalise whitespace (e.g. "Jan 26 2026  9:00AM" → "Jan 26 2026 9:00AM")
-    time_clean = re.sub(r"\s+", " ", time_str.strip())
-
-    # Try common formats — add more as needed
-    formats = [
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-        # Splunk deadlock CSVs use slash-separated dates (YYYY/MM/DD)
-        "%Y/%m/%d %H:%M:%S.%f",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d",
-        # maxElapsedQueries CSVs use M/D/YYYY h:MM:SS AM/PM
-        "%m/%d/%Y %I:%M:%S %p",
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y",
-        # Month-name formats: "Jan 26 2026 9:00AM"
-        "%b %d %Y %I:%M%p",
-        "%b %d %Y %I:%M:%S%p",
-        "%b %d %Y",
-    ]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(time_clean[:26], fmt)
-            return dt.strftime("%Y-%m")
-        except ValueError:
-            continue
-
-    # Regex fallback: search for YYYY-MM or YYYY/MM anywhere in the string
-    m = re.search(r"(\d{4})[/\-](\d{2})", time_str)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-
-    return None
-
-
-def compute_hash(row: dict) -> str:
-    """
-    Compute MD5 deduplication hash for a row dict.
-    Keys used: source, host, db_name, environment, type, time, query_details.
-    Including `time` ensures the same query pattern observed across different
-    time windows is stored as distinct raw rows (idempotent on re-upload).
-    """
-    parts = "|".join([
-        (row.get("source") or "").strip().lower(),
-        (row.get("host") or "").strip().lower(),
-        (row.get("db_name") or "").strip().lower(),
-        (row.get("environment") or "").strip().lower(),
-        (row.get("type") or "").strip().lower(),
-        (row.get("time") or "").strip(),
-        (row.get("query_details") or "").strip(),
-    ])
-    return hashlib.md5(parts.encode("utf-8")).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# Result type
+# Result type (public interface unchanged)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class IngestResult:
     inserted: int = 0
-    updated: int = 0
-    skipped: int = 0
-    errors: list[str] = field(default_factory=list)
+    updated:  int = 0
+    skipped:  int = 0
+    errors:   list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -126,90 +51,211 @@ class IngestResult:
 
 
 # ---------------------------------------------------------------------------
-# Main ingest function
+# DuckDB format list for month_year derivation
+# Mirrors the formats that the old _derive_month_year() tried in sequence.
+# DuckDB try_strptime accepts a LIST of format strings and returns the first
+# that parses successfully — replaces 14 sequential Python try/except blocks.
 # ---------------------------------------------------------------------------
 
-async def ingest_rows(rows: list[dict], session: AsyncSession) -> IngestResult:
-    """
-    Insert or update raw_query rows in bulk.
+_STRPTIME_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S.%f",   # ISO with microseconds (after TZ strip)
+    "%Y-%m-%dT%H:%M:%S",      # ISO without microseconds
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%Y/%m/%d %H:%M:%S.%f",   # Splunk deadlock format
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%m/%d/%Y %I:%M:%S %p",   # maxElapsedQueries US AM/PM
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y",
+    "%b %d %Y %I:%M%p",       # "Jan 26 2026 9:00AM"
+    "%b %d %Y %I:%M:%S%p",
+    "%b %d %Y",
+]
+_FORMATS_SQL = "[" + ", ".join(f"'{f}'" for f in _STRPTIME_FORMATS) + "]"
 
-    Uses SQLite's INSERT OR IGNORE + a follow-up UPDATE on conflict via
-    SQLAlchemy's dialect-level upsert so we don't lose the occurrence counter.
-    """
-    result = IngestResult()
 
+# ---------------------------------------------------------------------------
+# Internal: synchronous DuckDB bulk ingest (called via asyncio.to_thread)
+# ---------------------------------------------------------------------------
+
+def _ingest_sync(rows: list[dict]) -> IngestResult:
+    """
+    Synchronous ingestion pipeline.
+
+    Steps
+    -----
+    1. Build a Polars DataFrame from the raw row dicts.
+    2. DuckDB (pure in-memory, no SQLite extension): normalize enums,
+       compute MD5 hash, derive month_year → collect as Python tuples.
+    3. Python sqlite3: read existing hashes from raw_query.
+    4. Split batches into INSERT (new) and UPDATE (duplicate) sets.
+    5. sqlite3 executemany: bulk INSERT + bulk UPDATE in one transaction.
+
+    This approach avoids LOAD sqlite / ATTACH entirely — DuckDB is used
+    only for vectorised string/time computation, not for writing to SQLite.
+    """
     if not rows:
+        return IngestResult()
+
+    import duckdb
+    import sqlite3 as _sqlite3
+    from api.database import SQLITE_PATH
+
+    result  = IngestResult()
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── 1. Build Polars DataFrame ──────────────────────────────────────────
+    df = pl.DataFrame(
+        {
+            "source":          [str(r.get("source")        or "") for r in rows],
+            "host":            [str(r.get("host")          or "") for r in rows],
+            "db_name":         [str(r.get("db_name")       or "") for r in rows],
+            "environment":     [str(r.get("environment")   or "") for r in rows],
+            "type":            [str(r.get("type")          or "") for r in rows],
+            "time":            [str(r.get("time")          or "") for r in rows],
+            "query_details":   [str(r.get("query_details") or "") for r in rows],
+            "occurrence_count":[int(r.get("occurrence_count") or 1) for r in rows],
+        }
+    )
+
+    # ── 2. DuckDB: normalize + hash + derive month_year (pure in-memory) ──
+    duck = duckdb.connect()
+    try:
+        duck.register("staging_raw", df)
+        duck.execute(f"""
+            CREATE OR REPLACE TEMP TABLE staging AS
+            SELECT
+                -- MD5 dedup key: 7 normalised fields joined by '|'
+                md5(concat_ws('|',
+                    lower(trim(source)),
+                    lower(trim(host)),
+                    lower(trim(db_name)),
+                    lower(trim(environment)),
+                    lower(trim(type)),
+                    trim(time),
+                    trim(query_details)
+                )) AS query_hash,
+
+                NULLIF(trim(time), '')           AS time,
+                NULLIF(trim(query_details), '')  AS query_details,
+                NULLIF(trim(host), '')           AS host,
+                NULLIF(trim(db_name), '')        AS db_name,
+
+                -- Clamp to known enum values
+                CASE
+                    WHEN lower(trim(source)) IN ('sql', 'mongodb')
+                    THEN lower(trim(source))
+                    ELSE 'sql'
+                END AS source,
+                CASE
+                    WHEN lower(trim(environment)) IN ('prod', 'sat', 'unknown')
+                    THEN lower(trim(environment))
+                    ELSE 'unknown'
+                END AS environment,
+                CASE
+                    WHEN lower(trim(type)) IN
+                         ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock')
+                    THEN lower(trim(type))
+                    ELSE 'unknown'
+                END AS type,
+
+                strftime(
+                    try_strptime(
+                        trim(regexp_replace(
+                            regexp_replace(trim(time), '[+-]\\d{{2}}:?\\d{{2}}$', ''),
+                            '\\s+', ' '
+                        )),
+                        {_FORMATS_SQL}
+                    ),
+                    '%Y-%m'
+                ) AS month_year,
+
+                CAST(occurrence_count AS INTEGER) AS occurrence_count
+
+            FROM staging_raw
+        """)
+        staging_rows: list[tuple] = duck.execute("""
+            SELECT query_hash, time, source, host, db_name, environment, type,
+                   query_details, month_year, occurrence_count
+            FROM staging
+        """).fetchall()
+    finally:
+        duck.close()
+
+    if not staging_rows:
         return result
 
-    now = _now()
+    # ── 3–5. sqlite3: diff against existing hashes + write ────────────────
+    sqlite_con = _sqlite3.connect(str(SQLITE_PATH))
+    try:
+        staging_hashes = [r[0] for r in staging_rows]
+        ph = ",".join("?" * len(staging_hashes))
+        existing = {
+            row[0]
+            for row in sqlite_con.execute(
+                f"SELECT query_hash FROM raw_query WHERE query_hash IN ({ph})",  # noqa: S608
+                staging_hashes,
+            ).fetchall()
+        }
 
-    for row in rows:
-        try:
-            q_hash = compute_hash(row)
+        to_insert = [r for r in staging_rows if r[0] not in existing]
+        to_update = [r for r in staging_rows if r[0] in existing]
 
-            # Normalise enum-like fields to their string values
-            source      = (row.get("source") or "unknown").lower()
-            environment = (row.get("environment") or "unknown").lower()
-            q_type      = (row.get("type") or "unknown").lower()
-
-            # Clamp to known enum values
-            if source not in ("sql", "mongodb"):
-                source = "sql"
-            if environment not in ("prod", "sat", "unknown"):
-                environment = "unknown"
-            if q_type not in ("slow_query", "slow_query_mongo", "blocker", "deadlock", "unknown"):
-                q_type = "unknown"
-
-            values = {
-                "query_hash":      q_hash,
-                "time":            row.get("time") or None,
-                "source":          source,
-                "host":            row.get("host") or None,
-                "db_name":         row.get("db_name") or None,
-                "environment":     environment,
-                "type":            q_type,
-                "query_details":   row.get("query_details") or None,
-                "month_year":      _derive_month_year(row.get("time")),
-                "occurrence_count": int(row.get("occurrence_count") or 1),
-                "first_seen":      now,
-                "last_seen":       now,
-                "created_at":      now,
-                "updated_at":      now,
-            }
-
-            stmt = sqlite_insert(RawQuery).values(**values)
-
-            # On conflict: bump the counter and refresh last_seen / updated_at
-            stmt = sqlite_insert(RawQuery).values(**values).on_conflict_do_nothing(
-                index_elements=["query_hash"]
+        if to_insert:
+            sqlite_con.executemany(
+                """INSERT INTO raw_query (
+                    query_hash, time, source, host, db_name, environment, type,
+                    query_details, month_year, occurrence_count,
+                    first_seen, last_seen, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (r[0], r[1], r[2], r[3], r[4], r[5], r[6],
+                     r[7], r[8], r[9],
+                     now_str, now_str, now_str, now_str)
+                    for r in to_insert
+                ],
             )
 
-            # Use execute() (not exec()) — exec() is SQLModel's select-only helper
-            exec_result = await session.execute(stmt)
+        if to_update:
+            sqlite_con.executemany(
+                "UPDATE raw_query SET occurrence_count = occurrence_count + 1,"
+                " last_seen = ?, updated_at = ? WHERE query_hash = ?",
+                [(now_str, now_str, r[0]) for r in to_update],
+            )
+            # Backfill month_year where it was previously NULL
+            sqlite_con.executemany(
+                "UPDATE raw_query SET month_year = ?"
+                " WHERE query_hash = ? AND month_year IS NULL",
+                [(r[8], r[0]) for r in to_update if r[8]],
+            )
 
-            if exec_result.rowcount == 1:
-                # Fresh insert — row did not exist
-                result.inserted += 1
-            else:
-                # Row already existed (conflict ignored) — bump counters manually
-                # Also backfill month_year in case it was NULL previously (e.g. date
-                # format not yet supported when the row was first inserted).
-                derived_month = _derive_month_year(row.get("time"))
-                upd = (
-                    sa_update(RawQuery)
-                    .where(RawQuery.query_hash == q_hash)
-                    .values(
-                        occurrence_count=RawQuery.occurrence_count + 1,
-                        last_seen=now,
-                        updated_at=now,
-                        **({"month_year": derived_month} if derived_month else {}),
-                    )
-                )
-                await session.execute(upd)
-                result.updated += 1
+        sqlite_con.commit()
+        result.inserted = len(to_insert)
+        result.updated  = len(to_update)
 
-        except Exception as exc:
-            result.errors.append(f"Row error ({row.get('host', '?')}): {exc}")
-            result.skipped += 1
+    except Exception as exc:
+        sqlite_con.rollback()
+        result.errors.append(f"Ingest error: {type(exc).__name__}: {exc}")
+        result.skipped = len(rows)
+    finally:
+        sqlite_con.close()
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Public async entry point
+# ---------------------------------------------------------------------------
+
+async def ingest_rows(rows: list[dict]) -> IngestResult:
+    """
+    Async wrapper — runs the synchronous DuckDB bulk ingest in a thread pool.
+
+    Breaking change from previous version:
+        ``session: AsyncSession`` parameter removed.
+        DuckDB writes directly to the SQLite file via ATTACH (READ_WRITE mode).
+        The upload router no longer needs to inject an async session here.
+    """
+    return await asyncio.to_thread(_ingest_sync, rows)

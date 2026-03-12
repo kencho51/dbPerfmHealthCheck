@@ -19,6 +19,8 @@ dependencies = [
     "python-multipart>=0.0.20",
     "uvicorn[standard]>=0.34.0",
     "polars>=1.0",
+    "duckdb>=1.0",
+    "pyarrow>=23.0.1",
 ]
 
 [tool.ruff]

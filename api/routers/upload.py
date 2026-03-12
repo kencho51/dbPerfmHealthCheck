@@ -16,10 +16,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from sqlmodel.ext.asyncio.session import AsyncSession
+from fastapi import APIRouter, HTTPException, UploadFile, status
 
-from api.database import get_session
 from api.services.extractor import extract_from_file
 from api.services.ingestor import ingest_rows
 from api.services.validator import validate_csv
@@ -30,7 +28,6 @@ router = APIRouter()
 @router.post("/upload", summary="Upload and ingest a Splunk CSV file")
 async def upload_csv(
     file: UploadFile,
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """
     Validate, extract, and ingest a single Splunk performance CSV.
@@ -78,7 +75,7 @@ async def upload_csv(
                 row["environment"] = environment
 
         # -- Ingest --------------------------------------------------------------
-        ingest_result = await ingest_rows(rows, session)
+        ingest_result = await ingest_rows(rows)
 
     except HTTPException:
         raise
