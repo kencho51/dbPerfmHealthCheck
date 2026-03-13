@@ -359,6 +359,7 @@ export interface AdminCreateUserRequest {
   username: string;
   email: string;
   password: string;
+  role: UserRole;
 }
 
 function authHeaders(token: string) {
@@ -398,5 +399,15 @@ export const authApi = {
       headers: authHeaders(token),
     }).then((r) => {
       if (!r.ok && r.status !== 204) throw new Error(`Delete failed: ${r.status}`);
+    }),
+
+  updateProfile: (
+    token: string,
+    body: { email?: string; current_password?: string; new_password?: string },
+  ): Promise<AuthUser> =>
+    apiFetch("/auth/me", {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
     }),
 };
