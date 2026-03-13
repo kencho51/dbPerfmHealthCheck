@@ -3,7 +3,7 @@ import "./globals.css";
 import { NavBar } from "@/components/nav-bar";
 
 export const metadata: Metadata = {
-  title: "DB Perf Health Check",
+  title: "DB Perfm Analysis",
   description: "Database performance analysis dashboard",
 };
 

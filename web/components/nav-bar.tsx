@@ -21,8 +21,8 @@ export function NavBar() {
       <div className="flex items-center gap-2 px-5 py-5 border-b border-slate-100">
         <BarChart3 className="h-5 w-5 text-indigo-600" />
         <span className="text-sm font-bold text-slate-900 leading-tight">
-          DB Perf<br />
-          <span className="font-normal text-slate-500">Health Check</span>
+          DB Perfm<br />
+          <span className="font-normal text-slate-500">Analysis</span>
         </span>
       </div>
 
