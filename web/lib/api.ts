@@ -155,6 +155,26 @@ export interface MonthRow {
   month_year: string;
   row_count: number;
   total_occurrences: number;
+  row_delta:         number | null;  // null for the first month (no prior period)
+  occ_delta:         number | null;
+}
+
+export interface HostStatsRow {
+  host:              string;
+  p50:               number;
+  p95:               number;
+  p99:               number;
+  max_occ:           number;
+  total_occurrences: number;
+  row_count:         number;
+}
+
+export interface CoOccurrenceRow {
+  host:           string;
+  month_year:     string;
+  blocker_count:  number;
+  deadlock_count: number;
+  combined_score: number;
 }
 
 export interface DbRow {
@@ -223,6 +243,16 @@ export const api = {
     topFingerprints: (topN = 20, filters?: AnalyticsFilters) => {
       const qs = buildQS({ top_n: topN, ...filters });
       return apiFetch<FingerprintRow[]>(`/analytics/top-fingerprints${qs}`);
+    },
+    hostStats: (topN = 30, filters?: AnalyticsFilters) => {
+      const qs = buildQS({ top_n: topN, ...filters });
+      return apiFetch<HostStatsRow[]>(`/analytics/host-stats${qs}`);
+    },
+    coOccurrence: (filters?: AnalyticsFilters) => {
+      // co-occurrence doesn't support type/source filters (handled internally)
+      const { type: _t, source: _s, ...rest } = filters ?? {};
+      const qs = buildQS(Object.keys(rest).length ? rest : undefined);
+      return apiFetch<CoOccurrenceRow[]>(`/analytics/co-occurrence${qs}`);
     },
   },
 
@@ -298,4 +328,75 @@ export const api = {
         return r.json() as Promise<ValidationResult>;
       });
   },
+};
+
+// ---- Auth -----------------------------------------------------------------
+
+export type UserRole = "admin" | "viewer";
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+  created_at: string;
+  last_login: string | null;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
+export interface UpdateUserRequest {
+  role?: UserRole;
+  is_active?: boolean;
+}
+
+export interface AdminCreateUserRequest {
+  username: string;
+  email: string;
+  password: string;
+}
+
+function authHeaders(token: string) {
+  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+}
+
+export const authApi = {
+  login: (username: string, password: string): Promise<LoginResponse> =>
+    apiFetch("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+
+  me: (token: string): Promise<AuthUser> =>
+    apiFetch("/auth/me", { headers: authHeaders(token) }),
+
+  listUsers: (token: string): Promise<AuthUser[]> =>
+    apiFetch("/auth/users", { headers: authHeaders(token) }),
+
+  createUser: (token: string, body: AdminCreateUserRequest): Promise<AuthUser> =>
+    apiFetch("/auth/register/admin", {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    }),
+
+  updateUser: (token: string, userId: number, body: UpdateUserRequest): Promise<AuthUser> =>
+    apiFetch(`/auth/users/${userId}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    }),
+
+  deleteUser: (token: string, userId: number): Promise<void> =>
+    fetch(`${base()}/auth/users/${userId}`, {
+      method: "DELETE",
+      headers: authHeaders(token),
+    }).then((r) => {
+      if (!r.ok && r.status !== 204) throw new Error(`Delete failed: ${r.status}`);
+    }),
 };

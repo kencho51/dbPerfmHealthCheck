@@ -75,6 +75,12 @@ def create_app() -> FastAPI:
 def _register_routers(app: FastAPI) -> None:
     """Attach routers. Unimplemented phases are skipped gracefully."""
     try:
+        from api.routers.auth import router as auth_router
+        app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+    except ImportError:
+        logger.debug("auth router not yet available")
+
+    try:
         from api.routers.analytics import router as analytics_router
         app.include_router(analytics_router, prefix="/api/analytics", tags=["analytics"])
     except ImportError:

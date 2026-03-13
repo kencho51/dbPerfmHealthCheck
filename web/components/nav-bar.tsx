@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { BarChart3, Database, LayoutDashboard, Upload, Layers, Tag } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { BarChart3, Database, LayoutDashboard, Upload, Layers, Tag, Users, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
+import { getUser, clearAuth, type AuthUser } from "@/lib/auth-client";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -15,6 +17,19 @@ const nav = [
 
 export function NavBar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  useEffect(() => {
+    setUser(getUser());
+  }, []);
+
+  function handleLogout() {
+    clearAuth();
+    router.push("/login");
+    router.refresh();
+  }
+
   return (
     <aside className="flex h-screen w-56 flex-col border-r border-slate-200 bg-white">
       {/* Brand */}
@@ -46,11 +61,44 @@ export function NavBar() {
             </Link>
           );
         })}
+
+        {user?.role === "admin" && (
+          <Link
+            href="/admin/users"
+            className={cn(
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors mt-2 border-t border-slate-100 pt-3",
+              pathname.startsWith("/admin/users")
+                ? "bg-amber-50 text-amber-700"
+                : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            )}
+          >
+            <Users className="h-4 w-4 shrink-0" />
+            Users
+          </Link>
+        )}
       </nav>
 
-      {/* Footer */}
-      <div className="px-5 py-4 text-xs text-slate-400 border-t border-slate-100">
-        FastAPI · SQLite · Next.js
+      {/* User info + logout */}
+      <div className="px-3 py-3 border-t border-slate-100">
+        {user ? (
+          <div className="flex flex-col gap-2">
+            <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-xs font-semibold text-slate-700 truncate">{user.username}</p>
+              <p className="text-[11px] text-slate-400 capitalize">{user.role}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-500 hover:bg-red-50 hover:text-red-600 transition-colors w-full"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="px-5 py-2 text-xs text-slate-400">
+            FastAPI · SQLite · Next.js
+          </div>
+        )}
       </div>
     </aside>
   );

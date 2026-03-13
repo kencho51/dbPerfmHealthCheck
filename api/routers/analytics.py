@@ -23,6 +23,9 @@ GET /api/analytics/by-db            — top databases by occurrence count
 GET /api/analytics/curation-coverage — % of raw rows with a curated_query entry
 GET /api/analytics/by-hour          — heatmap: row count by hour-of-day × weekday
 GET /api/analytics/top-fingerprints — top N normalised query fingerprints
+GET /api/analytics/host-stats       — P50/P95/P99 occurrence distribution per host (8C)
+GET /api/analytics/co-occurrence    — hosts with both blocker + deadlock events (8D)
+                                      by-month now includes row_delta / occ_delta via LAG (8E)
 """
 from __future__ import annotations
 
@@ -221,15 +224,30 @@ def _by_month_sync(
     try:
         rows = con.execute(f"""
             SELECT month_year,
-                   COUNT(*) AS row_count,
-                   SUM(occurrence_count) AS total_occurrences
-            FROM raw_query
-            {where}
-            GROUP BY month_year
+                   row_count,
+                   total_occurrences,
+                   row_count - LAG(row_count, 1) OVER (ORDER BY month_year)
+                       AS row_delta,
+                   total_occurrences - LAG(total_occurrences, 1) OVER (ORDER BY month_year)
+                       AS occ_delta
+            FROM (
+                SELECT month_year,
+                       COUNT(*) AS row_count,
+                       SUM(occurrence_count) AS total_occurrences
+                FROM raw_query
+                {where}
+                GROUP BY month_year
+            ) t
             ORDER BY month_year
         """, params).fetchall()
         return [
-            {"month_year": r[0], "row_count": r[1], "total_occurrences": r[2]}
+            {
+                "month_year":        r[0],
+                "row_count":         r[1],
+                "total_occurrences": r[2],
+                "row_delta":         r[3],  # None for the first month
+                "occ_delta":         r[4],
+            }
             for r in rows
         ]
     finally:
@@ -588,4 +606,156 @@ async def analytics_top_fingerprints(
         _top_fingerprints_sync,
         source and source.value, environment and environment.value,
         type and type.value, host, db_name, month_year, system, top_n,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analytics/host-stats  (Phase 8C)
+# P50 / P95 / P99 occurrence distribution per host via DuckDB QUANTILE_CONT
+# ---------------------------------------------------------------------------
+
+def _host_stats_sync(
+    top_n: int,
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    """
+    QUANTILE_CONT(col, q) computes an exact continuous percentile over the
+    group — equivalent to numpy.percentile with interpolation='linear'.
+    We cast occurrence_count to DOUBLE so the result is always a float.
+    Hosts with fewer than 3 rows are excluded (percentile is meaningless).
+    """
+    where, params = _build_filters(
+        source=source, environment=environment,
+        host=host, db_name=db_name, month_year=month_year, system=system,
+        extra=["host IS NOT NULL", "host != ''"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT
+                host,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.50), 1) AS p50,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.95), 1) AS p95,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.99), 1) AS p99,
+                MAX(occurrence_count)            AS max_occ,
+                SUM(occurrence_count)            AS total_occurrences,
+                COUNT(*)                         AS row_count
+            FROM raw_query
+            {where}
+            GROUP BY host
+            HAVING COUNT(*) >= 3
+            ORDER BY p95 DESC
+            LIMIT ?
+        """, params + [top_n]).fetchall()
+        return [
+            {
+                "host":              r[0],
+                "p50":               r[1],
+                "p95":               r[2],
+                "p99":               r[3],
+                "max_occ":           r[4],
+                "total_occurrences": r[5],
+                "row_count":         r[6],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+@router.get("/host-stats", summary="P50/P95/P99 occurrence distribution per host")
+async def analytics_host_stats(
+    top_n:       int                       = Query(default=30, ge=1, le=200),
+    environment: Optional[EnvironmentType] = None,
+    source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _host_stats_sync,
+        top_n,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analytics/co-occurrence  (Phase 8D)
+# Hosts where both blocker AND deadlock events appear in the same month
+# ---------------------------------------------------------------------------
+
+def _co_occurrence_sync(
+    environment: str | None, host: str | None,
+    db_name: str | None, month_year: str | None, system: str | None,
+) -> list[dict]:
+    """
+    FULL OUTER JOIN between blocker-aggregated and deadlock-aggregated CTEs on
+    (host, month_year). Rows where only one type is present are still returned
+    (count = 0 for the missing type) so the frontend can colour them differently.
+    Only hosts with at least one blocker OR one deadlock are returned.
+    """
+    # Build shared dimension filters — type is forced inside each CTE
+    base_where, params = _build_filters(
+        environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+        extra=["host IS NOT NULL", "host != ''", "month_year IS NOT NULL"],
+    )
+    # params list is reused for both CTEs — DuckDB positional params are per-statement
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            WITH blockers AS (
+                SELECT host, month_year, SUM(occurrence_count) AS blocker_count
+                FROM raw_query
+                {base_where} AND type = 'blocker'
+                GROUP BY host, month_year
+            ),
+            deadlocks AS (
+                SELECT host, month_year, SUM(occurrence_count) AS deadlock_count
+                FROM raw_query
+                {base_where} AND type = 'deadlock'
+                GROUP BY host, month_year
+            )
+            SELECT
+                COALESCE(b.host,       d.host)       AS host,
+                COALESCE(b.month_year, d.month_year) AS month_year,
+                COALESCE(b.blocker_count,  0)        AS blocker_count,
+                COALESCE(d.deadlock_count, 0)        AS deadlock_count,
+                COALESCE(b.blocker_count, 0)
+                    + COALESCE(d.deadlock_count, 0)  AS combined_score
+            FROM blockers b
+            FULL OUTER JOIN deadlocks d
+                ON b.host = d.host AND b.month_year = d.month_year
+            ORDER BY combined_score DESC, host, month_year
+        """, params + params).fetchall()   # params duplicated for both CTEs
+        return [
+            {
+                "host":           r[0],
+                "month_year":     r[1],
+                "blocker_count":  r[2],
+                "deadlock_count": r[3],
+                "combined_score": r[4],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+@router.get("/co-occurrence", summary="Hosts with blocker and/or deadlock events per month")
+async def analytics_co_occurrence(
+    environment: Optional[EnvironmentType] = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _co_occurrence_sync,
+        environment and environment.value,
+        host, db_name, month_year, system,
     )

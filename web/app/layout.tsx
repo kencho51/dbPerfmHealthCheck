@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { NavBar } from "@/components/nav-bar";
+import { AppShell } from "@/components/app-shell";
 
 export const metadata: Metadata = {
   title: "DB Perfm Analysis",
@@ -11,10 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen bg-slate-50 text-slate-900 antialiased">
-        <div className="flex h-screen">
-          <NavBar />
-          <main className="flex-1 overflow-auto p-8">{children}</main>
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

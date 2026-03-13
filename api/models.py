@@ -56,6 +56,11 @@ class LabelSource(str, Enum):
     both = "both"
 
 
+class UserRole(str, Enum):
+    admin = "admin"
+    viewer = "viewer"
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -143,6 +148,23 @@ class RawQuery(SQLModel, table=True):
 
     # Back-reference to the single curated entry (if any)
     curated_entry: Optional[CuratedQuery] = Relationship(back_populates="raw_query")
+
+
+# ---------------------------------------------------------------------------
+# User table  (authentication)
+# ---------------------------------------------------------------------------
+
+class User(SQLModel, table=True):
+    __tablename__ = "user"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    email: str = Field(unique=True, index=True)
+    hashed_password: str
+    role: UserRole = Field(default=UserRole.viewer)
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_now)
+    last_login: Optional[datetime] = Field(default=None)
 
 
 # ---------------------------------------------------------------------------

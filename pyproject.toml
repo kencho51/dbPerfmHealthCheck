@@ -21,6 +21,8 @@ dependencies = [
     "polars>=1.0",
     "duckdb>=1.0",
     "pyarrow>=23.0.1",
+    "bcrypt>=5.0.0",
+    "python-jose>=3.5.0",
 ]
 
 [tool.ruff]
