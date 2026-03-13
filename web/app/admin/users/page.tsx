@@ -18,6 +18,7 @@ export default function AdminUsersPage() {
   const [newUsername, setNewUsername] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<UserRole>("viewer");
   const [creating, setCreating] = useState(false);
 
   const currentUser = getUser();
@@ -102,11 +103,13 @@ export default function AdminUsersPage() {
         username: newUsername,
         email: newEmail,
         password: newPassword,
+        role: newRole,
       });
       setUsers((prev) => [...prev, created]);
       setNewUsername("");
       setNewEmail("");
       setNewPassword("");
+      setNewRole("viewer");
       setShowCreateForm(false);
       flash(`User "${created.username}" created`);
     } catch (err: unknown) {
@@ -169,7 +172,7 @@ export default function AdminUsersPage() {
               <X className="h-4 w-4" />
             </button>
           </div>
-          <form onSubmit={createUser} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <form onSubmit={createUser} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Username</label>
               <input
@@ -203,7 +206,29 @@ export default function AdminUsersPage() {
                 placeholder="min 8 chars"
               />
             </div>
-            <div className="sm:col-span-3 flex justify-end">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Role</label>
+              <div className="flex gap-2">
+                {(["viewer", "admin"] as UserRole[]).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setNewRole(r)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                      newRole === r
+                        ? r === "admin"
+                          ? "border-amber-400 bg-amber-50 text-amber-700"
+                          : "border-indigo-400 bg-indigo-50 text-indigo-700"
+                        : "border-slate-300 text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    {r === "admin" ? <ShieldCheck className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    {r.charAt(0).toUpperCase() + r.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="sm:col-span-2 flex justify-end">
               <button
                 type="submit"
                 disabled={creating}

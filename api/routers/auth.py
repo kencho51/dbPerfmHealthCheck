@@ -45,6 +45,13 @@ class RegisterRequest(BaseModel):
     password: str
 
 
+class AdminRegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: UserRole = UserRole.viewer
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -69,6 +76,12 @@ class LoginResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+
+
+class UpdateProfileRequest(BaseModel):
+    email: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +131,6 @@ def _to_public(u: User) -> UserPublic:
 async def register(
     body: RegisterRequest,
     session: AsyncSession = Depends(get_session),
-    current: Optional[User] = None,
 ):
     """
     Register a new user.
@@ -162,11 +174,11 @@ async def register(
 
 @router.post("/register/admin", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
 async def admin_create_user(
-    body: RegisterRequest,
+    body: AdminRegisterRequest,
     _: User = Depends(_require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Admin-only endpoint to create additional users."""
+    """Admin-only endpoint to create additional users with a specified role."""
     result = await session.exec(select(User).where(User.username == body.username))
     if result.first():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already taken")
@@ -179,7 +191,7 @@ async def admin_create_user(
         username=body.username,
         email=body.email,
         hashed_password=hash_password(body.password),
-        role=UserRole.viewer,
+        role=body.role,
     )
     session.add(user)
     await session.commit()
@@ -214,6 +226,54 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
 @router.get("/me", response_model=UserPublic)
 async def me(current: User = Depends(_current_user)):
     """Return the currently authenticated user's info."""
+    return _to_public(current)
+
+
+@router.patch("/me", response_model=UserPublic)
+async def update_me(
+    body: UpdateProfileRequest,
+    current: User = Depends(_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Let the logged-in user update their own email and/or password.
+    Changing either requires the current password for verification.
+    """
+    changing_email = body.email is not None and body.email != current.email
+    changing_password = body.new_password is not None
+
+    if changing_email or changing_password:
+        if not body.current_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required to make changes",
+            )
+        if not verify_password(body.current_password, current.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect",
+            )
+
+    if changing_email:
+        result = await session.exec(select(User).where(User.email == body.email))
+        if result.first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already in use",
+            )
+        current.email = body.email  # type: ignore[assignment]
+
+    if changing_password:
+        if len(body.new_password) < 8:  # type: ignore[arg-type]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be at least 8 characters",
+            )
+        current.hashed_password = hash_password(body.new_password)  # type: ignore[arg-type]
+
+    session.add(current)
+    await session.commit()
+    await session.refresh(current)
     return _to_public(current)
 
 
