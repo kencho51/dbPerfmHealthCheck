@@ -4,8 +4,8 @@ Alembic environment script.
 Key changes from the generated default:
   - Imports SQLModel metadata from api.models so autogenerate works.
   - Loads DATABASE_URL from api/.env via python-dotenv.
-  - Converts the asyncpg URL to psycopg2 for the synchronous Alembic CLI.
-    (Runtime uses asyncpg; migrations CLI uses psycopg2-binary.)
+  - Converts the URL scheme to postgresql+asyncpg for the Alembic CLI.
+    asyncpg is already a project dependency; psycopg2-binary is not required.
 """
 from __future__ import annotations
 
@@ -52,8 +52,11 @@ def _get_url() -> str:
             "DATABASE_URL is not set. "
             "Ensure api/.env exists with DATABASE_URL=postgresql://..."
         )
-    # Alembic CLI needs psycopg2 (sync) scheme
-    return raw.replace("postgresql://", "postgresql+psycopg2://", 1)
+    # Use asyncpg dialect for Alembic CLI (psycopg2-binary is not a dependency).
+    # In offline --sql mode no actual connection is made; only the dialect matters.
+    url = raw.replace("postgresql+psycopg2://", "postgresql://", 1)
+    url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
 
 
 # ---------------------------------------------------------------------------

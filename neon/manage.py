@@ -13,6 +13,11 @@ Usage (run from project root):
     uv run python neon/manage.py migrate-down
     uv run python neon/manage.py truncate
 
+Dry-run mode is ON by default — SQL is printed but never executed.
+Pass --execute to apply changes to the database:
+    uv run python neon/manage.py create --execute
+    uv run python neon/manage.py migrate-up --execute
+
 Commands
 --------
   status       Show current tables, row counts, and Alembic version
@@ -20,7 +25,7 @@ Commands
   drop         Drop all application tables and ENUM types
   reset        drop + create  (full wipe and re-apply)
   migrate-up   Generate SQL via `alembic upgrade head --sql` and apply it
-  migrate-down Generate SQL via `alembic downgrade -1 --sql` and apply it
+  migrate-down Generate SQL via `alembic downgrade head:-1 --sql` and apply it
   truncate     Empty all data tables (keep schema), reset sequences
 
 Prerequisites
@@ -51,7 +56,10 @@ load_dotenv(_ROOT / "api" / ".env")
 EP           = "ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech"
 SQL_URL      = f"https://{EP}/sql"
 DDL_CONN_STR = os.environ.get("NEON_DDL_CONN_STR", "")   # neondb_owner — DDL
-APP_CONN_STR = os.environ.get("DATABASE_URL", "")                                                           # perfmdb_owner — read-only status
+APP_CONN_STR = os.environ.get("DATABASE_URL", "")  # perfmdb_owner — read-only status
+
+# Dry-run is ON by default. Pass --execute to apply SQL to the database.
+DRY_RUN: bool = True
 
 # Tables in drop / truncate order (FK-safe: children first)
 _TABLES = ["curated_query", "raw_query", "pattern_label", '"user"', "alembic_version"]
@@ -75,9 +83,15 @@ def _run_sql(sql: str, conn_str: str) -> dict:
 
 
 def _apply_statements(stmts: list[str], conn_str: str, label: str = "") -> bool:
-    """Apply a list of SQL statements. Returns True if all succeeded."""
+    """Apply a list of SQL statements. In dry-run mode prints them instead."""
     if not stmts:
         print("  (nothing to apply)")
+        return True
+    if DRY_RUN:
+        print(f"  [DRY-RUN] {len(stmts)} statement(s) would be applied:")
+        for i, stmt in enumerate(stmts, 1):
+            short = stmt[:120].replace("\n", " ")
+            print(f"  [{i:02d}] {short}")
         return True
     all_ok = True
     for i, stmt in enumerate(stmts, 1):
@@ -234,7 +248,10 @@ def cmd_migrate_up() -> None:
     )
     if result.returncode != 0:
         print("ERROR: alembic failed:")
-        print(result.stderr)
+        if result.stderr.strip():
+            print(result.stderr)
+        if result.stdout.strip():
+            print(result.stdout)
         sys.exit(1)
 
     sql = result.stdout
@@ -255,25 +272,27 @@ def cmd_migrate_up() -> None:
 
 def cmd_migrate_down() -> None:
     """
-    Rollback the last Alembic migration via `alembic downgrade -1 --sql`.
+    Rollback the last Alembic migration via `alembic downgrade head:-1 --sql`.
 
-    This reverses the most recent migration: drops added columns/tables,
-    restores removed columns/tables, moves `alembic_version` back one step.
-
-    Use when you need to undo the last schema change.
+    `head:-1` tells Alembic to start from the head revision and go back one step.
+    This is required in offline --sql mode because Alembic cannot read the current
+    revision from the database — the explicit range must be provided.
     """
     _require_ddl()
     print("── Migrate down (rollback last migration) ──")
     _confirm("This will REVERSE the last schema migration. Continue?")
-    print("Generating SQL via alembic downgrade -1 --sql ...")
+    print("Generating SQL via alembic downgrade head:-1 --sql ...")
 
     result = subprocess.run(
-        ["uv", "run", "alembic", "downgrade", "-1", "--sql"],
+        ["uv", "run", "alembic", "downgrade", "head:-1", "--sql"],
         capture_output=True, text=True, cwd=_ROOT,
     )
     if result.returncode != 0:
         print("ERROR: alembic failed:")
-        print(result.stderr)
+        if result.stderr.strip():
+            print(result.stderr)
+        if result.stdout.strip():
+            print(result.stdout)
         sys.exit(1)
 
     sql = result.stdout
@@ -307,6 +326,8 @@ def cmd_truncate() -> None:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _require_ddl() -> None:
+    if DRY_RUN:
+        return  # no connection needed — nothing will be executed
     if not DDL_CONN_STR:
         print("ERROR: NEON_DDL_CONN_STR is not set in api/.env")
         print("  Set it to the neondb_owner connection string (DDL privileges required).")
@@ -314,6 +335,9 @@ def _require_ddl() -> None:
 
 
 def _confirm(msg: str) -> None:
+    if DRY_RUN:
+        print(f"\n  [DRY-RUN] Skipping confirmation: {msg}")
+        return
     ans = input(f"\n⚠️  {msg} [y/N] ").strip().lower()
     if ans != "y":
         print("Aborted.")
@@ -333,13 +357,24 @@ _COMMANDS = {
 }
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in _COMMANDS:
-        print("Usage: uv run python neon/manage.py <command>")
+    args = sys.argv[1:]
+
+    if "--execute" in args:
+        DRY_RUN = False
+        args = [a for a in args if a != "--execute"]
+    else:
+        print("[DRY-RUN] No SQL will be executed. Pass --execute to apply changes.\n")
+
+    if len(args) != 1 or args[0] not in _COMMANDS:
+        print("Usage: uv run python neon/manage.py [--execute] <command>")
         print()
         print("Commands:")
         for name, fn in _COMMANDS.items():
             first_line = (fn.__doc__ or "").strip().splitlines()[0]
             print(f"  {name:<15} {first_line}")
+        print()
+        print("Options:")
+        print("  --execute     Apply SQL to the database (default is dry-run)")
         sys.exit(1)
 
-    _COMMANDS[sys.argv[1]]()
+    _COMMANDS[args[0]]()

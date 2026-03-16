@@ -8,6 +8,7 @@ Schema:
   pattern_label  — user-managed label library
   raw_query      — every Splunk CSV row (source of truth)
   curated_query  — one row per promoted raw_query, with optional label FK
+  user           — authentication and authorization table
 
 Note: pattern table was removed; `querytype` gains slow_query_mongo;
       labelsource enum added for pattern_label.
@@ -99,21 +100,36 @@ def upgrade() -> None:
         batch_op.create_index('ix_curated_query_raw_query_id', ['raw_query_id'], unique=False)
         batch_op.create_index('ix_curated_query_label_id',     ['label_id'],     unique=False)
 
+    # "user" — auth table; "user" is a reserved word in PostgreSQL, always quoted.
+    op.create_table(
+        'user',
+        sa.Column('id',              sa.Integer(),  nullable=False),
+        sa.Column('username',        sa.String(),   nullable=False),
+        sa.Column('email',           sa.String(),   nullable=False),
+        sa.Column('hashed_password', sa.String(),   nullable=False),
+        sa.Column('role',            sa.String(),   nullable=False, server_default='viewer'),
+        sa.Column('is_active',       sa.Boolean(),  nullable=False, server_default='true'),
+        sa.Column('created_at',      sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column('last_login',      sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('username'),
+        sa.UniqueConstraint('email'),
+    )
+
+    # Grants for app role (DML only — no DDL)
+    op.execute(sa.text('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "user" TO perfmdb_owner'))
+    op.execute(sa.text('GRANT USAGE, SELECT ON SEQUENCE user_id_seq TO perfmdb_owner'))
+
 
 def downgrade() -> None:
-    """Downgrade schema — drop all three tables and ENUMs."""
+    """Downgrade schema — drop all tables and ENUMs."""
     op.drop_table('curated_query')
     op.drop_table('raw_query')
     op.drop_table('pattern_label')
-    sa.Enum(name='labelsource').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='querytype').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='environmenttype').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='sourcetype').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='severitytype').drop(op.get_bind(), checkfirst=True)
-        batch_op.drop_index(batch_op.f('ix_pattern_severity'))
-        batch_op.drop_index(batch_op.f('ix_pattern_pattern_tag'))
-        batch_op.drop_index(batch_op.f('ix_pattern_name'))
-        batch_op.drop_index(batch_op.f('ix_pattern_environment'))
-
-    op.drop_table('pattern')
-    # ### end Alembic commands ###
+    op.drop_table('user')
+    # op.get_bind() is unavailable in offline --sql mode; use op.execute() instead.
+    op.execute(sa.text('DROP TYPE IF EXISTS labelsource'))
+    op.execute(sa.text('DROP TYPE IF EXISTS querytype'))
+    op.execute(sa.text('DROP TYPE IF EXISTS environmenttype'))
+    op.execute(sa.text('DROP TYPE IF EXISTS sourcetype'))
+    op.execute(sa.text('DROP TYPE IF EXISTS severitytype'))
