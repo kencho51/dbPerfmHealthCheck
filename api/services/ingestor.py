@@ -1,103 +1,60 @@
-"""
-Ingestor service — deduplicates extracted rows and upserts into raw_query table.
+﻿"""
+Ingestor service ??bulk-ingest extracted rows into raw_query.
+
+Architecture
+------------
+Step 1 ??DuckDB (CPU, runs in thread pool):
+    ??Polars DataFrame registered as in-memory DuckDB view (zero-copy)
+    ??MD5 hash computed with md5(concat_ws(...)) ??vectorised
+    ??month_year derived via try_strptime() + strftime()
+    ??Enum values clamped to known constants
+    ??Returns list of normalised Python dicts (one per unique hash)
+
+Step 2 ??Neon HTTPS REST API (async):
+    ??INSERT ... ON CONFLICT (query_hash) DO UPDATE
+    ??Batched into chunks of BATCH_SIZE to stay within payload limits
+    ??No port 5432 required ??safe behind corporate proxies
 
 Deduplication key (query_hash):
-    MD5( source | host | db_name | environment | type | query_details )
+    MD5( source | host | db_name | environment | type | time | query_details )
 
-On conflict (same hash already in DB):
-    - occurrence_count += 1
-    - last_seen updated to now
-    - all other fields left unchanged
-
-Returns `IngestResult` with inserted / updated / skipped counts.
+On conflict:
+    occurrence_count  +=  1
+    last_seen / updated_at  refreshed
+    all other fields left unchanged
 """
 from __future__ import annotations
 
-import hashlib
-import re
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import polars as pl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from api.database import NeonSession
 
 from api.models import RawQuery
 
-# Rows sent per HTTPS call.  50 rows ≈ ~5 KB payload — well within limits.
+# Rows sent per Neon HTTPS call.  50 rows ??~5 KB ??well within limits.
 BATCH_SIZE = 50
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
-
-
-def _derive_month_year(time_str: str | None) -> str | None:
-    """
-    Attempt to extract 'YYYY-MM' from a timestamp string.
-    Returns None if the string is empty or unparseable.
-    """
-    if not time_str:
-        return None
-
-    # Normalise whitespace (e.g. "Jan 26 2026  9:00AM" → "Jan 26 2026 9:00AM")
-    time_clean = re.sub(r"\s+", " ", time_str.strip())
-
-    # Try common formats — add more as needed
-    formats = [
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-        # Splunk deadlock CSVs use slash-separated dates (YYYY/MM/DD)
-        "%Y/%m/%d %H:%M:%S.%f",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d",
-        # maxElapsedQueries CSVs use M/D/YYYY h:MM:SS AM/PM
-        "%m/%d/%Y %I:%M:%S %p",
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y",
-        # Month-name formats: "Jan 26 2026 9:00AM"
-        "%b %d %Y %I:%M%p",
-        "%b %d %Y %I:%M:%S%p",
-        "%b %d %Y",
-    ]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(time_clean[:26], fmt)
-            return dt.strftime("%Y-%m")
-        except ValueError:
-            continue
-
-    # Regex fallback: search for YYYY-MM or YYYY/MM anywhere in the string
-    m = re.search(r"(\d{4})[/\-](\d{2})", time_str)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-
-    return None
-
-
-def compute_hash(row: dict) -> str:
-    """
-    Compute MD5 deduplication hash for a row dict.
-    Keys used: source, host, db_name, environment, type, time, query_details.
-    Including `time` ensures the same query pattern observed across different
-    time windows is stored as distinct raw rows (idempotent on re-upload).
-    """
-    parts = "|".join([
-        (row.get("source") or "").strip().lower(),
-        (row.get("host") or "").strip().lower(),
-        (row.get("db_name") or "").strip().lower(),
-        (row.get("environment") or "").strip().lower(),
-        (row.get("type") or "").strip().lower(),
-        (row.get("time") or "").strip(),
-        (row.get("query_details") or "").strip(),
-    ])
-    return hashlib.md5(parts.encode("utf-8")).hexdigest()
+# Datetime format strings tried by DuckDB's try_strptime in order.
+_STRPTIME_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%Y/%m/%d %H:%M:%S.%f",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y",
+    "%b %d %Y %I:%M%p",
+    "%b %d %Y %I:%M:%S%p",
+    "%b %d %Y",
+]
+_FORMATS_SQL = "[" + ", ".join(f"'{f}'" for f in _STRPTIME_FORMATS) + "]"
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +64,9 @@ def compute_hash(row: dict) -> str:
 @dataclass
 class IngestResult:
     inserted: int = 0
-    updated: int = 0
-    skipped: int = 0
-    errors: list[str] = field(default_factory=list)
+    updated:  int = 0
+    skipped:  int = 0
+    errors:   list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -117,90 +74,184 @@ class IngestResult:
 
 
 # ---------------------------------------------------------------------------
-# Main ingest function
+# Step 1 ??DuckDB normalisation (synchronous, runs in thread pool)
 # ---------------------------------------------------------------------------
 
-async def ingest_rows(rows: list[dict], session: NeonSession) -> IngestResult:
+def _normalize_sync(rows: list[dict]) -> list[dict]:
     """
-    Upsert raw_query rows in batches of BATCH_SIZE via the Neon HTTPS REST API.
+    Use DuckDB in-memory to normalise enums, compute MD5 hashes, and derive
+    month_year.  Returns one dict per unique hash (occurrences summed).
+    """
+    import duckdb
 
-    Each batch sends a single INSERT ... ON CONFLICT (query_hash) DO UPDATE
-    statement, reducing 1000 rows from ~1000 HTTP calls to ~20 calls (~50x
-    faster than the previous row-by-row approach).
+    if not rows:
+        return []
 
-    On conflict (same hash already in DB):
-        - occurrence_count += 1
-        - last_seen / updated_at refreshed
-        - all other fields left unchanged
+    df = pl.DataFrame(
+        {
+            "source":          [str(r.get("source")        or "") for r in rows],
+            "host":            [str(r.get("host")          or "") for r in rows],
+            "db_name":         [str(r.get("db_name")       or "") for r in rows],
+            "environment":     [str(r.get("environment")   or "") for r in rows],
+            "type":            [str(r.get("type")          or "") for r in rows],
+            "time":            [str(r.get("time")          or "") for r in rows],
+            "query_details":   [str(r.get("query_details") or "") for r in rows],
+            "occurrence_count":[int(r.get("occurrence_count") or 1) for r in rows],
+        }
+    )
+
+    duck = duckdb.connect()
+    try:
+        duck.register("staging_raw", df)
+        duck.execute(f"""
+            CREATE OR REPLACE TEMP TABLE staging AS
+            SELECT
+                md5(concat_ws('|',
+                    lower(trim(source)),
+                    lower(trim(host)),
+                    lower(trim(db_name)),
+                    lower(trim(environment)),
+                    lower(trim(type)),
+                    trim(time),
+                    trim(query_details)
+                )) AS query_hash,
+
+                NULLIF(trim(time),          '') AS time,
+                NULLIF(trim(query_details), '') AS query_details,
+                NULLIF(trim(host),          '') AS host,
+                NULLIF(trim(db_name),       '') AS db_name,
+
+                CASE
+                    WHEN lower(trim(source)) IN ('sql', 'mongodb') THEN lower(trim(source))
+                    ELSE 'sql'
+                END AS source,
+                CASE
+                    WHEN lower(trim(environment)) IN ('prod', 'sat', 'unknown')
+                    THEN lower(trim(environment))
+                    ELSE 'unknown'
+                END AS environment,
+                CASE
+                    WHEN lower(trim(type)) IN
+                         ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock')
+                    THEN lower(trim(type))
+                    ELSE 'unknown'
+                END AS type,
+
+                strftime(
+                    try_strptime(
+                        trim(regexp_replace(
+                            regexp_replace(trim(time), '[+-]\\d{{2}}:?\\d{{2}}$', ''),
+                            '\\s+', ' '
+                        )),
+                        {_FORMATS_SQL}
+                    ),
+                    '%Y-%m'
+                ) AS month_year,
+
+                SUM(CAST(occurrence_count AS INTEGER)) AS occurrence_count
+
+            FROM staging_raw
+            GROUP BY ALL
+        """)
+        staging_rows = duck.execute("""
+            SELECT query_hash, time, source, host, db_name, environment, type,
+                   query_details, month_year, occurrence_count
+            FROM staging
+        """).fetchall()
+    finally:
+        duck.close()
+
+    now = datetime.now(tz=timezone.utc)
+    return [
+        {
+            "query_hash":       r[0],
+            "time":             r[1],
+            "source":           r[2],
+            "host":             r[3],
+            "db_name":          r[4],
+            "environment":      r[5],
+            "type":             r[6],
+            "query_details":    r[7],
+            "month_year":       r[8],
+            "occurrence_count": r[9],
+            "first_seen":       now,
+            "last_seen":        now,
+            "created_at":       now,
+            "updated_at":       now,
+        }
+        for r in staging_rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Step 2 ??Neon HTTPS batch upsert (async)
+# ---------------------------------------------------------------------------
+
+async def _upsert_neon(normalized: list[dict], result: IngestResult) -> None:
+    """
+    Batch-upsert normalised rows into Neon PostgreSQL via HTTPS.
+
+    Uses INSERT ... ON CONFLICT (query_hash) DO UPDATE to atomically
+    increment occurrence_count and refresh timestamps on duplicates.
+    """
+    from api.database import NeonSession
+
+    now = datetime.now(tz=timezone.utc)
+    session = NeonSession()
+    try:
+        for i in range(0, len(normalized), BATCH_SIZE):
+            chunk = normalized[i : i + BATCH_SIZE]
+            stmt = (
+                pg_insert(RawQuery)
+                .values(chunk)
+                .on_conflict_do_update(
+                    index_elements=["query_hash"],
+                    set_={
+                        "occurrence_count": RawQuery.occurrence_count + 1,
+                        "last_seen":        now,
+                        "updated_at":       now,
+                    },
+                )
+            )
+            await session.execute(stmt)
+        await session.commit()
+        result.inserted += len(normalized)
+    except Exception as exc:
+        await session.rollback()
+        result.errors.append(f"Neon upsert error: {type(exc).__name__}: {exc}")
+        result.skipped += len(normalized)
+    finally:
+        await session.close()
+
+
+# ---------------------------------------------------------------------------
+# Public async entry point
+# ---------------------------------------------------------------------------
+
+async def ingest_rows(rows: list[dict]) -> IngestResult:
+    """
+    Ingest a list of raw row dicts into raw_query.
+
+    Steps:
+      1. DuckDB normalisation in a thread pool (CPU-bound, non-blocking).
+      2. Neon HTTPS batch upsert (async, no port 5432 needed).
+
+    Idempotent ??uploading the same CSV twice only bumps occurrence_count.
     """
     result = IngestResult()
     if not rows:
         return result
 
-    now = _now()
-    # Use an ordered dict keyed by query_hash to deduplicate within this upload.
-    # PostgreSQL's ON CONFLICT DO UPDATE fails if the same key appears more than
-    # once in a single INSERT ... VALUES (...) batch ("cannot affect row a second
-    # time").  When two rows produce the same hash (identical content re-uploaded)
-    # we merge them by summing occurrence_count rather than duplicating the entry.
-    seen: dict[str, dict] = {}
+    try:
+        normalized = await asyncio.to_thread(_normalize_sync, rows)
+    except Exception as exc:
+        result.errors.append(f"DuckDB normalisation error: {exc}")
+        result.skipped = len(rows)
+        return result
 
-    for row in rows:
-        try:
-            q_hash      = compute_hash(row)
-            source      = (row.get("source") or "unknown").lower()
-            environment = (row.get("environment") or "unknown").lower()
-            q_type      = (row.get("type") or "unknown").lower()
+    if not normalized:
+        result.skipped = len(rows)
+        return result
 
-            if source not in ("sql", "mongodb"):                                         source = "sql"
-            if environment not in ("prod", "sat", "unknown"):                            environment = "unknown"
-            if q_type not in ("slow_query", "slow_query_mongo", "blocker", "deadlock", "unknown"): q_type = "unknown"
-
-            if q_hash in seen:
-                # Duplicate within this upload — just accumulate the count.
-                seen[q_hash]["occurrence_count"] += int(row.get("occurrence_count") or 1)
-            else:
-                seen[q_hash] = {
-                    "query_hash":       q_hash,
-                    "time":             row.get("time") or None,
-                    "source":           source,
-                    "host":             row.get("host") or None,
-                    "db_name":          row.get("db_name") or None,
-                    "environment":      environment,
-                    "type":             q_type,
-                    "query_details":    row.get("query_details") or None,
-                    "month_year":       _derive_month_year(row.get("time")),
-                    "occurrence_count": int(row.get("occurrence_count") or 1),
-                    "first_seen":       now,
-                    "last_seen":        now,
-                    "created_at":       now,
-                    "updated_at":       now,
-                }
-        except Exception as exc:
-            result.errors.append(f"Row error ({row.get('host', '?')}): {exc}")
-            result.skipped += 1
-
-    all_values = list(seen.values())
-
-    # --- Batch upsert: one HTTPS call per BATCH_SIZE rows ---
-    for i in range(0, len(all_values), BATCH_SIZE):
-        chunk = all_values[i : i + BATCH_SIZE]
-        stmt = (
-            pg_insert(RawQuery)
-            .values(chunk)
-            .on_conflict_do_update(
-                index_elements=["query_hash"],
-                set_={
-                    "occurrence_count": RawQuery.occurrence_count + 1,
-                    "last_seen":        now,
-                    "updated_at":       now,
-                },
-            )
-        )
-        await session.execute(stmt)
-        result.inserted += len(chunk)   # INSERT + UPDATE both counted as processed
-
-    # Rows that were deduplicated within this upload (not distinct DB operations)
-    result.skipped += len(rows) - len(all_values)
-
+    await _upsert_neon(normalized, result)
     return result

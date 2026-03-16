@@ -53,11 +53,22 @@ def _coerce(value, col):
             return value if isinstance(value, bool) else str(value).lower() in ("true", "1", "t")
         if isinstance(t, sa.DateTime):
             if isinstance(value, str):
-                from datetime import datetime
-                for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
-                            "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                import re
+                from datetime import datetime, timezone
+                # Normalise Neon's "+00" / "-05" short offsets to "+00:00" / "-05:00"
+                # so datetime.fromisoformat() (which requires HH:MM) accepts them.
+                normalised = re.sub(r'([+-]\d{2})$', r'\1:00', value.strip())
+                try:
+                    return datetime.fromisoformat(normalised)
+                except ValueError:
+                    pass
+                # Fallback: naive formats (no tz info)
+                for fmt in (
+                    "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+                ):
                     try:
-                        return datetime.strptime(value, fmt)
+                        return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
                     except ValueError:
                         continue
     except Exception:
@@ -150,13 +161,15 @@ def _sync_http_sql(sql: str, params: list | None = None) -> tuple[list[list[Any]
             "Neon-Connection-String": c["conn_str"],
         },
     )
+    _log.info("Neon SQL → %s | params_count=%d", sql[:300], len(params or []))
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode(errors="replace") if exc.fp else ""
+        body_text = exc.read().decode(errors="replace") if exc.fp else "<no body>"
         _log.error("Neon HTTP SQL %s — %s", exc.code, body_text[:500])
-        raise
+        # Re-raise with the actual Neon error message visible to callers / exception handlers.
+        raise RuntimeError(f"Neon HTTP {exc.code}: {body_text[:400]}") from exc
     except Exception as exc:
         _log.error("Neon HTTP SQL request failed: %s", exc)
         raise
@@ -171,6 +184,51 @@ def _sync_http_sql(sql: str, params: list | None = None) -> tuple[list[list[Any]
         return rows, rowcount
 
     # Unexpected format — surface the error
+    raise RuntimeError(f"Unexpected Neon HTTP SQL response: {str(data)[:300]}")
+
+
+def _sync_http_sql_with_fields(
+    sql: str, params: list | None = None
+) -> tuple[list[str], list[list[Any]], int]:
+    """
+    Like ``_sync_http_sql`` but also returns the column names list as the
+    first element of the return tuple.
+
+    Returns
+    -------
+    (columns, rows, rowcount)
+        columns  – list of column-name strings in the same order as each row
+        rows     – list of row lists; each row aligns with ``columns``
+        rowcount – server-reported rowCount (affected / returned)
+    """
+    c = _cfg()
+    body = json.dumps({"query": sql, "params": params or []}).encode()
+    req = urllib.request.Request(
+        c["sql_url"],
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Neon-Connection-String": c["conn_str"],
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace") if exc.fp else ""
+        _log.error("Neon HTTP SQL (with fields) %s — %s", exc.code, body_text[:500])
+        raise
+    except Exception as exc:
+        _log.error("Neon HTTP SQL (with fields) request failed: %s", exc)
+        raise
+
+    if isinstance(data, dict) and "rows" in data:
+        columns  = [f["name"] for f in data.get("fields", [])]
+        rows     = [[row.get(col) for col in columns] for row in data["rows"]]
+        rowcount = data.get("rowCount", len(rows))
+        return columns, rows, rowcount
+
     raise RuntimeError(f"Unexpected Neon HTTP SQL response: {str(data)[:300]}")
 
 
@@ -213,15 +271,24 @@ def _compile_parameterized(stmt) -> tuple[str, list]:
         dialect=dialect,
         compile_kwargs={"render_postcompile": True},
     )
-    # compiled.positiontup lists bound param names in positional order ($1, $2 …)
+    sql = str(compiled)
+
+    # compiled.positiontup lists bound param names in positional order ($1, $2 …).
+    # For some SELECT statements the asyncpg dialect leaves positiontup as None
+    # even though the SQL contains $N placeholders — fall back to params.keys()
+    # which preserves insertion order (Python 3.7+) and matches $1, $2, ... order.
+    keys: list[str] = list(compiled.positiontup or []) or list((compiled.params or {}).keys())
+
     params: list = []
-    for key in (compiled.positiontup or []):
+    for key in keys:
         val = (compiled.params or {}).get(key)
         # Neon HTTP SQL expects JSON-serialisable values; datetime → ISO string.
         if hasattr(val, "isoformat"):
             val = val.isoformat()
         params.append(val)
-    return str(compiled), params
+
+    _log.info("_compile_parameterized: %d params for SQL: %s", len(params), sql[:200])
+    return sql, params
 
 
 class _NeonExecResult:
@@ -275,8 +342,8 @@ class NeonHTTPSession:
         except Exception:
             pass
 
-        sql  = _compile(stmt)
-        rows, _rowcount = await _async_sql(sql)
+        sql, params = _compile_parameterized(stmt)
+        rows, _rowcount = await _async_sql(sql, params)
         result = _NeonResult(rows)
 
         if model is not None:

@@ -12,6 +12,8 @@ import {
 import { MonthlyTrendCard } from "@/components/MonthlyTrendCard";
 import { HourHeatmap } from "@/components/HourHeatmap";
 import { TopFingerprintsTable } from "@/components/TopFingerprintsTable";
+import { HostStatsTable } from "@/components/HostStatsTable";
+import { CoOccurrenceTable } from "@/components/CoOccurrenceTable";
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -325,24 +327,28 @@ export default function DashboardPage() {
           <CardHeader>
             <CardTitle>Total Queries</CardTitle>
             <CardValue>{fmt(data.totalQueries)}</CardValue>
+            <p className="text-xs text-slate-400 mt-1">Distinct query rows ingested (after deduplication)</p>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Distinct Hosts</CardTitle>
             <CardValue>{data.distinctHosts}</CardValue>
+            <p className="text-xs text-slate-400 mt-1">Unique DB server hosts with recorded activity</p>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Months Covered</CardTitle>
             <CardValue>{data.monthsCount}</CardValue>
+            <p className="text-xs text-slate-400 mt-1">Number of calendar months with ingested data</p>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Queries Curated</CardTitle>
             <CardValue>{data.curatedCount}</CardValue>
+            <p className="text-xs text-slate-400 mt-1">Queries manually reviewed and labelled so far</p>
           </CardHeader>
         </Card>
       </div>
@@ -352,6 +358,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Queries by Type</CardTitle>
+            <p className="text-xs text-slate-400 mt-0.5">Total occurrences per query type — slow SQL, slow MongoDB, blockers, deadlocks</p>
           </CardHeader>
           <CardContent>
             <SummaryBarChart data={data.summary} />
@@ -360,6 +367,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>By Environment</CardTitle>
+            <p className="text-xs text-slate-400 mt-0.5">Share of activity from Production vs SAT (pre-production) environments</p>
           </CardHeader>
           <CardContent>
             <EnvPieChart data={data.summary} />
@@ -376,6 +384,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Top Hosts (by occurrences)</CardTitle>
+            <p className="text-xs text-slate-400 mt-0.5">Hosts ranked by total occurrence count — highlights the busiest DB servers</p>
           </CardHeader>
           <CardContent>
             <HostBarChart data={data.hosts} />
@@ -389,12 +398,20 @@ export default function DashboardPage() {
       {/* Fingerprints table — full width */}
       <TopFingerprintsTable filters={filters} />
 
+      {/* Phase 8C + 8D: hidden until value is confirmed
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <HostStatsTable filters={filters} />
+        <CoOccurrenceTable filters={filters} />
+      </div>
+      */}
+
       {/* Bottom row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Top DBs table */}
         <Card>
           <CardHeader>
             <CardTitle>Top Databases</CardTitle>
+            <p className="text-xs text-slate-400 mt-0.5">Databases with the most query activity — rows ingested and total occurrence count</p>
           </CardHeader>
           <CardContent>
             <table className="w-full text-sm">
@@ -422,6 +439,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Curation Coverage</CardTitle>
+            <p className="text-xs text-slate-400 mt-0.5">How many ingested queries have been reviewed and labelled by the team</p>
           </CardHeader>
           <CardContent>
             <CoverageDonut data={data.coverage} />

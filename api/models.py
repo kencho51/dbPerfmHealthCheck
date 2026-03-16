@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import Column
+from sqlalchemy import String as SAString
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -56,6 +58,11 @@ class LabelSource(str, Enum):
     both = "both"
 
 
+class UserRole(str, Enum):
+    admin = "admin"
+    viewer = "viewer"
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -73,9 +80,15 @@ class PatternLabel(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, description="Short human-readable label")
-    severity: SeverityType = Field(default=SeverityType.warning, index=True)
+    severity: SeverityType = Field(
+        default=SeverityType.warning,
+        sa_column=Column(SAString, index=True, nullable=False, default=SeverityType.warning.value),
+    )
     description: Optional[str] = Field(default=None)
-    source: LabelSource = Field(default=LabelSource.both, index=True)
+    source: LabelSource = Field(
+        default=LabelSource.both,
+        sa_column=Column(SAString, index=True, nullable=False, default=LabelSource.both.value),
+    )
 
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -122,11 +135,17 @@ class RawQuery(SQLModel, table=True):
 
     # Core fields extracted from CSV
     time: Optional[str] = Field(default=None)
-    source: SourceType = Field(index=True)
+    source: SourceType = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
     host: Optional[str] = Field(default=None, index=True)
     db_name: Optional[str] = Field(default=None, index=True)
-    environment: EnvironmentType = Field(index=True)
-    type: QueryType = Field(index=True)
+    environment: EnvironmentType = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    type: QueryType = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
     query_details: Optional[str] = Field(default=None)
 
     # Derived at ingest -- "YYYY-MM"
@@ -143,6 +162,26 @@ class RawQuery(SQLModel, table=True):
 
     # Back-reference to the single curated entry (if any)
     curated_entry: Optional[CuratedQuery] = Relationship(back_populates="raw_query")
+
+
+# ---------------------------------------------------------------------------
+# User table  (authentication)
+# ---------------------------------------------------------------------------
+
+class User(SQLModel, table=True):
+    __tablename__ = "user"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    email: str = Field(unique=True, index=True)
+    hashed_password: str
+    role: UserRole = Field(
+        default=UserRole.viewer,
+        sa_column=Column(SAString, nullable=False, default=UserRole.viewer.value),
+    )
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_now)
+    last_login: Optional[datetime] = Field(default=None)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,20 @@
 """
-Analytics endpoints — all queries run against the full RawQuery dataset.
+Analytics endpoints — all queries run via DuckDB attached to master.db (SQLite).
+
+DuckDB is used instead of SQLModel for every analytics route because:
+  • Columnar-vectorized execution — GROUP BY aggregations over 10k–100k rows
+    complete in milliseconds rather than seconds (SQLite row-by-row engine).
+  • REGEXP_REPLACE in SQL — top-fingerprints no longer needs to load all rows
+    into Python/Polars; fingerprinting happens inside the database.
+  • try_strptime([format_list]) — by-hour parses 7 datetime formats in one
+    DuckDB expression, eliminating the SQLModel fetch + Polars multi-step pipeline.
+  • QUANTILE_CONT — P50/P95 host stats (Phase 8C) would be impossible in SQLite.
+
+Each endpoint follows the same pattern:
+    1. _<name>_sync(**filters) → runs synchronous DuckDB SQL, returns list[dict]
+    2. async def endpoint() → calls asyncio.to_thread(_<name>_sync, ...)
+
+No SQLModel session is injected into any route in this module.
 
 GET /api/analytics/summary          — counts by environment × type
 GET /api/analytics/by-host          — top N hosts by occurrence_count sum
@@ -7,27 +22,120 @@ GET /api/analytics/by-month         — rows per month_year (trend line)
 GET /api/analytics/by-db            — top databases by occurrence count
 GET /api/analytics/curation-coverage — % of raw rows with a curated_query entry
 GET /api/analytics/by-hour          — heatmap: row count by hour-of-day × weekday
-GET /api/analytics/top-fingerprints — top N normalised query fingerprints by occurrence count
+GET /api/analytics/top-fingerprints — top N normalised query fingerprints
+GET /api/analytics/host-stats       — P50/P95/P99 occurrence distribution per host (8C)
+GET /api/analytics/co-occurrence    — hosts with both blocker + deadlock events (8D)
+                                      by-month now includes row_delta / occ_delta via LAG (8E)
 """
 from __future__ import annotations
 
-from typing import Optional
+import asyncio
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, text
-from sqlmodel import col, select
-from sqlmodel.ext.asyncio.session import AsyncSession
+from fastapi import APIRouter, Query
 
-from api.database import get_session
-from api.host_system import apply_system_filter
-from api.models import CuratedQuery, EnvironmentType, QueryType, RawQuery, SourceType
+from api.analytics_db import get_duck
+from api.models import EnvironmentType, QueryType, SourceType
 
 router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# Shared filter builder
+# ---------------------------------------------------------------------------
+
+def _build_filters(
+    *,
+    source:      Optional[str] = None,
+    environment: Optional[str] = None,
+    host:        Optional[str] = None,
+    db_name:     Optional[str] = None,
+    month_year:  Optional[str] = None,
+    type_:       Optional[str] = None,
+    system:      Optional[str] = None,
+    extra:       list[str]     | None = None,
+) -> tuple[str, list[Any]]:
+    """
+    Return (WHERE clause string, positional params list) for DuckDB queries.
+
+    Always produces ``WHERE 1=1 AND ...`` so the caller can safely append
+    further ``AND`` expressions without worrying about the ``WHERE`` keyword.
+    ``system`` resolves to ``upper(host) IN (...)`` via SYSTEM_HOSTS mapping.
+    Extra raw SQL conditions (no params) can be added via ``extra``.
+    """
+    conditions: list[str] = ["1=1"]
+    params:     list[Any] = []
+
+    for col_name, val in [
+        ("source",      source),
+        ("environment", environment),
+        ("host",        host),
+        ("db_name",     db_name),
+        ("month_year",  month_year),
+        ("type",        type_),
+    ]:
+        if val is not None:
+            conditions.append(f"{col_name} = ?")
+            params.append(val)
+
+    if system is not None:
+        from api.host_system import SYSTEM_HOSTS
+        hosts = SYSTEM_HOSTS.get(system.upper(), [])
+        if hosts:
+            ph = ", ".join("?" * len(hosts))
+            conditions.append(f"upper(host) IN ({ph})")
+            params.extend(h.upper() for h in hosts)
+        else:
+            conditions.append("1 = 0")   # unknown system → no rows
+
+    for cond in (extra or []):
+        conditions.append(cond)
+
+    return "WHERE " + " AND ".join(conditions), params
+
+
+# DuckDB strptime format list — shared by by-hour and any future time-parsing queries.
+# try_strptime(text, [...]) returns NULL on mismatch; no exception raised.
+_STRPTIME_SQL = """[
+    '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S',
+    '%m/%d/%Y %I:%M:%S %p', '%m/%d/%Y %H:%M:%S',
+    '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S',
+    '%Y/%m/%d %H:%M:%S'
+]"""
+
+
+# ---------------------------------------------------------------------------
 # GET /api/analytics/summary
 # ---------------------------------------------------------------------------
+
+def _summary_sync(
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    where, params = _build_filters(
+        source=source, environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT environment, type, source,
+                   COUNT(*) AS row_count,
+                   SUM(occurrence_count) AS total_occurrences
+            FROM raw_query
+            {where}
+            GROUP BY environment, type, source
+            ORDER BY environment, type
+        """, params).fetchall()
+        return [
+            {"environment": r[0], "type": r[1], "source": r[2],
+             "row_count": r[3], "total_occurrences": r[4]}
+            for r in rows
+        ]
+    finally:
+        con.close()
+
 
 @router.get("/summary", summary="Row counts grouped by environment and type")
 async def analytics_summary(
@@ -37,47 +145,49 @@ async def analytics_summary(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    stmt = (
-        select(
-            RawQuery.environment,
-            RawQuery.type,
-            RawQuery.source,
-            func.count(RawQuery.id).label("row_count"),
-            func.sum(RawQuery.occurrence_count).label("total_occurrences"),
-        )
-        .group_by(RawQuery.environment, RawQuery.type, RawQuery.source)
-        .order_by(col(RawQuery.environment), col(RawQuery.type))
+    return await asyncio.to_thread(
+        _summary_sync,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
     )
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    stmt = apply_system_filter(stmt, system)
-
-    rows = await session.exec(stmt)
-    return [
-        {
-            "environment":       r.environment,
-            "type":              r.type,
-            "source":            r.source,
-            "row_count":         r.row_count,
-            "total_occurrences": r.total_occurrences,
-        }
-        for r in rows.all()
-    ]
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/by-host
 # ---------------------------------------------------------------------------
+
+def _by_host_sync(
+    top_n: int,
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    where, params = _build_filters(
+        source=source, environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+        extra=["host IS NOT NULL"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT host, environment,
+                   COUNT(*) AS row_count,
+                   SUM(occurrence_count) AS total_occurrences
+            FROM raw_query
+            {where}
+            GROUP BY host, environment
+            ORDER BY SUM(occurrence_count) DESC
+            LIMIT ?
+        """, params + [top_n]).fetchall()
+        return [
+            {"host": r[0], "environment": r[1],
+             "row_count": r[2], "total_occurrences": r[3]}
+            for r in rows
+        ]
+    finally:
+        con.close()
+
 
 @router.get("/by-host", summary="Top hosts by total occurrence count")
 async def analytics_by_host(
@@ -88,47 +198,61 @@ async def analytics_by_host(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    stmt = (
-        select(
-            RawQuery.host,
-            RawQuery.environment,
-            func.count(RawQuery.id).label("row_count"),
-            func.sum(RawQuery.occurrence_count).label("total_occurrences"),
-        )
-        .where(RawQuery.host.isnot(None))  # type: ignore[union-attr]
-        .group_by(RawQuery.host, RawQuery.environment)
-        .order_by(func.sum(RawQuery.occurrence_count).desc())
-        .limit(top_n)
+    return await asyncio.to_thread(
+        _by_host_sync, top_n,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
     )
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    stmt = apply_system_filter(stmt, system)
-
-    rows = await session.exec(stmt)
-    return [
-        {
-            "host":              r.host,
-            "environment":       r.environment,
-            "row_count":         r.row_count,
-            "total_occurrences": r.total_occurrences,
-        }
-        for r in rows.all()
-    ]
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/by-month
 # ---------------------------------------------------------------------------
+
+def _by_month_sync(
+    source: str | None, environment: str | None, type_: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    where, params = _build_filters(
+        source=source, environment=environment, type_=type_,
+        host=host, db_name=db_name, month_year=month_year, system=system,
+        extra=["month_year IS NOT NULL"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT month_year,
+                   row_count,
+                   total_occurrences,
+                   row_count - LAG(row_count, 1) OVER (ORDER BY month_year)
+                       AS row_delta,
+                   total_occurrences - LAG(total_occurrences, 1) OVER (ORDER BY month_year)
+                       AS occ_delta
+            FROM (
+                SELECT month_year,
+                       COUNT(*) AS row_count,
+                       SUM(occurrence_count) AS total_occurrences
+                FROM raw_query
+                {where}
+                GROUP BY month_year
+            ) t
+            ORDER BY month_year
+        """, params).fetchall()
+        return [
+            {
+                "month_year":        r[0],
+                "row_count":         r[1],
+                "total_occurrences": r[2],
+                "row_delta":         r[3],  # None for the first month
+                "occ_delta":         r[4],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
 
 @router.get("/by-month", summary="Row count per month (trend line)")
 async def analytics_by_month(
@@ -139,46 +263,49 @@ async def analytics_by_month(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    stmt = (
-        select(
-            RawQuery.month_year,
-            func.count(RawQuery.id).label("row_count"),
-            func.sum(RawQuery.occurrence_count).label("total_occurrences"),
-        )
-        .where(RawQuery.month_year.isnot(None))  # type: ignore[union-attr]
-        .group_by(RawQuery.month_year)
-        .order_by(col(RawQuery.month_year))
+    return await asyncio.to_thread(
+        _by_month_sync,
+        source and source.value, environment and environment.value,
+        type and type.value, host, db_name, month_year, system,
     )
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if type is not None:
-        stmt = stmt.where(RawQuery.type == type)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    stmt = apply_system_filter(stmt, system)
-
-    rows = await session.exec(stmt)
-    return [
-        {
-            "month_year":        r.month_year,
-            "row_count":         r.row_count,
-            "total_occurrences": r.total_occurrences,
-        }
-        for r in rows.all()
-    ]
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/by-db
 # ---------------------------------------------------------------------------
+
+def _by_db_sync(
+    top_n: int,
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    where, params = _build_filters(
+        source=source, environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+        extra=["db_name IS NOT NULL", "db_name != ''"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT db_name, source,
+                   COUNT(*) AS row_count,
+                   SUM(occurrence_count) AS total_occurrences
+            FROM raw_query
+            {where}
+            GROUP BY db_name, source
+            ORDER BY SUM(occurrence_count) DESC
+            LIMIT ?
+        """, params + [top_n]).fetchall()
+        return [
+            {"db_name": r[0], "source": r[1],
+             "row_count": r[2], "total_occurrences": r[3]}
+            for r in rows
+        ]
+    finally:
+        con.close()
+
 
 @router.get("/by-db", summary="Top databases by occurrence count")
 async def analytics_by_db(
@@ -189,48 +316,49 @@ async def analytics_by_db(
     db_name:     Optional[str]             = None,
     month_year:  Optional[str]             = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    stmt = (
-        select(
-            RawQuery.db_name,
-            RawQuery.source,
-            func.count(RawQuery.id).label("row_count"),
-            func.sum(RawQuery.occurrence_count).label("total_occurrences"),
-        )
-        .where(RawQuery.db_name.isnot(None))  # type: ignore[union-attr]
-        .where(RawQuery.db_name != "")
-        .group_by(RawQuery.db_name, RawQuery.source)
-        .order_by(func.sum(RawQuery.occurrence_count).desc())
-        .limit(top_n)
+    return await asyncio.to_thread(
+        _by_db_sync, top_n,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
     )
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    stmt = apply_system_filter(stmt, system)
-
-    rows = await session.exec(stmt)
-    return [
-        {
-            "db_name":           r.db_name,
-            "source":            r.source,
-            "row_count":         r.row_count,
-            "total_occurrences": r.total_occurrences,
-        }
-        for r in rows.all()
-    ]
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/curation-coverage
 # ---------------------------------------------------------------------------
+
+def _coverage_sync(
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> dict:
+    # DuckDB LEFT JOIN across both SQLite tables — single query, no round-trips
+    where, params = _build_filters(
+        source=source, environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+    )
+    con = get_duck("raw_query", "curated_query")
+    try:
+        row = con.execute(f"""
+            SELECT
+                COUNT(*)         AS total,
+                COUNT(cq.id)     AS curated
+            FROM raw_query rq
+            LEFT JOIN curated_query cq ON cq.raw_query_id = rq.id
+            {where}
+        """, params).fetchone()
+        total, curated = row[0], row[1]
+        coverage_pct = round(curated / total * 100, 4) if total else 0.0
+        return {
+            "total_rows":     total,
+            "curated_rows":   curated,
+            "uncurated_rows": total - curated,
+            "coverage_pct":   coverage_pct,
+        }
+    finally:
+        con.close()
+
 
 @router.get("/curation-coverage", summary="Curation coverage statistics")
 async def analytics_curation_coverage(
@@ -240,57 +368,102 @@ async def analytics_curation_coverage(
     source:      Optional[SourceType]      = None,
     month_year:  Optional[str]             = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    total_stmt = select(func.count(RawQuery.id))
-    if host is not None:
-        total_stmt = total_stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        total_stmt = total_stmt.where(RawQuery.db_name == db_name)
-    if environment is not None:
-        total_stmt = total_stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        total_stmt = total_stmt.where(RawQuery.source == source)
-    if month_year is not None:
-        total_stmt = total_stmt.where(RawQuery.month_year == month_year)
-    total_stmt = apply_system_filter(total_stmt, system)
-
-    curated_stmt = (
-        select(func.count(CuratedQuery.id))
-        .join(RawQuery, CuratedQuery.raw_query_id == RawQuery.id)  # type: ignore[arg-type]
+    return await asyncio.to_thread(
+        _coverage_sync,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
     )
-    if host is not None:
-        curated_stmt = curated_stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        curated_stmt = curated_stmt.where(RawQuery.db_name == db_name)
-    if environment is not None:
-        curated_stmt = curated_stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        curated_stmt = curated_stmt.where(RawQuery.source == source)
-    if month_year is not None:
-        curated_stmt = curated_stmt.where(RawQuery.month_year == month_year)
-    curated_stmt = apply_system_filter(curated_stmt, system)
-
-    total_result   = await session.exec(total_stmt)
-    curated_result = await session.exec(curated_stmt)
-
-    total   = total_result.one()
-    curated = curated_result.one()
-    # Compute pct with 4 decimal places to preserve precision for small ratios
-    # e.g. 1 curated out of 50 000 = 0.002% rather than 0.0%
-    coverage_pct = round(curated / total * 100, 4) if total else 0.0
-
-    return {
-        "total_rows":    total,
-        "curated_rows":  curated,
-        "uncurated_rows": total - curated,
-        "coverage_pct":  coverage_pct,
-    }
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/by-hour
 # ---------------------------------------------------------------------------
+
+def _by_hour_sync(
+    source: str | None, environment: str | None, type_: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
+) -> list[dict]:
+    """
+    DuckDB replaces the old SQLModel-fetch + Polars multi-step pipeline.
+
+    Old approach: load ALL raw_query rows into Python → Polars DataFrame →
+    strip TZ offset → coalesce 7 strptime formats → group_by → 4 lookups.
+
+    New approach: DuckDB executes everything in one SQL — time parsing via
+    try_strptime([format_list]), grouping by (hour, weekday, qtype, host,
+    db_name).  Python only assembles the nested {by_type, top_hosts, top_dbs}
+    structure from the already-aggregated result rows.
+    """
+    where, params = _build_filters(
+        source=source, environment=environment, type_=type_,
+        host=host, db_name=db_name, month_year=month_year, system=system,
+        extra=["time IS NOT NULL"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT
+                datepart('hour',   dt) AS hour,
+                datepart('isodow', dt) - 1 AS weekday,
+                SUM(occurrence_count) AS occ,
+                type   AS qtype,
+                COALESCE(host,    '') AS host,
+                COALESCE(db_name, '') AS db_name
+            FROM (
+                SELECT
+                    try_strptime(
+                        trim(regexp_replace(
+                            regexp_replace(COALESCE(time, ''), '[+-]\\d{{2}}:?\\d{{2}}$', ''),
+                            '\\s+', ' '
+                        )),
+                        {_STRPTIME_SQL}
+                    ) AS dt,
+                    occurrence_count, type, host, db_name
+                FROM raw_query
+                {where}
+            ) t
+            WHERE dt IS NOT NULL
+            GROUP BY hour, weekday, qtype, host, db_name
+            ORDER BY weekday, hour
+        """, params).fetchall()
+    finally:
+        con.close()
+
+    # Assemble nested structure in Python (minimal work — DuckDB already aggregated)
+    cells: dict[tuple[int, int], dict] = {}
+    for hour, weekday, occ, qtype, host_v, db_v in rows:
+        key  = (hour, weekday)
+        cell = cells.setdefault(key, {
+            "hour": hour, "weekday": weekday, "count": 0,
+            "by_type": {}, "_hosts": {}, "_dbs": {},
+        })
+        cell["count"]           += occ
+        cell["by_type"][qtype]   = cell["by_type"].get(qtype, 0) + occ
+        if host_v:
+            cell["_hosts"][host_v] = cell["_hosts"].get(host_v, 0) + occ
+        if db_v:
+            cell["_dbs"][db_v]     = cell["_dbs"].get(db_v, 0) + occ
+
+    result = []
+    for cell in sorted(cells.values(), key=lambda c: (c["weekday"], c["hour"])):
+        result.append({
+            "hour":      cell["hour"],
+            "weekday":   cell["weekday"],
+            "count":     cell["count"],
+            "by_type":   cell["by_type"],
+            "top_hosts": sorted(
+                [{"host": h, "count": c} for h, c in cell["_hosts"].items()],
+                key=lambda x: -x["count"],
+            )[:5],
+            "top_dbs": sorted(
+                [{"db_name": d, "count": c} for d, c in cell["_dbs"].items()],
+                key=lambda x: -x["count"],
+            )[:5],
+        })
+    return result
+
 
 @router.get("/by-hour", summary="Query count heatmap: hour-of-day × day-of-week")
 async def analytics_by_hour(
@@ -301,159 +474,126 @@ async def analytics_by_hour(
     month_year:  Optional[str]             = None,
     type:        Optional[QueryType]       = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """
-    Returns sparse list of cells keyed by {hour, weekday} with:
-      count       — sum of occurrence_count for that cell
-      by_type     — {slow_query: N, blocker: N, ...} breakdown
-      top_hosts   — [{host, count}, ...] top 5 hosts in that cell
-      top_dbs     — [{db_name, count}, ...] top 5 databases in that cell
-
-    hour:    0–23
-    weekday: 0=Monday … 6=Sunday  (ISO weekday − 1)
-
-    Parsing is done in-process with Polars because raw_query.time stores
-    heterogeneous Splunk formats (ISO+tz, US AM/PM, ISO without tz).
-    Missing cells (zero events) are omitted — the frontend fills them with 0.
-    """
-    import polars as pl
-
-    stmt = select(
-        RawQuery.time,
-        RawQuery.occurrence_count,
-        RawQuery.type,
-        RawQuery.host,
-        RawQuery.db_name,
-    ).where(
-        RawQuery.time.isnot(None)  # type: ignore[union-attr]
+    return await asyncio.to_thread(
+        _by_hour_sync,
+        source and source.value, environment and environment.value,
+        type and type.value, host, db_name, month_year, system,
     )
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    if type is not None:
-        stmt = stmt.where(RawQuery.type == type)
-    stmt = apply_system_filter(stmt, system)
-
-    rows = (await session.exec(stmt)).all()
-    if not rows:
-        return []
-
-    df = pl.DataFrame({
-        "t":       [r.time for r in rows],
-        "occ":     [r.occurrence_count for r in rows],
-        "qtype":   [r.type or "unknown" for r in rows],
-        "host":    [r.host or "" for r in rows],
-        "db_name": [r.db_name or "" for r in rows],
-    })
-
-    # Strip trailing timezone offsets (+0800 / +08:00 / -0500) so we can use
-    # non-TZ format strings while still keeping local hour-of-day information.
-    df = df.with_columns(
-        pl.col("t")
-        .str.replace(r"[+-]\d{2}:?\d{2}$", "")
-        .str.strip_chars()
-        .alias("t_clean")
-    )
-
-    FORMATS = [
-        "%Y-%m-%dT%H:%M:%S%.f",   # 2025-11-30T17:35:54.000  (after TZ strip)
-        "%Y-%m-%dT%H:%M:%S",      # 2025-11-30T17:35:54
-        "%m/%d/%Y %I:%M:%S %p",   # 1/26/2026 8:58:53 AM
-        "%m/%d/%Y %H:%M:%S",      # 1/26/2026 17:35:54
-        "%Y-%m-%d %H:%M:%S%.f",   # 2025-11-30 17:35:54.000
-        "%Y-%m-%d %H:%M:%S",      # 2025-11-30 17:35:54
-        "%Y/%m/%d %H:%M:%S",      # 2025/11/30 17:35:54
-    ]
-
-    df = df.with_columns(
-        pl.coalesce(
-            *[pl.col("t_clean").str.strptime(pl.Datetime, fmt, strict=False) for fmt in FORMATS]
-        ).alias("dt")
-    )
-
-    # Keep only parseable rows and derive hour + weekday
-    base = (
-        df.filter(pl.col("dt").is_not_null())
-        .with_columns(
-            pl.col("dt").dt.hour().alias("hour"),
-            (pl.col("dt").dt.weekday() - 1).alias("weekday"),
-        )
-    )
-
-    # ---- Total count per cell ------------------------------------------------
-    totals = (
-        base.group_by(["hour", "weekday"])
-        .agg(pl.col("occ").sum().alias("count"))
-    )
-
-    # ---- by_type breakdown per cell -----------------------------------------
-    by_type_df = (
-        base.group_by(["hour", "weekday", "qtype"])
-        .agg(pl.col("occ").sum().alias("tc"))
-    )
-    type_lookup: dict[tuple, dict] = {}
-    for row in by_type_df.iter_rows(named=True):
-        key = (row["hour"], row["weekday"])
-        type_lookup.setdefault(key, {})[row["qtype"]] = row["tc"]
-
-    # ---- top_hosts per cell (top 5) -----------------------------------------
-    by_host_df = (
-        base.filter(pl.col("host") != "")
-        .group_by(["hour", "weekday", "host"])
-        .agg(pl.col("occ").sum().alias("hc"))
-    )
-    host_lookup: dict[tuple, list] = {}
-    for row in by_host_df.iter_rows(named=True):
-        key = (row["hour"], row["weekday"])
-        host_lookup.setdefault(key, []).append({"host": row["host"], "count": row["hc"]})
-    for key in host_lookup:
-        host_lookup[key].sort(key=lambda x: -x["count"])
-        host_lookup[key] = host_lookup[key][:5]
-
-    # ---- top_dbs per cell (top 5) -------------------------------------------
-    by_db_df = (
-        base.filter(pl.col("db_name") != "")
-        .group_by(["hour", "weekday", "db_name"])
-        .agg(pl.col("occ").sum().alias("dc"))
-    )
-    db_lookup: dict[tuple, list] = {}
-    for row in by_db_df.iter_rows(named=True):
-        key = (row["hour"], row["weekday"])
-        db_lookup.setdefault(key, []).append({"db_name": row["db_name"], "count": row["dc"]})
-    for key in db_lookup:
-        db_lookup[key].sort(key=lambda x: -x["count"])
-        db_lookup[key] = db_lookup[key][:5]
-
-    # ---- Assemble -----------------------------------------------------------
-    result = []
-    for row in totals.sort(["weekday", "hour"]).iter_rows(named=True):
-        key = (row["hour"], row["weekday"])
-        result.append({
-            "hour":      row["hour"],
-            "weekday":   row["weekday"],
-            "count":     row["count"],
-            "by_type":   type_lookup.get(key, {}),
-            "top_hosts": host_lookup.get(key, []),
-            "top_dbs":   db_lookup.get(key, []),
-        })
-    return result
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/top-fingerprints
 # ---------------------------------------------------------------------------
 
+def _top_fingerprints_sync(
+    source: str | None, environment: str | None, type_: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None, top_n: int,
+) -> list[dict]:
+    """
+    DuckDB replaces the old SQLModel-fetch-all + Polars regex pipeline.
+
+    Fingerprinting rules (identical to old logic):
+      1. Lowercase the query_details string.
+      2. Replace string literals  ('...')  with '?'.
+      3. Replace numeric literals (integers / decimals)  with '?'.
+      4. Collapse whitespace.
+      5. Truncate to 300 chars.
+    """
+    where, params = _build_filters(
+        source=source, environment=environment, type_=type_,
+        host=host, db_name=db_name, month_year=month_year, system=system,
+        extra=["query_details IS NOT NULL", "query_details != ''"],
+    )
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            WITH fingerprinted AS (
+                SELECT
+                    substring(
+                        regexp_replace(
+                            regexp_replace(
+                                regexp_replace(
+                                    lower(COALESCE(query_details, '')),
+                                    '''[^'']*''',        '?'),
+                                '\\b\\d+\\.?\\d*\\b',  '?'),
+                            '\\s+',                    ' '),
+                        1, 300
+                    ) AS fp,
+                    COALESCE(type,        'unknown') AS qtype,
+                    COALESCE(host,        '')        AS host,
+                    COALESCE(db_name,     '')        AS db_name,
+                    COALESCE(month_year,  '')        AS month_year,
+                    COALESCE(environment, '')        AS environment,
+                    COALESCE(source,      '')        AS src,
+                    query_details                    AS sample,
+                    occurrence_count                 AS occ
+                FROM raw_query
+                {where}
+            )
+            SELECT
+                fp,
+                qtype,
+                host,
+                db_name,
+                month_year,
+                environment,
+                src,
+                SUM(occ)      AS total_occ,
+                COUNT(*)      AS row_count,
+                first(sample) AS sample
+            FROM fingerprinted
+            GROUP BY fp, qtype, host, db_name, month_year, environment, src
+            ORDER BY total_occ DESC
+        """, params).fetchall()
+    finally:
+        con.close()
+
+    # Group by fingerprint across all dimension combos, pick top_n
+    groups: dict[str, dict] = {}
+    for fp, qtype, host_v, db_v, my, env, src, occ, rcount, sample in rows:
+        g = groups.setdefault(fp, {
+            "fingerprint":  fp,
+            "sample_query": sample,
+            "count":        0,
+            "row_count":    0,
+            "by_type":      {},
+            "_by_month":    {},
+            "_hosts":       {},
+            "_dbs":         {},
+            "environments": set(),
+            "_sources":     set(),
+        })
+        g["count"]                  += occ
+        g["row_count"]              += rcount
+        g["by_type"][qtype]          = g["by_type"].get(qtype, 0) + occ
+        if my:
+            g["_by_month"][my]       = g["_by_month"].get(my, 0) + occ
+        if host_v:
+            g["_hosts"][host_v]      = g["_hosts"].get(host_v, 0) + occ
+        if db_v:
+            g["_dbs"][db_v]          = g["_dbs"].get(db_v, 0) + occ
+        if env: g["environments"].add(env)
+        if src: g["_sources"].add(src)
+
+    top = sorted(groups.values(), key=lambda x: -x["count"])[:top_n]
+    for g in top:
+        # Flatten to the shape FingerprintRow expects
+        hosts_sorted = sorted(g.pop("_hosts").items(), key=lambda x: -x[1])
+        dbs_sorted   = sorted(g.pop("_dbs").items(),   key=lambda x: -x[1])
+        sources      = sorted(g.pop("_sources"))
+        g["example_host"]   = hosts_sorted[0][0] if hosts_sorted else ""
+        g["example_db"]     = dbs_sorted[0][0]   if dbs_sorted   else ""
+        g["months"]         = sorted(g.pop("_by_month").keys())
+        g["environments"]   = sorted(g["environments"])
+        g["example_source"] = sources[0] if sources else ""
+    return top
+
+
 @router.get("/top-fingerprints", summary="Top normalised query fingerprints by occurrence count")
 async def analytics_top_fingerprints(
-    top_n:       int                    = Query(default=20, ge=1, le=200),
+    top_n:       int                       = Query(default=20, ge=1, le=200),
     environment: Optional[EnvironmentType] = None,
     source:      Optional[SourceType]      = None,
     host:        Optional[str]             = None,
@@ -461,147 +601,161 @@ async def analytics_top_fingerprints(
     month_year:  Optional[str]             = None,
     type:        Optional[QueryType]       = None,
     system:      Optional[str]             = None,
-    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _top_fingerprints_sync,
+        source and source.value, environment and environment.value,
+        type and type.value, host, db_name, month_year, system, top_n,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analytics/host-stats  (Phase 8C)
+# P50 / P95 / P99 occurrence distribution per host via DuckDB QUANTILE_CONT
+# ---------------------------------------------------------------------------
+
+def _host_stats_sync(
+    top_n: int,
+    source: str | None, environment: str | None,
+    host: str | None, db_name: str | None,
+    month_year: str | None, system: str | None,
 ) -> list[dict]:
     """
-    Normalises each ``query_details`` value to a stable fingerprint by:
-      1. Lowercasing
-      2. Collapsing single-quoted string literals → ``'?'``
-      3. Collapsing standalone numeric literals → ``?``
-      4. Collapsing whitespace runs to a single space
-      5. Truncating to 300 characters
-
-    Returns the top ``top_n`` fingerprints by total ``occurrence_count`` sum,
-    with a per-type breakdown and the most-common host / database for each.
+    QUANTILE_CONT(col, q) computes an exact continuous percentile over the
+    group — equivalent to numpy.percentile with interpolation='linear'.
+    We cast occurrence_count to DOUBLE so the result is always a float.
+    Hosts with fewer than 3 rows are excluded (percentile is meaningless).
     """
-    import polars as pl
-
-    stmt = select(
-        RawQuery.query_details,
-        RawQuery.type,
-        RawQuery.host,
-        RawQuery.db_name,
-        RawQuery.occurrence_count,
-        RawQuery.month_year,
-        RawQuery.environment,
-        RawQuery.source,
-    ).where(
-        RawQuery.query_details.isnot(None)  # type: ignore[union-attr]
+    where, params = _build_filters(
+        source=source, environment=environment,
+        host=host, db_name=db_name, month_year=month_year, system=system,
+        extra=["host IS NOT NULL", "host != ''"],
     )
-    if environment is not None:
-        stmt = stmt.where(RawQuery.environment == environment)
-    if source is not None:
-        stmt = stmt.where(RawQuery.source == source)
-    if host is not None:
-        stmt = stmt.where(RawQuery.host == host)
-    if db_name is not None:
-        stmt = stmt.where(RawQuery.db_name == db_name)
-    if month_year is not None:
-        stmt = stmt.where(RawQuery.month_year == month_year)
-    if type is not None:
-        stmt = stmt.where(RawQuery.type == type)
-    stmt = apply_system_filter(stmt, system)
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            SELECT
+                host,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.50), 1) AS p50,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.95), 1) AS p95,
+                ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.99), 1) AS p99,
+                MAX(occurrence_count)            AS max_occ,
+                SUM(occurrence_count)            AS total_occurrences,
+                COUNT(*)                         AS row_count
+            FROM raw_query
+            {where}
+            GROUP BY host
+            HAVING COUNT(*) >= 3
+            ORDER BY p95 DESC
+            LIMIT ?
+        """, params + [top_n]).fetchall()
+        return [
+            {
+                "host":              r[0],
+                "p50":               r[1],
+                "p95":               r[2],
+                "p99":               r[3],
+                "max_occ":           r[4],
+                "total_occurrences": r[5],
+                "row_count":         r[6],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
 
-    rows = (await session.exec(stmt)).all()
-    if not rows:
-        return []
 
-    df = pl.DataFrame({
-        "q":     [r.query_details or "" for r in rows],
-        "qtype": [r.type or "unknown"   for r in rows],
-        "host":  [r.host or ""          for r in rows],
-        "db":    [r.db_name or ""       for r in rows],
-        "occ":   [r.occurrence_count    for r in rows],
-        "month": [r.month_year or ""    for r in rows],
-        "env":   [r.environment or ""   for r in rows],
-        "src":   [r.source or ""        for r in rows],
-    })
-
-    # Vectorised fingerprinting via Polars regex
-    df = df.with_columns(
-        pl.col("q")
-        .str.to_lowercase()
-        .str.replace_all(r"'[^']*'", "'?'")
-        .str.replace_all(r"\b\d+\.?\d*\b", "?")
-        .str.replace_all(r"\s+", " ")
-        .str.strip_chars()
-        .str.slice(0, 300)
-        .alias("fp")
-    )
-
-    # Total occurrences per fingerprint → take top N
-    totals = (
-        df.group_by("fp")
-        .agg(
-            pl.col("occ").sum().alias("count"),
-            pl.len().alias("row_count"),
-        )
-        .sort("count", descending=True)
-        .head(top_n)
+@router.get("/host-stats", summary="P50/P95/P99 occurrence distribution per host")
+async def analytics_host_stats(
+    top_n:       int                       = Query(default=30, ge=1, le=200),
+    environment: Optional[EnvironmentType] = None,
+    source:      Optional[SourceType]      = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _host_stats_sync,
+        top_n,
+        source and source.value, environment and environment.value,
+        host, db_name, month_year, system,
     )
 
-    top_fps = set(totals["fp"].to_list())
-    top_df  = df.filter(pl.col("fp").is_in(top_fps))
 
-    # per-type breakdown
-    by_type_df = (
-        top_df.group_by(["fp", "qtype"])
-        .agg(pl.col("occ").sum().alias("tc"))
+# ---------------------------------------------------------------------------
+# GET /api/analytics/co-occurrence  (Phase 8D)
+# Hosts where both blocker AND deadlock events appear in the same month
+# ---------------------------------------------------------------------------
+
+def _co_occurrence_sync(
+    environment: str | None, host: str | None,
+    db_name: str | None, month_year: str | None, system: str | None,
+) -> list[dict]:
+    """
+    FULL OUTER JOIN between blocker-aggregated and deadlock-aggregated CTEs on
+    (host, month_year). Rows where only one type is present are still returned
+    (count = 0 for the missing type) so the frontend can colour them differently.
+    Only hosts with at least one blocker OR one deadlock are returned.
+    """
+    # Build shared dimension filters — type is forced inside each CTE
+    base_where, params = _build_filters(
+        environment=environment, host=host,
+        db_name=db_name, month_year=month_year, system=system,
+        extra=["host IS NOT NULL", "host != ''", "month_year IS NOT NULL"],
     )
-    type_lookup: dict[str, dict] = {}
-    for row in by_type_df.iter_rows(named=True):
-        type_lookup.setdefault(row["fp"], {})[row["qtype"]] = row["tc"]
+    # params list is reused for both CTEs — DuckDB positional params are per-statement
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(f"""
+            WITH blockers AS (
+                SELECT host, month_year, SUM(occurrence_count) AS blocker_count
+                FROM raw_query
+                {base_where} AND type = 'blocker'
+                GROUP BY host, month_year
+            ),
+            deadlocks AS (
+                SELECT host, month_year, SUM(occurrence_count) AS deadlock_count
+                FROM raw_query
+                {base_where} AND type = 'deadlock'
+                GROUP BY host, month_year
+            )
+            SELECT
+                COALESCE(b.host,       d.host)       AS host,
+                COALESCE(b.month_year, d.month_year) AS month_year,
+                COALESCE(b.blocker_count,  0)        AS blocker_count,
+                COALESCE(d.deadlock_count, 0)        AS deadlock_count,
+                COALESCE(b.blocker_count, 0)
+                    + COALESCE(d.deadlock_count, 0)  AS combined_score
+            FROM blockers b
+            FULL OUTER JOIN deadlocks d
+                ON b.host = d.host AND b.month_year = d.month_year
+            ORDER BY combined_score DESC, host, month_year
+        """, params + params).fetchall()   # params duplicated for both CTEs
+        return [
+            {
+                "host":           r[0],
+                "month_year":     r[1],
+                "blocker_count":  r[2],
+                "deadlock_count": r[3],
+                "combined_score": r[4],
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
 
-    # most-common host / db per fingerprint (Python-level: simpler than nested Polars sort+group)
-    host_agg: dict[str, dict[str, int]] = {}
-    db_agg:   dict[str, dict[str, int]] = {}
-    months_agg:  dict[str, set]         = {}
-    env_agg:     dict[str, set]         = {}
-    source_agg:  dict[str, dict[str, int]] = {}
-    for row in top_df.iter_rows(named=True):
-        fp, h, d, occ = row["fp"], row["host"], row["db"], row["occ"]
-        m, e, s       = row["month"], row["env"], row["src"]
-        if h:
-            host_agg.setdefault(fp, {})
-            host_agg[fp][h] = host_agg[fp].get(h, 0) + occ
-        if d:
-            db_agg.setdefault(fp, {})
-            db_agg[fp][d] = db_agg[fp].get(d, 0) + occ
-        if m:
-            months_agg.setdefault(fp, set()).add(m)
-        if e:
-            env_agg.setdefault(fp, set()).add(e)
-        if s:
-            source_agg.setdefault(fp, {})
-            source_agg[fp][s] = source_agg[fp].get(s, 0) + occ
 
-    host_lookup = {
-        fp: max(hosts.keys(), key=lambda k: hosts[k])
-        for fp, hosts in host_agg.items()
-    }
-    db_lookup = {
-        fp: max(dbs.keys(), key=lambda k: dbs[k])
-        for fp, dbs in db_agg.items()
-    }
-    months_lookup = {fp: sorted(months) for fp, months in months_agg.items()}
-    env_lookup    = {fp: sorted(envs)   for fp, envs   in env_agg.items()}
-    source_lookup = {
-        fp: max(srcs.keys(), key=lambda k: srcs[k])
-        for fp, srcs in source_agg.items()
-    }
-
-    result = []
-    for row in totals.iter_rows(named=True):
-        fp = row["fp"]
-        result.append({
-            "fingerprint":    fp,
-            "count":          row["count"],
-            "row_count":      row["row_count"],
-            "by_type":        type_lookup.get(fp, {}),
-            "example_host":   host_lookup.get(fp, ""),
-            "example_db":     db_lookup.get(fp, ""),
-            "months":         months_lookup.get(fp, []),
-            "environments":   env_lookup.get(fp, []),
-            "example_source": source_lookup.get(fp, ""),
-        })
-    return result
+@router.get("/co-occurrence", summary="Hosts with blocker and/or deadlock events per month")
+async def analytics_co_occurrence(
+    environment: Optional[EnvironmentType] = None,
+    host:        Optional[str]             = None,
+    db_name:     Optional[str]             = None,
+    month_year:  Optional[str]             = None,
+    system:      Optional[str]             = None,
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _co_occurrence_sync,
+        environment and environment.value,
+        host, db_name, month_year, system,
+    )
