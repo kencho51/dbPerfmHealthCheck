@@ -5,16 +5,17 @@ Reads NEON_DDL_CONN_STR from the environment or from api/.env.
 Set it to the neondb_owner connection string before running:
 
     $env:NEON_DDL_CONN_STR = "postgresql://neondb_owner:<pass>@<ep>/perfmdb?sslmode=require"
-    uv run --native-tls python _ddl_user.py
+    uv run --native-tls python neon/_ddl_user.py
 
 Or uncomment DATABASE_URL_DDL in api/.env and rename it NEON_DDL_CONN_STR.
 """
 import json
 import os
 import urllib.request
+from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv("api/.env")
+load_dotenv(Path(__file__).parent.parent / "api" / ".env")
 
 EP      = "ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech"
 SQL_URL = f"https://{EP}/sql"

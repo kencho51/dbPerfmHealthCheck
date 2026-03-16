@@ -2,7 +2,7 @@
 Neon connectivity test using the REST API (HTTPS port 443).
 This bypasses the corporate proxy's block on raw PostgreSQL port 5432.
 
-Run with:  uv run python _test_neon.py
+Run with:  uv run python neon/_test_neon.py
 
 Requires NEON_API_KEY in api/.env.
 Get one at: https://console.neon.tech/app/settings/api-keys
@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / "api" / ".env")
+load_dotenv(Path(__file__).parent.parent / "api" / ".env")
 
 API_KEY = os.environ.get("NEON_API_KEY", "").strip()
 ORG_ID = os.environ.get("NEON_ORG_ID", "").strip()
