@@ -105,6 +105,25 @@ GRANT USAGE, SELECT ON SEQUENCE raw_query_id_seq     TO perfmdb_owner;
 GRANT USAGE, SELECT ON SEQUENCE curated_query_id_seq TO perfmdb_owner;
 
 -- ---------------------------------------------------------------------------
+-- "user"  (auth table — managed outside Alembic; merged here for completeness)
+-- "user" is a reserved word in PostgreSQL; always quoted.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS "user" (
+    id              SERIAL      PRIMARY KEY,
+    username        VARCHAR     NOT NULL UNIQUE,
+    email           VARCHAR     NOT NULL UNIQUE,
+    hashed_password VARCHAR     NOT NULL,
+    role            VARCHAR     NOT NULL DEFAULT 'viewer',
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ          DEFAULT NOW(),
+    last_login      TIMESTAMPTZ
+);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "user"   TO perfmdb_owner;
+GRANT USAGE, SELECT                  ON SEQUENCE user_id_seq TO perfmdb_owner;
+
+-- ---------------------------------------------------------------------------
 
 INSERT INTO alembic_version (version_num) VALUES ('9db879faabd3')
     RETURNING alembic_version.version_num;

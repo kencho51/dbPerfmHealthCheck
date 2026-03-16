@@ -309,9 +309,7 @@ SQL-created passwords (`ALTER ROLE ... PASSWORD`) are not SCRAM-SHA-256 and retu
 | `api/database.py` | `NeonSession` — FastAPI session abstraction over `NeonHTTPSession` |
 | `api/models.py` | SQLModel table definitions (use `sa_column=Column(SAString)` for enums) |
 | `neon/manage.py` | **Management CLI** — create, drop, reset, migrate-up/down, truncate, status |
-| `neon/migration.sql` | Full schema DDL (Alembic-generated, applied by `manage.py create`) |
-| `neon/neon_schema.sql` | `"user"` table DDL + grants (applied by `manage.py create`) |
+| `neon/migration.sql` | Full schema DDL — all tables including `"user"` (applied by `manage.py create`) |
 | `neon/_apply_migration.py` | Lower-level: apply any SQL file via HTTPS (used internally by older scripts) |
-| `neon/_ddl_user.py` | One-shot: create/grant `"user"` table (reads `NEON_DDL_CONN_STR`) |
 | `neon/_test_neon.py` | Verify HTTPS API connectivity — lists projects/branches via management API |
 | `scripts/create_admin.py` | Create first admin user via the running FastAPI server |
