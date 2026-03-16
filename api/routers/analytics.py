@@ -1,14 +1,13 @@
 """
-Analytics endpoints — all queries run via DuckDB attached to master.db (SQLite).
+Analytics endpoints — DuckDB OLAP over Neon PostgreSQL data.
 
-DuckDB is used instead of SQLModel for every analytics route because:
+Data flow: Neon PostgreSQL (HTTPS REST API) → Polars DataFrame → in-memory DuckDB.
+DuckDB is used instead of direct SQL for analytics because:
   • Columnar-vectorized execution — GROUP BY aggregations over 10k–100k rows
-    complete in milliseconds rather than seconds (SQLite row-by-row engine).
-  • REGEXP_REPLACE in SQL — top-fingerprints no longer needs to load all rows
-    into Python/Polars; fingerprinting happens inside the database.
-  • try_strptime([format_list]) — by-hour parses 7 datetime formats in one
-    DuckDB expression, eliminating the SQLModel fetch + Polars multi-step pipeline.
-  • QUANTILE_CONT — P50/P95 host stats (Phase 8C) would be impossible in SQLite.
+    complete in milliseconds (vs row-by-row OLTP engines).
+  • REGEXP_REPLACE in SQL — top-fingerprints fingerprinting happens inside DuckDB.
+  • try_strptime([format_list]) — by-hour parses 7 datetime formats in one expression.
+  • QUANTILE_CONT — P50/P95 host stats (Phase 8C).
 
 Each endpoint follows the same pattern:
     1. _<name>_sync(**filters) → runs synchronous DuckDB SQL, returns list[dict]

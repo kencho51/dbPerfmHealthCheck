@@ -16,7 +16,7 @@ Usage (run from project root):
 Commands
 --------
   status       Show current tables, row counts, and Alembic version
-  create       Apply neon/migration.sql + neon/neon_schema.sql (full schema)
+  create       Apply neon/migration.sql (full schema — all tables + grants)
   drop         Drop all application tables and ENUM types
   reset        drop + create  (full wipe and re-apply)
   migrate-up   Generate SQL via `alembic upgrade head --sql` and apply it
@@ -51,9 +51,7 @@ load_dotenv(_ROOT / "api" / ".env")
 EP           = "ep-rough-morning-a1v4c224.ap-southeast-1.aws.neon.tech"
 SQL_URL      = f"https://{EP}/sql"
 DDL_CONN_STR = os.environ.get("NEON_DDL_CONN_STR", "")   # neondb_owner — DDL
-APP_CONN_STR = os.environ.get("DATABASE_URL", "").replace(
-    "postgresql+psycopg2://", "postgresql://"
-)                                                           # perfmdb_owner — read-only status
+APP_CONN_STR = os.environ.get("DATABASE_URL", "")                                                           # perfmdb_owner — read-only status
 
 # Tables in drop / truncate order (FK-safe: children first)
 _TABLES = ["curated_query", "raw_query", "pattern_label", '"user"', "alembic_version"]

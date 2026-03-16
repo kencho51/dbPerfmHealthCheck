@@ -41,8 +41,8 @@ if DB_BACKEND not in ("neon", "sqlite"):
 
 
 def _build_pg_url(raw: str) -> str:
-    """Strip channel_binding= (unsupported by psycopg2) and normalise scheme."""
-    url = raw.replace("postgresql://", "postgresql+psycopg2://", 1)
+    """Strip channel_binding= (unsupported by asyncpg) and normalise scheme."""
+    url = raw.replace("postgresql+psycopg2://", "postgresql://", 1)
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params.pop("channel_binding", None)
