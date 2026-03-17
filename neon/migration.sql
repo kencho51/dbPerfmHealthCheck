@@ -8,30 +8,22 @@ CREATE TABLE alembic_version (
 -- Running upgrade  -> 9db879faabd3
 
 -- ---------------------------------------------------------------------------
--- ENUM types
--- ---------------------------------------------------------------------------
-
-CREATE TYPE severitytype AS ENUM ('critical', 'warning', 'info');
-
-CREATE TYPE sourcetype AS ENUM ('sql', 'mongodb');
-
-CREATE TYPE environmenttype AS ENUM ('prod', 'sat', 'unknown');
-
--- slow_query_mongo added vs the original migration (MongoDB slow query variant)
-CREATE TYPE querytype AS ENUM ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock', 'unknown');
-
-CREATE TYPE labelsource AS ENUM ('sql', 'mongodb', 'both');
-
--- ---------------------------------------------------------------------------
 -- pattern_label  (no FK dependencies -- declared first)
 -- ---------------------------------------------------------------------------
+-- NOTE: Columns that were originally ENUM types are VARCHAR + CHECK constraints.
+-- This avoids "operator does not exist: enumtype = character varying" errors
+-- when SQLAlchemy (using SAString) sends bound params as character varying.
 
 CREATE TABLE pattern_label (
     id          SERIAL NOT NULL,
     name        VARCHAR NOT NULL,
-    severity    severitytype NOT NULL DEFAULT 'warning',
+    severity    VARCHAR NOT NULL DEFAULT 'warning'
+                    CONSTRAINT chk_pattern_label_severity
+                    CHECK (severity IN ('critical', 'warning', 'info')),
     description VARCHAR,
-    source      labelsource NOT NULL DEFAULT 'both',
+    source      VARCHAR NOT NULL DEFAULT 'both'
+                    CONSTRAINT chk_pattern_label_source
+                    CHECK (source IN ('sql', 'mongodb', 'both')),
     created_at  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
     updated_at  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
     PRIMARY KEY (id)
@@ -49,11 +41,17 @@ CREATE TABLE raw_query (
     id               SERIAL NOT NULL,
     query_hash       VARCHAR NOT NULL,
     time             VARCHAR,
-    source           sourcetype NOT NULL,
+    source           VARCHAR NOT NULL
+                         CONSTRAINT chk_raw_query_source
+                         CHECK (source IN ('sql', 'mongodb')),
     host             VARCHAR,
     db_name          VARCHAR,
-    environment      environmenttype NOT NULL,
-    type             querytype NOT NULL,
+    environment      VARCHAR NOT NULL
+                         CONSTRAINT chk_raw_query_environment
+                         CHECK (environment IN ('prod', 'sat', 'unknown')),
+    "type"           VARCHAR NOT NULL
+                         CONSTRAINT chk_raw_query_type
+                         CHECK ("type" IN ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock', 'unknown')),
     query_details    VARCHAR,
     month_year       VARCHAR,
     occurrence_count INTEGER NOT NULL,

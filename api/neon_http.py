@@ -274,20 +274,16 @@ def _compile_parameterized(stmt) -> tuple[str, list]:
     sql = str(compiled)
 
     # compiled.positiontup lists bound param names in positional order ($1, $2 …).
-    # For some SELECT statements the asyncpg dialect leaves positiontup as None
-    # even though the SQL contains $N placeholders — fall back to params.keys()
-    # which preserves insertion order (Python 3.7+) and matches $1, $2, ... order.
     keys: list[str] = list(compiled.positiontup or []) or list((compiled.params or {}).keys())
 
     params: list = []
     for key in keys:
         val = (compiled.params or {}).get(key)
-        # Neon HTTP SQL expects JSON-serialisable values; datetime → ISO string.
         if hasattr(val, "isoformat"):
             val = val.isoformat()
         params.append(val)
 
-    _log.info("_compile_parameterized: %d params for SQL: %s", len(params), sql[:200])
+    _log.debug("_compile_parameterized: %d params | SQL: %s", len(params), sql[:300])
     return sql, params
 
 
