@@ -94,13 +94,37 @@ CREATE INDEX ix_curated_query_label_id            ON curated_query (label_id);
 -- Grants  (app role: perfmdb_owner has DML only, not DDL)
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- spl_query  (SPL Library — store/edit Splunk queries per type)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE spl_query (
+    id          SERIAL      PRIMARY KEY,
+    name        VARCHAR     NOT NULL,
+    query_type  VARCHAR     NOT NULL,
+    environment VARCHAR     NOT NULL DEFAULT 'both',
+    description VARCHAR,
+    spl         TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX ix_spl_query_query_type ON spl_query (query_type);
+CREATE INDEX ix_spl_query_name       ON spl_query (name);
+
+-- ---------------------------------------------------------------------------
+-- Grants  (app role: perfmdb_owner has DML only, not DDL)
+-- ---------------------------------------------------------------------------
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON pattern_label TO perfmdb_owner;
 GRANT SELECT, INSERT, UPDATE, DELETE ON raw_query     TO perfmdb_owner;
 GRANT SELECT, INSERT, UPDATE, DELETE ON curated_query TO perfmdb_owner;
+GRANT SELECT, INSERT, UPDATE, DELETE ON spl_query     TO perfmdb_owner;
 
 GRANT USAGE, SELECT ON SEQUENCE pattern_label_id_seq TO perfmdb_owner;
 GRANT USAGE, SELECT ON SEQUENCE raw_query_id_seq     TO perfmdb_owner;
 GRANT USAGE, SELECT ON SEQUENCE curated_query_id_seq TO perfmdb_owner;
+GRANT USAGE, SELECT ON SEQUENCE spl_query_id_seq     TO perfmdb_owner;
 
 -- ---------------------------------------------------------------------------
 -- "user"  (auth table — managed outside Alembic; merged here for completeness)

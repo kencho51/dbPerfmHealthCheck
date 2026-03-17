@@ -273,3 +273,61 @@ class RawQueryRead(SQLModel):
     updated_at: datetime
     # Injected at query time (None when no curated entry exists)
     curated_id: Optional[int] = None
+
+
+# ---------------------------------------------------------------------------
+# SplQuery table  — SPL Library
+# ---------------------------------------------------------------------------
+
+class SplQuery(SQLModel, table=True):
+    __tablename__ = "spl_query"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Human-readable name for this SPL (e.g. "SQL Slow Queries – Prod")
+    name: str = Field(index=True)
+
+    # Free-form query type tag — not a fixed enum so users can add new types.
+    # Seeded defaults: slow_query, slow_query_mongo, blocker, deadlock.
+    query_type: str = Field(index=True)
+
+    # prod | sat | both  (not enforced at DB level so future values are possible)
+    environment: str = Field(default="both")
+
+    # Optional markdown description / notes
+    description: Optional[str] = Field(default=None)
+
+    # The actual Splunk Processing Language query
+    spl: str = Field(sa_column=Column("spl", SAString, nullable=False))
+
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+# ---- SplQuery schemas ------------------------------------------------------
+
+class SplQueryRead(SQLModel):
+    id: int
+    name: str
+    query_type: str
+    environment: str
+    description: Optional[str]
+    spl: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SplQueryCreate(SQLModel):
+    name: str
+    query_type: str
+    environment: str = "both"
+    description: Optional[str] = None
+    spl: str
+
+
+class SplQueryUpdate(SQLModel):
+    name: Optional[str] = None
+    query_type: Optional[str] = None
+    environment: Optional[str] = None
+    description: Optional[str] = None
+    spl: Optional[str] = None

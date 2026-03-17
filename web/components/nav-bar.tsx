@@ -2,17 +2,18 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Database, LayoutDashboard, Upload, Layers, Tag, Users, LogOut, UserCircle } from "lucide-react";
+import { BarChart3, Code2, Database, LayoutDashboard, Upload, Layers, Tag, Users, LogOut, UserCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { getUser, clearAuth, type AuthUser } from "@/lib/auth-client";
 
 const nav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/upload",    label: "Upload",    icon: Upload },
-  { href: "/queries",   label: "Queries",   icon: Database },
-  { href: "/patterns",  label: "Curated",   icon: Layers },
-  { href: "/labels",    label: "Labels",    icon: Tag },
+  { href: "/dashboard", label: "Dashboard",   icon: LayoutDashboard },
+  { href: "/upload",    label: "Upload",      icon: Upload },
+  { href: "/queries",   label: "Queries",     icon: Database },
+  { href: "/patterns",  label: "Curated",     icon: Layers },
+  { href: "/labels",    label: "Labels",      icon: Tag },
+  { href: "/spl",       label: "SPL Library", icon: Code2 },
 ];
 
 export function NavBar() {

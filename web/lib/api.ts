@@ -220,6 +220,27 @@ export interface FingerprintRow {
   example_source:  string;    // most-common source ("mssql" / "mongodb")
 }
 
+// ---- SPL Library ----------------------------------------------------------
+
+export interface SplQueryEntry {
+  id: number;
+  name: string;
+  query_type: string;
+  environment: string;
+  description: string | null;
+  spl: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SplQueryCreate {
+  name: string;
+  query_type: string;
+  environment: string;
+  description?: string | null;
+  spl: string;
+}
+
 // ---- API calls ------------------------------------------------------------
 
 export const api = {
@@ -308,6 +329,22 @@ export const api = {
     delete: (id: number) =>
       fetch(`${base()}/curated/${id}`, { method: "DELETE" }).then((r) => {
         if (!r.ok && r.status !== 204) throw new Error(`Unassign failed: ${r.status}`);
+      }),
+  },
+
+  spl: {
+    list:  (queryType?: string) => {
+      const qs = queryType ? `?query_type=${encodeURIComponent(queryType)}` : "";
+      return apiFetch<SplQueryEntry[]>(`/spl${qs}`);
+    },
+    types: () => apiFetch<string[]>("/spl/types"),
+    create: (body: SplQueryCreate) =>
+      apiFetch<SplQueryEntry>("/spl", { method: "POST", body: JSON.stringify(body) }),
+    update: (id: number, body: Partial<SplQueryCreate>) =>
+      apiFetch<SplQueryEntry>(`/spl/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+    delete: (id: number) =>
+      fetch(`${base()}/spl/${id}`, { method: "DELETE" }).then((r) => {
+        if (!r.ok && r.status !== 204) throw new Error(`Delete failed: ${r.status}`);
       }),
   },
 
