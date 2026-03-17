@@ -89,6 +89,16 @@ def create_app() -> FastAPI:
     # Register routers (imported lazily so missing Phase 2+ files don't crash Phase 0)
     _register_routers(app)
 
+    # Health-check — registered here so every create_app() instance has it
+    @app.get("/health", tags=["system"])
+    async def health() -> dict:
+        display_url = ASYNC_DATABASE_URL.split("@")[-1] if "@" in ASYNC_DATABASE_URL else ASYNC_DATABASE_URL
+        return {
+            "status":  "ok",
+            "backend": DB_BACKEND,
+            "db":      display_url,
+        }
+
     return app
 
 
@@ -150,16 +160,5 @@ def _register_routers(app: FastAPI) -> None:
 app = create_app()
 
 
-# ---------------------------------------------------------------------------
-# Health-check endpoint (always available)
-# ---------------------------------------------------------------------------
-
-@app.get("/health", tags=["system"])
-async def health() -> dict:
-    # Mask credentials in the displayed URL
-    display_url = ASYNC_DATABASE_URL.split("@")[-1] if "@" in ASYNC_DATABASE_URL else ASYNC_DATABASE_URL
-    return {
-        "status":   "ok",
-        "backend":  DB_BACKEND,                 # "neon" or "sqlite"
-        "db":       display_url,                # host/path without credentials
-    }
+# Health route is now registered inside create_app() so test-created app
+# instances also have it. The module-level app below picks it up automatically.

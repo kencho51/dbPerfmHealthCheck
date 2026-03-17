@@ -8,8 +8,16 @@ to be excluded from version control.
 Provides:
   SYSTEM_HOSTS : dict[str, list[str]]  — system → list of UPPERCASE hostnames
   ALL_SYSTEMS  : list[str]             — sorted list of unique system names
+  apply_system_filter(stmt, system)    — SQLModel helper; adds WHERE UPPER(host) IN (...)
 """
 from __future__ import annotations
+
+from typing import Optional
+
+from sqlalchemy import func, text
+from sqlmodel import col
+
+from api.models import RawQuery
 
 # ---------------------------------------------------------------------------
 # Host → System mapping  (update manually when infrastructure changes)
@@ -45,3 +53,16 @@ SYSTEM_HOSTS: dict[str, list[str]] = {
 }
 
 ALL_SYSTEMS: list[str] = sorted(SYSTEM_HOSTS.keys())
+
+
+def apply_system_filter(stmt, system: Optional[str]):
+    """
+    Restrict a RawQuery-based SQLModel statement to hosts belonging to the
+    given infrastructure system. Returns stmt unchanged when system is None.
+    """
+    if not system:
+        return stmt
+    hosts = SYSTEM_HOSTS.get(system.upper(), [])
+    if not hosts:
+        return stmt.where(text("1=0"))  # unknown system → no rows
+    return stmt.where(func.upper(col(RawQuery.host)).in_(hosts))

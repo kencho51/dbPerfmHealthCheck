@@ -57,6 +57,27 @@ _STRPTIME_FORMATS = [
 _FORMATS_SQL = "[" + ", ".join(f"'{f}'" for f in _STRPTIME_FORMATS) + "]"
 
 
+def _derive_month_year(time_str: str | None) -> str | None:
+    """Return 'YYYY-MM' for *time_str* by trying every format in _STRPTIME_FORMATS.
+
+    Returns ``None`` for ``None`` input, empty strings, or values that cannot
+    be parsed by any known format.  This mirrors the DuckDB ``try_strptime``
+    logic used in ``_normalize_sync`` and is exposed as a named helper so it
+    can be unit-tested independently.
+    """
+    if not time_str:
+        return None
+    cleaned = time_str.strip()
+    if not cleaned:
+        return None
+    for fmt in _STRPTIME_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt).strftime("%Y-%m")
+        except ValueError:
+            continue
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
