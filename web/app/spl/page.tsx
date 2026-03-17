@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Clipboard, ClipboardCheck, Code2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Clipboard, ClipboardCheck, Code2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api, type SplQueryEntry, type SplQueryCreate } from "@/lib/api";
@@ -373,12 +373,12 @@ function SplCard({
             </span>
           </div>
           {entry.description && (
-            <p className="text-xs text-slate-500 leading-relaxed line-clamp-2 mb-2">
+            <p className="text-xs text-slate-500 leading-relaxed mb-2">
               {entry.description}
             </p>
           )}
           {/* SPL preview */}
-          <pre className="text-[11px] font-mono text-slate-600 bg-slate-50 rounded border border-slate-100 px-3 py-2 overflow-hidden line-clamp-3 whitespace-pre-wrap break-all">
+          <pre className="text-[11px] font-mono text-slate-600 bg-slate-50 rounded border border-slate-100 px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
             {entry.spl}
           </pre>
         </div>
@@ -409,8 +409,7 @@ export default function SplPage() {
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selected,  setSelected]  = useState<SplQueryEntry | "new" | null>(null);
-  // Collapsible groups: track which are open (all open by default)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -418,6 +417,12 @@ export default function SplPage() {
       const [rows, types] = await Promise.all([api.spl.list(), api.spl.types()]);
       setEntries(rows);
       setAllTypes(types);
+      // Set initial tab to first type that has entries, else first type overall
+      setActiveTab((prev) => {
+        if (prev) return prev;
+        const withEntries = types.find((t) => rows.some((r) => r.query_type === t));
+        return withEntries ?? types[0] ?? null;
+      });
     } catch {
       setLoadError("Failed to load SPL library");
     } finally {
@@ -433,34 +438,35 @@ export default function SplPage() {
     if (!grouped[e.query_type]) grouped[e.query_type] = [];
     grouped[e.query_type].push(e);
   }
-  // Merge allTypes so empty-DB types still appear as collapsible headers when seeded
-  const groupKeys = Array.from(
+  // Tab list: all known types (from API) that have at least one entry, plus any extras
+  const tabKeys = Array.from(
     new Set([...allTypes.filter((t) => grouped[t]), ...Object.keys(grouped)])
   );
-
-  const toggleCollapse = (type: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.has(type) ? next.delete(type) : next.add(type);
-      return next;
-    });
-  };
+  // Active tab falls back to first available
+  const currentTab = activeTab && tabKeys.includes(activeTab) ? activeTab : (tabKeys[0] ?? null);
+  const tabItems = currentTab ? (grouped[currentTab] ?? []) : [];
 
   // ---- panel handlers -------------------------------------------------------
 
+  const handleCreate = async (data: SplQueryCreate) => {
+    const created = await api.spl.create(data);
+    setEntries((prev) => [...prev, created]);
+    const types = await api.spl.types();
+    setAllTypes(types);
+    setActiveTab(data.query_type);
+    setSelected(null);
+  };
+
   const handleSave = async (data: SplQueryCreate) => {
     if (selected === "new") {
-      const created = await api.spl.create(data);
-      setEntries((prev) => [...prev, created]);
-      // Refresh types in case a new type was added
-      const types = await api.spl.types();
-      setAllTypes(types);
-      setSelected(null);
+      await handleCreate(data);
     } else if (selected) {
       const updated = await api.spl.update(selected.id, data);
       setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
       const types = await api.spl.types();
       setAllTypes(types);
+      // Switch to updated type's tab in case query_type changed
+      setActiveTab(data.query_type);
       setSelected(updated);
     }
   };
@@ -478,16 +484,16 @@ export default function SplPage() {
   // ---- render ---------------------------------------------------------------
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="flex flex-col h-full space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
             <Code2 className="h-6 w-6 text-indigo-600" />
             SPL Library
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Store and manage Splunk Processing Language queries used to export CSV data.
+            Splunk Processing Language queries used to export CSV data.
             {entries.length > 0 && ` ${entries.length} entr${entries.length !== 1 ? "ies" : "y"}.`}
           </p>
         </div>
@@ -515,52 +521,49 @@ export default function SplPage() {
           </Button>
         </div>
       ) : (
-        <div className="space-y-6">
-          {groupKeys.map((type) => {
-            const items = grouped[type] ?? [];
-            const isOpen = !collapsed.has(type);
-            return (
-              <section key={type}>
-                {/* Group header */}
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Tab bar */}
+          <div className="flex gap-0 border-b border-slate-200 shrink-0 overflow-x-auto">
+            {tabKeys.map((type) => {
+              const count = (grouped[type] ?? []).length;
+              const isActive = type === currentTab;
+              return (
                 <button
-                  className="flex items-center gap-2 mb-3 group/hdr w-full text-left"
-                  onClick={() => toggleCollapse(type)}
+                  key={type}
+                  onClick={() => setActiveTab(type)}
+                  className={`relative flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
+                    isActive
+                      ? "border-indigo-500 text-indigo-700"
+                      : "border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300"
+                  }`}
                 >
-                  {isOpen
-                    ? <ChevronDown className="h-4 w-4 text-slate-400 group-hover/hdr:text-slate-600 shrink-0" />
-                    : <ChevronRight className="h-4 w-4 text-slate-400 group-hover/hdr:text-slate-600 shrink-0" />
-                  }
-                  <span className="text-sm font-semibold text-slate-700 font-mono">
-                    {type}
+                  <span className="font-mono">{type}</span>
+                  <span className={`text-[10px] rounded-full px-1.5 py-0.5 font-sans ${
+                    isActive ? "bg-indigo-100 text-indigo-600" : "bg-slate-100 text-slate-400"
+                  }`}>
+                    {count}
                   </span>
-                  <span className="text-xs text-slate-400 font-normal font-sans">
-                    {items.length} {items.length === 1 ? "entry" : "entries"}
-                  </span>
-                  <div className="flex-1 border-t border-slate-100 ml-2" />
                 </button>
+              );
+            })}
+          </div>
 
-                {isOpen && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {items.map((entry) => (
-                      <SplCard
-                        key={entry.id}
-                        entry={entry}
-                        onEdit={setSelected}
-                      />
-                    ))}
-                    {/* Add button in same grid */}
-                    <button
-                      onClick={() => setSelected("new")}
-                      className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-xs text-slate-400 hover:border-indigo-300 hover:text-indigo-500 transition-colors flex flex-col items-center gap-2"
-                    >
-                      <Plus className="h-5 w-5" />
-                      Add to {type}
-                    </button>
-                  </div>
-                )}
-              </section>
-            );
-          })}
+          {/* Tab content — full width, 2-col grid */}
+          <div className="flex-1 overflow-y-auto pt-5">
+            {currentTab && tabItems.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-10">No entries for this type yet.</p>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                {tabItems.map((entry) => (
+                  <SplCard
+                    key={entry.id}
+                    entry={entry}
+                    onEdit={setSelected}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
