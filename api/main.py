@@ -89,8 +89,13 @@ def create_app() -> FastAPI:
     # Health check — registered inside create_app so test-created instances have it too
     @app.get("/health", tags=["system"])
     async def health() -> dict:
-        from api.database import SQLITE_PATH
-        return {"status": "ok", "db": str(SQLITE_PATH)}
+        from api.database import DB_BACKEND, SQLITE_PATH, SQLITE_URL
+        return {
+            "status": "ok",
+            "backend": DB_BACKEND,
+            "db": str(SQLITE_PATH),
+            "url": SQLITE_URL,
+        }
 
     return app
 
