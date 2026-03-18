@@ -1,24 +1,28 @@
 """
-Root conftest — project root on sys.path, temp-file SQLite engine, and shared
+Root conftest — project root on sys.path, in-memory SQLite engine, and shared
 HTTP client / auth fixtures for all API tests.
 
 Design decisions
 ----------------
-* **File-based temp SQLite + NullPool**: avoids cross-event-loop connection-pool
-  issues that occur with in-memory SQLite when session-scoped sync fixtures
-  (asyncio.run) and function-scoped async tests use different event loops.
-* **NullPool**: each engine.begin() opens a fresh OS connection; no asyncio
-  state is stored in the pool, so reuse across event loops is safe.
+* **Named shared in-memory SQLite + NullPool**: pure in-memory, no files on disk,
+  clean state per test run. `NullPool` means each engine.begin() opens a fresh
+  OS connection — no asyncio state stored in the pool, so reuse across the
+  session-fixture event loop and per-test event loops is safe.
+* **Holder connection**: a synchronous `sqlite3` connection opened at module load
+  keeps the named in-memory database (`file:testmemdb_pytest?...`) alive between
+  the session-fixture `asyncio.run()` call (one event loop) and the per-test
+  coroutines (another event loop). Without it, NullPool would let the last
+  connection close and the in-memory DB would be destroyed.
 * **Lifespan NOT triggered**: httpx ASGITransport does not send lifespan events,
-  so apply_pragmas/create_db_and_tables run only in _db_tables (idempotent).
-* Session-scoped expensive work (user creation, token fetch) uses asyncio.run()
-  in sync fixtures to avoid needing a session-scoped event loop.
+  so `apply_pragmas` / `create_db_and_tables` run only inside `_db_tables`.
+* Session fixtures that need async work use `asyncio.run()` (sync fixture) so
+  pytest-asyncio's per-test event loop is not required for setup.
 """
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -34,12 +38,22 @@ from sqlmodel import SQLModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # ---------------------------------------------------------------------------
-# Temp-file SQLite engine (NullPool — no event-loop binding in pool)
+# Named shared in-memory SQLite
 # ---------------------------------------------------------------------------
 
-_TMPDIR = Path(tempfile.mkdtemp(prefix="dbperfm_test_"))
-_TEST_DB = _TMPDIR / "test.db"
-_TEST_DB_URL = f"sqlite+aiosqlite:///{_TEST_DB}"
+_MEM_DB_NAME = "testmemdb_pytest"
+_TEST_DB_URL = (
+    f"sqlite+aiosqlite:///file:{_MEM_DB_NAME}"
+    "?mode=memory&cache=shared&uri=true"
+)
+
+# One synchronous holder connection keeps the named in-memory database alive
+# for the entire pytest process — no asyncio binding, no file created.
+_holder_conn: sqlite3.Connection = sqlite3.connect(
+    f"file:{_MEM_DB_NAME}?mode=memory&cache=shared",
+    uri=True,
+    check_same_thread=False,
+)
 
 import api.database as _db_mod  # noqa: E402
 
@@ -53,7 +67,7 @@ _test_engine = create_async_engine(
 # Patch module-level globals BEFORE any router/service imports
 _db_mod.engine = _test_engine
 _db_mod.SQLITE_URL = _TEST_DB_URL
-_db_mod.SQLITE_PATH = _TEST_DB
+_db_mod.SQLITE_PATH = Path(f":{_MEM_DB_NAME}:")  # informational only
 
 # ---------------------------------------------------------------------------
 # App (created once; lifespan NOT triggered by ASGITransport)
@@ -70,7 +84,7 @@ _app = _create_app()
 
 @pytest.fixture(scope="session", autouse=True)
 def _db_tables():
-    """Drop/create all SQLModel tables on the temp SQLite file."""
+    """Drop/create all SQLModel tables in the shared in-memory database."""
     import api.models  # noqa: F401
 
     async def _up() -> None:
@@ -85,8 +99,7 @@ def _db_tables():
         await _test_engine.dispose()
 
     asyncio.run(_down())
-    import shutil
-    shutil.rmtree(_TMPDIR, ignore_errors=True)
+    _holder_conn.close()  # release the in-memory DB
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +109,8 @@ def _db_tables():
 
 @pytest.fixture(scope="session")
 def _admin_user(_db_tables):
-    """Insert testadmin into the test DB (no-op if already exists)."""
-    from api.database import open_session  # uses patched engine
+    """Insert testadmin into the in-memory DB (no-op if already exists)."""
+    from api.database import open_session
     from api.models import User, UserRole
     from api.services.auth_service import hash_password
     from sqlmodel import select
@@ -108,14 +121,13 @@ def _admin_user(_db_tables):
                 await session.exec(select(User).where(User.username == "testadmin"))
             ).first()
             if existing is None:
-                user = User(
+                session.add(User(
                     username="testadmin",
                     email="admin@test.local",
                     hashed_password=hash_password("AdminPass123!"),
                     role=UserRole.admin,
                     is_active=True,
-                )
-                session.add(user)
+                ))
 
     asyncio.run(_create())
 
@@ -163,3 +175,4 @@ async def client() -> AsyncClient:
 def auth_headers(admin_token: str) -> dict:
     """HTTP headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {admin_token}"}
+
