@@ -1,14 +1,17 @@
 /**
- * Next.js Edge Middleware — protect all routes except /login.
+ * Next.js Proxy (formerly middleware) — protect all routes except /login.
  *
  * The auth flow uses a plain cookie "auth_token" (JWT value).
- * Login page sets it; logout clears it.  Middleware reads it here.
+ * Login page sets it; logout clears it.  Proxy reads it here.
+ *
+ * Renamed from middleware.ts → proxy.ts (Next.js 15.2+ convention).
+ * See: https://nextjs.org/docs/messages/middleware-to-proxy
  */
 import { type NextRequest, NextResponse } from "next/server";
 
 const PUBLIC_PATHS = ["/login"];
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Allow public paths and Next.js internal paths
