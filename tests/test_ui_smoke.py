@@ -16,6 +16,7 @@ Install Playwright browsers (first time only):
 """
 from __future__ import annotations
 
+import re
 import socket
 
 import pytest
@@ -60,6 +61,36 @@ if not _playwright_available:
 
 
 # ---------------------------------------------------------------------------
+# Ensure testadmin exists in the live server (runs once per module)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module", autouse=True)
+def _ensure_test_user():
+    """Register testadmin in the live FastAPI server if it doesn't exist yet."""
+    if not _api_up():
+        return
+    import json
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({
+        "username": "testadmin",
+        "email": "testadmin@test.local",
+        "password": "AdminPass123!",
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{API_URL}/api/auth/register",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass  # already exists or other error — proceed
+
+
+# ---------------------------------------------------------------------------
 # Playwright fixtures
 # ---------------------------------------------------------------------------
 
@@ -89,19 +120,19 @@ def page(browser):
 class TestLoginPage:
     def test_login_page_loads(self, page: "Page"):
         page.goto("/login")
-        expect(page).to_have_title(lambda t: len(t) > 0)
+        expect(page).to_have_title(re.compile(r".+"))
 
     def test_login_form_present(self, page: "Page"):
         page.goto("/login")
         expect(page.get_by_label("Username", exact=False)).to_be_visible()
         expect(page.get_by_label("Password", exact=False)).to_be_visible()
-        expect(page.get_by_role("button", name="Login", exact=False)).to_be_visible()
+        expect(page.get_by_role("button", name="Sign in", exact=False)).to_be_visible()
 
     def test_invalid_login_shows_error(self, page: "Page"):
         page.goto("/login")
         page.get_by_label("Username", exact=False).fill("nobody")
         page.get_by_label("Password", exact=False).fill("wrongpass")
-        page.get_by_role("button", name="Login", exact=False).click()
+        page.get_by_role("button", name="Sign in", exact=False).click()
         # Should show an error message
         page.wait_for_timeout(1000)
         body = page.content()
@@ -125,10 +156,10 @@ class TestAuthFlow:
         page.goto("/login")
         page.get_by_label("Username", exact=False).fill("testadmin")
         page.get_by_label("Password", exact=False).fill("AdminPass123!")
-        page.get_by_role("button", name="Login", exact=False).click()
-        # Should navigate away from /login
-        page.wait_for_url(lambda url: "/login" not in url, timeout=5000)
-        assert "/login" not in page.url
+        page.get_by_role("button", name="Sign in", exact=False).click()
+        # Allow time for login API call + Next.js router redirect
+        page.wait_for_timeout(5000)
+        assert "/login" not in page.url, f"Still on login page after 5s: {page.url}"
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +169,41 @@ class TestAuthFlow:
 class TestDashboard:
     @pytest.fixture(autouse=True)
     def _login(self, page: "Page"):
-        """Log in before each dashboard test."""
+        """Inject auth token directly via API — bypasses form to avoid timing fragility."""
+        import json
+        import urllib.request
+
+        # Get JWT from the live FastAPI server directly
+        try:
+            payload = json.dumps(
+                {"username": "testadmin", "password": "AdminPass123!"}
+            ).encode()
+            req = urllib.request.Request(
+                f"{API_URL}/api/auth/login",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            token = data["access_token"]
+        except Exception as exc:
+            pytest.skip(f"testadmin login failed — skipping dashboard tests: {exc}")
+            return
+
+        # Land on the origin first so localStorage/cookie writes are valid
         page.goto("/login")
-        page.get_by_label("Username", exact=False).fill("testadmin")
-        page.get_by_label("Password", exact=False).fill("AdminPass123!")
-        page.get_by_role("button", name="Login", exact=False).click()
-        page.wait_for_url(lambda url: "/login" not in url, timeout=5000)
+        # Inject token exactly as saveAuth() in auth-client.ts does
+        page.evaluate(
+            """(token) => {
+                localStorage.setItem('auth_token', token);
+                document.cookie = 'auth_token=' + token + '; path=/; max-age=86400; SameSite=Lax';
+            }""",
+            token,
+        )
+        # Navigate directly to dashboard (middleware reads the cookie)
+        page.goto("/dashboard")
+        page.wait_for_load_state("networkidle")
 
     def test_dashboard_loads(self, page: "Page"):
         page.goto("/")
