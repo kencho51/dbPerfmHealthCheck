@@ -1,20 +1,21 @@
 """
-DuckDB connection factory -- per-request, in-memory, backed by Neon PostgreSQL.
+DuckDB connection factory -- per-request, in-memory, backed by SQLite.
 
 Architecture
 -----------
-Neon PostgreSQL (HTTPS)  <--  OLTP writes via NeonHTTPSession (CRUD routers)
-                               |  _sync_http_sql_with_fields (data fetched into DuckDB)
-DuckDB (in-memory)        <--  OLAP reads via analytics / export routers
+SQLite (file)        <--  OLTP writes via SQLModel async engine (CRUD routers)
+                           |  read synchronously for DuckDB registration
+DuckDB (in-memory)   <--  OLAP reads via analytics / export routers
 
 Data flow
 ---------
-1. _load_table(table) fetches all rows from Neon via the HTTPS REST API.
+1. _load_table(table) fetches all rows from SQLite via a synchronous
+   SQLAlchemy engine derived from the same SQLITE_PATH used by the app.
 2. Rows and column names are used to build a Polars DataFrame.
 3. The DataFrame is registered in a fresh in-memory DuckDB connection as a
    virtual relation.  DuckDB infers column types from the Polars Arrow schema.
 
-SQL queries then use plain table names (raw_query, curated_query)
+SQL queries then use plain table names (raw_query, curated_query, pattern_label)
 rather than any ATTACH-prefixed names.
 
 Thread-safety: each request opens its own DuckDB connection (no shared state).
@@ -25,24 +26,35 @@ from typing import Any
 
 import duckdb
 import polars as pl
+import sqlalchemy as sa
 
-# Tables known to exist in Neon PostgreSQL
+# Tables known to exist in SQLite
 _KNOWN_TABLES = {"raw_query", "curated_query", "pattern_label"}
 
 
 def _load_table(table: str) -> pl.DataFrame:
-    """Fetch a Neon PostgreSQL table via HTTPS REST API as a Polars DataFrame."""
+    """Fetch a SQLite table via SQLAlchemy as a Polars DataFrame."""
     if table not in _KNOWN_TABLES:
         raise ValueError(f"Unknown table: {table!r}. Known: {sorted(_KNOWN_TABLES)}")
 
-    from api.neon_http import _sync_http_sql_with_fields
+    from api.database import SQLITE_URL
 
-    columns, rows, _ = _sync_http_sql_with_fields(f"SELECT * FROM {table}")
+    # Convert async URL (sqlite+aiosqlite://...) to a sync URL for DuckDB's
+    # synchronous context.
+    sync_url = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
+    engine = sa.create_engine(sync_url)
+    with engine.connect() as conn:
+        result = conn.execute(sa.text(f"SELECT * FROM {table}"))  # noqa: S608
+        columns = list(result.keys())
+        rows = result.fetchall()
 
     if not rows:
-        return pl.DataFrame({col: [] for col in columns})
+        return pl.DataFrame({col: pl.Series([], dtype=pl.Utf8) for col in columns})
 
-    return pl.DataFrame(rows, schema=columns, orient="row")
+    return pl.DataFrame(
+        [dict(zip(columns, row)) for row in rows],
+        schema=columns,
+    )
 
 
 def get_duck(*tables: str) -> duckdb.DuckDBPyConnection:
