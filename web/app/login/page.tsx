@@ -1,17 +1,16 @@
 "use client";
 
-import { Suspense, useState, FormEvent } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useState, FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { BarChart3, Loader2, AlertCircle } from "lucide-react";
 import { saveAuth } from "@/lib/auth-client";
 
 // ---------------------------------------------------------------------------
-// LoginForm — isolated so useSearchParams() is inside a Suspense boundary
+// LoginForm
 // ---------------------------------------------------------------------------
 
 function LoginForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -37,7 +36,9 @@ function LoginForm() {
       const data = await res.json();
       saveAuth(data.access_token, data.user);
 
-      const from = searchParams.get("from") ?? "/dashboard";
+      // Read ?from= without useSearchParams — safe because we're in a submit handler
+      const params = new URLSearchParams(window.location.search);
+      const from = params.get("from") ?? "/dashboard";
       router.push(from);
       router.refresh();
     } catch (err: unknown) {
@@ -51,10 +52,11 @@ function LoginForm() {
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+          <label htmlFor="username" className="block text-sm font-medium text-slate-700 mb-1.5">
             Username
           </label>
           <input
+            id="username"
             type="text"
             autoComplete="username"
             required
@@ -66,10 +68,11 @@ function LoginForm() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+          <label htmlFor="password" className="block text-sm font-medium text-slate-700 mb-1.5">
             Password
           </label>
           <input
+            id="password"
             type="password"
             autoComplete="current-password"
             required
@@ -101,7 +104,7 @@ function LoginForm() {
 }
 
 // ---------------------------------------------------------------------------
-// Page shell — Suspense boundary required for useSearchParams in Next.js 14+
+// Page shell
 // ---------------------------------------------------------------------------
 
 export default function LoginPage() {
@@ -119,14 +122,8 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Card — LoginForm is wrapped in Suspense so useSearchParams() works */}
-        <Suspense fallback={
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 flex justify-center">
-            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-          </div>
-        }>
-          <LoginForm />
-        </Suspense>
+        {/* Card */}
+        <LoginForm />
 
         <p className="text-center text-xs text-slate-400 mt-6">
           Contact your admin if you need an account.
