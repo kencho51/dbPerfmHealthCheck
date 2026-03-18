@@ -32,9 +32,10 @@ def seeded_raw_query():
     engine = sa.create_engine(_sync_url())
     with engine.begin() as conn:
         conn.execute(sa.text(
-            "INSERT INTO raw_query (query_hash, query_text, query_type, host)"
-            " VALUES ('aaa', 'SELECT 1', 'slow_query', 'DB01'),"
-            "        ('bbb', 'SELECT 2', 'blocker',    'DB02')"
+            "INSERT INTO raw_query"
+            " (query_hash, query_details, type, host, source, environment)"
+            " VALUES ('aaa', 'SELECT 1', 'slow_query', 'DB01', 'sql', 'prod'),"
+            "        ('bbb', 'SELECT 2', 'blocker',    'DB02', 'sql', 'prod')"
         ))
     yield
     with engine.begin() as conn:
