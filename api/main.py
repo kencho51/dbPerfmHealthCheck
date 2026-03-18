@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.database import apply_pragmas, create_db_and_tables
 
@@ -66,14 +67,42 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Register routers (imported lazily so missing Phase 2+ files don't crash Phase 0)
+    _ALLOWED_ORIGINS = {"http://localhost:3000", "http://localhost:3001"}
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+        origin = request.headers.get("origin", "")
+        cors_headers: dict[str, str] = {}
+        if origin in _ALLOWED_ORIGINS:
+            cors_headers["Access-Control-Allow-Origin"] = origin
+            cors_headers["Access-Control-Allow-Credentials"] = "true"
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"{type(exc).__name__}: {exc}"},
+            headers=cors_headers,
+        )
+
+    # Register routers (imported lazily so missing files don’t crash startup)
     _register_routers(app)
+
+    # Health check — registered inside create_app so test-created instances have it too
+    @app.get("/health", tags=["system"])
+    async def health() -> dict:
+        from api.database import SQLITE_PATH
+        return {"status": "ok", "db": str(SQLITE_PATH)}
 
     return app
 
 
 def _register_routers(app: FastAPI) -> None:
     """Attach routers. Unimplemented phases are skipped gracefully."""
+    try:
+        from api.routers.auth import router as auth_router
+        app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+    except ImportError:
+        logger.debug("auth router not yet available")
+
     try:
         from api.routers.analytics import router as analytics_router
         app.include_router(analytics_router, prefix="/api/analytics", tags=["analytics"])
@@ -116,22 +145,15 @@ def _register_routers(app: FastAPI) -> None:
     except ImportError:
         logger.debug("export router not yet available")
 
+    try:
+        from api.routers.spl import router as spl_router
+        app.include_router(spl_router, prefix="/api/spl", tags=["spl"])
+    except ImportError:
+        logger.debug("spl router not yet available")
+
 
 # ---------------------------------------------------------------------------
 # Module-level app instance (uvicorn / fastapi dev entrypoint)
 # ---------------------------------------------------------------------------
 
 app = create_app()
-
-
-# ---------------------------------------------------------------------------
-# Health-check endpoint (always available)
-# ---------------------------------------------------------------------------
-
-@app.get("/health", tags=["system"])
-async def health() -> dict:
-    from api.database import SQLITE_PATH
-    return {
-        "status": "ok",
-        "db": str(SQLITE_PATH),
-    }
