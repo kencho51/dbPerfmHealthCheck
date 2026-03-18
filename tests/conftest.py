@@ -68,6 +68,7 @@ _test_engine = create_async_engine(
 _db_mod.engine = _test_engine
 _db_mod.SQLITE_URL = _TEST_DB_URL
 _db_mod.SQLITE_PATH = Path(f":{_MEM_DB_NAME}:")  # informational only
+_db_mod.DB_BACKEND = "sqlite"  # ensure tests always report sqlite
 
 # ---------------------------------------------------------------------------
 # App (created once; lifespan NOT triggered by ASGITransport)
