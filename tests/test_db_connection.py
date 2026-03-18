@@ -14,6 +14,7 @@ import duckdb
 import polars as pl
 import pytest
 import sqlalchemy as sa
+from sqlmodel import Session
 
 
 # ---------------------------------------------------------------------------
@@ -28,15 +29,31 @@ def _sync_url() -> str:
 
 @pytest.fixture()
 def seeded_raw_query():
-    """Insert two rows into raw_query and remove them after the test."""
+    """Insert two rows into raw_query via ORM (so Python defaults are applied)."""
+    from api.models import RawQuery, SourceType, QueryType, EnvironmentType
+
     engine = sa.create_engine(_sync_url())
-    with engine.begin() as conn:
-        conn.execute(sa.text(
-            "INSERT INTO raw_query"
-            " (query_hash, query_details, type, host, source, environment)"
-            " VALUES ('aaa', 'SELECT 1', 'slow_query', 'DB01', 'sql', 'prod'),"
-            "        ('bbb', 'SELECT 2', 'blocker',    'DB02', 'sql', 'prod')"
-        ))
+    rows = [
+        RawQuery(
+            query_hash="aaa",
+            query_details="SELECT 1",
+            type=QueryType.slow_query,
+            host="DB01",
+            source=SourceType.sql,
+            environment=EnvironmentType.prod,
+        ),
+        RawQuery(
+            query_hash="bbb",
+            query_details="SELECT 2",
+            type=QueryType.blocker,
+            host="DB02",
+            source=SourceType.sql,
+            environment=EnvironmentType.prod,
+        ),
+    ]
+    with Session(engine) as session:
+        session.add_all(rows)
+        session.commit()
     yield
     with engine.begin() as conn:
         conn.execute(sa.text("DELETE FROM raw_query WHERE query_hash IN ('aaa','bbb')"))

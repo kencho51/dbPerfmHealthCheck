@@ -50,7 +50,7 @@ def mock_ingest():
         result.inserted = len(rows)
         return result
 
-    with patch("api.services.ingestor.ingest_rows", side_effect=_fake_ingest):
+    with patch("api.routers.upload.ingest_rows", side_effect=_fake_ingest):
         yield
 
 
