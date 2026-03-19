@@ -1,25 +1,25 @@
 ﻿"""
-Ingestor service ??bulk-ingest extracted rows into raw_query.
+Ingestor service — bulk-ingest extracted rows into raw_query.
 
 Architecture
 ------------
-Step 1 ??DuckDB (CPU, runs in thread pool):
-    ??Polars DataFrame registered as in-memory DuckDB view (zero-copy)
-    ??MD5 hash computed with md5(concat_ws(...)) ??vectorised
-    ??month_year derived via try_strptime() + strftime()
-    ??Enum values clamped to known constants
-    ??Returns list of normalised Python dicts (one per unique hash)
+Step 1 — DuckDB (CPU, runs in thread pool):
+    • Polars DataFrame registered as in-memory DuckDB view (zero-copy)
+    • MD5 hash computed with md5(concat_ws(...)) — vectorised
+    • month_year derived via try_strptime() + strftime()
+    • Enum values clamped to known constants
+    • Returns list of normalised Python dicts (one per unique hash)
 
-Step 2 ??Neon HTTPS REST API (async):
-    ??INSERT ... ON CONFLICT (query_hash) DO UPDATE
-    ??Batched into chunks of BATCH_SIZE to stay within payload limits
-    ??No port 5432 required ??safe behind corporate proxies
+Step 2 — SQLite async upsert:
+    • INSERT ... ON CONFLICT (query_hash) DO UPDATE
+    • Batched into chunks of BATCH_SIZE
+    • Uses the shared aiosqlite async session (open_session)
 
 Deduplication key (query_hash):
     MD5( source | host | db_name | environment | type | time | query_details )
 
 On conflict:
-    occurrence_count  +=  1
+    occurrence_count  +=  incoming occurrence_count
     last_seen / updated_at  refreshed
     all other fields left unchanged
 """
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import polars as pl
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from api.models import RawQuery
 
@@ -205,44 +205,47 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 ??Neon HTTPS batch upsert (async)
+# Step 2 — SQLite batch upsert (async)
 # ---------------------------------------------------------------------------
 
-async def _upsert_neon(normalized: list[dict], result: IngestResult) -> None:
+async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     """
-    Batch-upsert normalised rows into Neon PostgreSQL via HTTPS.
+    Batch-upsert normalised rows into SQLite via the shared async session.
 
-    Uses INSERT ... ON CONFLICT (query_hash) DO UPDATE to atomically
-    increment occurrence_count and refresh timestamps on duplicates.
+    Uses INSERT OR IGNORE + UPDATE so that:
+      - New rows are inserted with occurrence_count from the CSV.
+      - Duplicate query_hash rows accumulate occurrence_count and refresh
+        last_seen / updated_at without touching other fields.
     """
-    from api.database import NeonSession
+    from api.database import open_session
 
     now = datetime.now(tz=timezone.utc)
-    session = NeonSession()
     try:
-        for i in range(0, len(normalized), BATCH_SIZE):
-            chunk = normalized[i : i + BATCH_SIZE]
-            stmt = (
-                pg_insert(RawQuery)
-                .values(chunk)
-                .on_conflict_do_update(
-                    index_elements=["query_hash"],
-                    set_={
-                        "occurrence_count": RawQuery.occurrence_count + 1,
-                        "last_seen":        now,
-                        "updated_at":       now,
-                    },
+        async with open_session() as session:
+            for i in range(0, len(normalized), BATCH_SIZE):
+                chunk = normalized[i : i + BATCH_SIZE]
+                stmt = (
+                    sqlite_insert(RawQuery)
+                    .values(chunk)
+                    .on_conflict_do_update(
+                        index_elements=["query_hash"],
+                        set_={
+                            "occurrence_count": RawQuery.occurrence_count
+                                                + sqlite_insert(RawQuery).excluded.occurrence_count,
+                            "last_seen":  now,
+                            "updated_at": now,
+                        },
+                    )
                 )
-            )
-            await session.execute(stmt)
-        await session.commit()
-        result.inserted += len(normalized)
+                await session.execute(stmt)
+            result.inserted += len(normalized)
+        # Invalidate the analytics DataFrame cache so the next dashboard
+        # request reads fresh data from SQLite rather than stale cached rows.
+        from api.analytics_db import invalidate_cache
+        invalidate_cache("raw_query")
     except Exception as exc:
-        await session.rollback()
-        result.errors.append(f"Neon upsert error: {type(exc).__name__}: {exc}")
+        result.errors.append(f"SQLite upsert error: {type(exc).__name__}: {exc}")
         result.skipped += len(normalized)
-    finally:
-        await session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +258,9 @@ async def ingest_rows(rows: list[dict]) -> IngestResult:
 
     Steps:
       1. DuckDB normalisation in a thread pool (CPU-bound, non-blocking).
-      2. Neon HTTPS batch upsert (async, no port 5432 needed).
+      2. SQLite async upsert via open_session.
 
-    Idempotent ??uploading the same CSV twice only bumps occurrence_count.
+    Idempotent — uploading the same CSV twice only bumps occurrence_count.
     """
     result = IngestResult()
     if not rows:
@@ -274,5 +277,5 @@ async def ingest_rows(rows: list[dict]) -> IngestResult:
         result.skipped = len(rows)
         return result
 
-    await _upsert_neon(normalized, result)
+    await _upsert_sqlite(normalized, result)
     return result
