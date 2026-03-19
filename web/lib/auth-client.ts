@@ -55,9 +55,25 @@ export function getUser(): AuthUser | null {
   }
 }
 
-/** True if a token is present (does NOT verify expiry). */
+/** Decode the `exp` claim from a JWT and return it as a ms timestamp (0 on failure). */
+function getJwtExpiry(token: string): number {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return (payload.exp ?? 0) * 1000; // JWT exp is in seconds → convert to ms
+  } catch {
+    return 0;
+  }
+}
+
+/** True if a non-expired token is present. Clears stale auth automatically. */
 export function isLoggedIn(): boolean {
-  return getToken() !== null;
+  const token = getToken();
+  if (!token) return false;
+  if (Date.now() > getJwtExpiry(token)) {
+    clearAuth(); // wipe stale token + cookie
+    return false;
+  }
+  return true;
 }
 
 /** Redirect to login (and clear auth) if not logged in. */
