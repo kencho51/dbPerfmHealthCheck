@@ -110,13 +110,14 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
 
     df = pl.DataFrame(
         {
-            "source":          [str(r.get("source")        or "") for r in rows],
-            "host":            [str(r.get("host")          or "") for r in rows],
-            "db_name":         [str(r.get("db_name")       or "") for r in rows],
-            "environment":     [str(r.get("environment")   or "") for r in rows],
-            "type":            [str(r.get("type")          or "") for r in rows],
-            "time":            [str(r.get("time")          or "") for r in rows],
-            "query_details":   [str(r.get("query_details") or "") for r in rows],
+            "source":          [str(r.get("source")         or "") for r in rows],
+            "host":            [str(r.get("host")           or "") for r in rows],
+            "db_name":         [str(r.get("db_name")        or "") for r in rows],
+            "environment":     [str(r.get("environment")    or "") for r in rows],
+            "type":            [str(r.get("type")           or "") for r in rows],
+            "time":            [str(r.get("time")           or "") for r in rows],
+            "query_details":   [str(r.get("query_details")  or "") for r in rows],
+            "extra_metadata":  [str(r.get("extra_metadata") or "") for r in rows],
             "occurrence_count":[int(r.get("occurrence_count") or 1) for r in rows],
         }
     )
@@ -134,13 +135,17 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
                     lower(trim(environment)),
                     lower(trim(type)),
                     trim(time),
-                    trim(query_details)
+                    trim(query_details),
+                    -- extra_metadata included so two processes in the same deadlock
+                    -- with identical SQL still get distinct hashes (different pid).
+                    COALESCE(NULLIF(trim(extra_metadata), ''), '')
                 )) AS query_hash,
 
-                NULLIF(trim(time),          '') AS time,
-                NULLIF(trim(query_details), '') AS query_details,
-                NULLIF(trim(host),          '') AS host,
-                NULLIF(trim(db_name),       '') AS db_name,
+                NULLIF(trim(time),           '') AS time,
+                NULLIF(trim(query_details),  '') AS query_details,
+                NULLIF(trim(extra_metadata), '') AS extra_metadata,
+                NULLIF(trim(host),           '') AS host,
+                NULLIF(trim(db_name),        '') AS db_name,
 
                 CASE
                     WHEN lower(trim(source)) IN ('sql', 'mongodb') THEN lower(trim(source))
@@ -176,7 +181,7 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
         """)
         staging_rows = duck.execute("""
             SELECT query_hash, time, source, host, db_name, environment, type,
-                   query_details, month_year, occurrence_count
+                   query_details, extra_metadata, month_year, occurrence_count
             FROM staging
         """).fetchall()
     finally:
@@ -193,8 +198,9 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
             "environment":      r[5],
             "type":             r[6],
             "query_details":    r[7],
-            "month_year":       r[8],
-            "occurrence_count": r[9],
+            "extra_metadata":   r[8],
+            "month_year":       r[9],
+            "occurrence_count": r[10],
             "first_seen":       now,
             "last_seen":        now,
             "created_at":       now,

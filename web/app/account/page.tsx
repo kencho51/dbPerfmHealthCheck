@@ -8,18 +8,32 @@ import { useRouter } from "next/navigation";
 
 export default function AccountPage() {
   const router = useRouter();
-  const token = getToken();
-  const currentUser = getUser();
+
+  // Read auth from localStorage only after mount — avoids SSR/client mismatch
+  // because localStorage doesn't exist on the server.
+  const [token, setToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<ReturnType<typeof getUser>>(null);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (!token) router.replace("/login");
+    const t = getToken();
+    const u = getUser();
+    setToken(t);
+    setCurrentUser(u);
+    setMounted(true);
+    if (!t) router.replace("/login");
   }, []);
 
   // ── Email form ──────────────────────────────────────────────────────────
-  const [newEmail, setNewEmail] = useState(currentUser?.email ?? "");
+  const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailMsg, setEmailMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // Populate email field once the user is read from localStorage
+  useEffect(() => {
+    if (currentUser?.email) setNewEmail(currentUser.email);
+  }, [currentUser]);
 
   async function handleEmailSubmit(e: FormEvent) {
     e.preventDefault();
@@ -78,7 +92,9 @@ export default function AccountPage() {
     }
   }
 
-  if (!currentUser) return null;
+  // Until mounted, both server and client render the same thing (null),
+  // eliminating the hydration mismatch.
+  if (!mounted || !currentUser) return null;
 
   return (
     <div className="max-w-xl mx-auto space-y-8">
