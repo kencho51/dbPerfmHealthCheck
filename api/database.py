@@ -15,14 +15,45 @@ Usage in a FastAPI route:
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+# ---------------------------------------------------------------------------
+# Explicit sqlite3 datetime adapters (replaces the deprecated implicit ones)
+#
+# Python 3.12 deprecated the built-in sqlite3 datetime adapter/converter that
+# silently handled datetime <-> TEXT conversion.  aiosqlite builds on the
+# stdlib sqlite3 module, so without explicit adapters every connection emits
+# a DeprecationWarning.  Registering them here — before any engine/connection
+# is created — silences the warning across the whole application.
+# ---------------------------------------------------------------------------
+
+def _adapt_datetime(val: datetime) -> str:
+    """Serialise a datetime to an ISO-8601 string for storage in SQLite TEXT."""
+    if val.tzinfo is None:
+        val = val.replace(tzinfo=timezone.utc)
+    return val.isoformat()
+
+
+def _convert_datetime(val: bytes) -> datetime:
+    """Deserialise an ISO-8601 SQLite TEXT back to a timezone-aware datetime."""
+    dt = datetime.fromisoformat(val.decode())
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+sqlite3.register_adapter(datetime, _adapt_datetime)
+sqlite3.register_converter("datetime", _convert_datetime)
+sqlite3.register_converter("DATETIME", _convert_datetime)  # SQLite column names are case-insensitive
 
 # ---------------------------------------------------------------------------
 # Load api/.env before reading any env vars
@@ -77,6 +108,12 @@ engine: AsyncEngine = create_async_engine(
     connect_args={
         "check_same_thread": False,
         "timeout": 30,
+        # NOTE: do NOT set detect_types here.  detect_types causes the sqlite3
+        # converter to fire and return a datetime *before* SQLAlchemy's own
+        # DateTime result_processor runs.  SQLAlchemy then calls
+        # datetime.fromisoformat(datetime_obj) → TypeError: argument must be
+        # str.  SQLAlchemy handles TEXT → datetime conversion itself; we only
+        # need register_adapter (above) for the write side (datetime → TEXT).
     },
 )
 

@@ -212,11 +212,16 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     """
     Batch-upsert normalised rows into SQLite via the shared async session.
 
-    Uses INSERT OR IGNORE + UPDATE so that:
-      - New rows are inserted with occurrence_count from the CSV.
-      - Duplicate query_hash rows accumulate occurrence_count and refresh
-        last_seen / updated_at without touching other fields.
+    For each chunk:
+      1. Query which query_hash values already exist in raw_query.
+      2. Split the chunk into genuinely new rows (INSERT) and existing rows (UPDATE).
+      3. Bulk-insert new rows; bulk-update existing rows (accumulate
+         occurrence_count, refresh last_seen / updated_at).
+
+    This gives precise inserted / updated counts instead of counting every
+    upserted row as "inserted".
     """
+    from sqlalchemy import text
     from api.database import open_session
 
     now = datetime.now(tz=timezone.utc)
@@ -224,21 +229,41 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
         async with open_session() as session:
             for i in range(0, len(normalized), BATCH_SIZE):
                 chunk = normalized[i : i + BATCH_SIZE]
-                stmt = (
-                    sqlite_insert(RawQuery)
-                    .values(chunk)
-                    .on_conflict_do_update(
-                        index_elements=["query_hash"],
-                        set_={
-                            "occurrence_count": RawQuery.occurrence_count
-                                                + sqlite_insert(RawQuery).excluded.occurrence_count,
-                            "last_seen":  now,
-                            "updated_at": now,
-                        },
-                    )
+                chunk_hashes = [r["query_hash"] for r in chunk]
+
+                # -- Find which hashes already exist -----------------------------
+                ph = ", ".join(f":h{j}" for j in range(len(chunk_hashes)))
+                params = {f"h{j}": h for j, h in enumerate(chunk_hashes)}
+                rows_exist = await session.exec(
+                    text(f"SELECT query_hash FROM raw_query WHERE query_hash IN ({ph})"),  # noqa: S608
+                    params=params,
                 )
-                await session.execute(stmt)
-            result.inserted += len(normalized)
+                existing_hashes: set[str] = {row[0] for row in rows_exist}
+
+                new_rows      = [r for r in chunk if r["query_hash"] not in existing_hashes]
+                existing_rows = [r for r in chunk if r["query_hash"] in existing_hashes]
+
+                # -- INSERT new rows --------------------------------------------
+                if new_rows:
+                    await session.exec(
+                        sqlite_insert(RawQuery).values(new_rows)
+                    )
+                    result.inserted += len(new_rows)
+
+                # -- UPDATE existing rows (accumulate occurrence_count) ----------
+                for row in existing_rows:
+                    await session.exec(
+                        text("""
+                            UPDATE raw_query
+                               SET occurrence_count = occurrence_count + :occ,
+                                   last_seen        = :now,
+                                   updated_at       = :now
+                             WHERE query_hash = :qh
+                        """),
+                        params={"occ": row["occurrence_count"], "now": now, "qh": row["query_hash"]},
+                    )
+                result.updated += len(existing_rows)
+
         # Invalidate the analytics DataFrame cache so the next dashboard
         # request reads fresh data from SQLite rather than stale cached rows.
         from api.analytics_db import invalidate_cache
