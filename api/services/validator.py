@@ -26,10 +26,15 @@ SAMPLE_SIZE = 50
 # Required columns per file category
 # ---------------------------------------------------------------------------
 
+# Required columns per file category.
+# Deadlock accepts two formats:
+#   Raw format (new):    _time, host, _raw
+#   Legacy format (old): _time, host, currentdbname, all_query/clean_query, _raw
+# The common required column in BOTH is _raw + host.
 _CRITICAL_FIELDS: dict[str, list[str]] = {
     "slow_query_sql":   ["host", "db_name", "query_final"],
     "blocker":          ["host", "database_name", "query_text"],
-    "deadlock":         ["currentdbname", "all_query"],
+    "deadlock":         ["host", "_raw"],   # common to raw + legacy formats
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -117,6 +122,20 @@ def validate_csv(path: Path) -> ValidationResult:
     missing = [col for col in required if col not in df.columns]
     if missing:
         errors.append(f"Missing required columns: {missing}")
+
+    # -- 3b. Deadlock format detection note (informational) ----------------------
+    if file_type == "deadlock" and not errors:
+        col_set = set(df.columns)
+        if {"clean_query", "all_query"} & col_set:
+            warnings.append(
+                "Detected legacy deadlock format (pre-extracted clean_query / all_query). "
+                "Rows will be ingested with occurrence_count from the 'count' column."
+            )
+        else:
+            warnings.append(
+                "Detected raw deadlock format (_raw only). "
+                "Each row will be expanded into one row per process by the deadlock parser."
+            )
 
     # -- 4. Null rates for required columns --------------------------------------
     null_rates: dict[str, float] = {}

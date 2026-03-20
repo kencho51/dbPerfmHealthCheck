@@ -109,8 +109,19 @@ def _load_table(table: str) -> pl.DataFrame:
         df = (
             pl.DataFrame({col: pl.Series([], dtype=pl.Utf8) for col in columns})
             if not rows
-            else pl.DataFrame([dict(zip(columns, row)) for row in rows], schema=columns)
+            else pl.DataFrame(
+                # Column-oriented construction avoids infer_schema_length issues.
+                # extra_metadata is nullable TEXT: if the first N rows are NULL,
+                # row-oriented inference would infer Null dtype and then fail when
+                # a deadlock JSON string arrives later.  schema_overrides forces
+                # Utf8 from the start without affecting other columns.
+                {col: [row[i] for row in rows] for i, col in enumerate(columns)},
+                schema_overrides={"extra_metadata": pl.Utf8} if "extra_metadata" in columns else None,
+            )
         )
+        # Belt-and-suspenders: cast any column that slipped through as Null.
+        if "extra_metadata" in df.columns:
+            df = df.with_columns(pl.col("extra_metadata").cast(pl.Utf8))
         _df_cache[table] = (time.monotonic(), df)
         return df
 

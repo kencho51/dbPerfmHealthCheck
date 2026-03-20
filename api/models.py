@@ -151,6 +151,11 @@ class RawQuery(SQLModel, table=True):
     # Derived at ingest -- "YYYY-MM"
     month_year: Optional[str] = Field(default=None, index=True)
 
+    # Type-specific structured metadata (JSON string).
+    # Deadlock rows: deadlock_id, pid, is_victim, lockMode, waitresource, etc.
+    # Other types: None.
+    extra_metadata: Optional[str] = Field(default=None)
+
     # Occurrence tracking
     occurrence_count: int = Field(default=1)
     first_seen: datetime = Field(default_factory=_now)

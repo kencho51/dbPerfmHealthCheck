@@ -30,7 +30,11 @@ import polars as pl
 EXPECTED_COLUMNS: dict[str, list[str]] = {
     "slow_query_sql":   ["host", "db_name", "query_final"],
     "blocker":          ["host", "database_name", "query_text"],
-    "deadlock":         ["currentdbname", "all_query"],
+    # Deadlock accepts two CSV formats:
+    #   Raw (new):    _time, host, id, lockMode, transactionname, victim, waittime, _raw
+    #   Legacy (old): _time, host, hostname, currentdbname, id, victim, transactionname,
+    #                 lockMode, lockTimeout, waittime, es_text, clean_query, _raw
+    "deadlock":         ["host", "_raw"],
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -146,25 +150,187 @@ def _process_blockers(file_path: Path) -> list[dict]:
     return rows
 
 
+def _is_raw_deadlock_format(columns: list[str]) -> bool:
+    """
+    Return True when the CSV was exported with the minimal-SPL raw format
+    (``_raw`` present but no pre-extracted ``clean_query`` / ``all_query``).
+    Return False for the legacy aggregated format that has ``clean_query`` or
+    ``all_query`` already extracted by SPL.
+    """
+    col_set = set(c.strip().lower() for c in columns)
+    has_raw   = "_raw" in col_set
+    has_agg   = bool({"clean_query", "all_query"} & col_set)
+    return has_raw and not has_agg
+
+
 def _process_deadlocks(file_path: Path) -> list[dict]:
-    df = pl.read_csv(file_path, encoding="utf-8")
+    """
+    Extract deadlock rows from a Splunk CSV.
+
+    Supports two formats:
+
+    **Raw format** (new, minimal SPL)::
+
+        _time, host, id, lockMode, transactionname, victim, waittime, _raw
+
+    Each Splunk row contains a full deadlock graph in ``_raw``.  The parser
+    expands it into one row *per process* (victim + waiter), extracting all
+    structured attributes into ``extra_metadata``.
+
+    **Legacy format** (old, aggregated SPL)::
+
+        _time, host, hostname, currentdbname, id, victim, transactionname,
+        lockMode, lockTimeout, waittime, es_text, clean_query, _raw
+
+    ``clean_query`` / ``all_query`` are used directly as ``query_details``.  If
+    ``_raw`` is present the parser is still run to enrich ``extra_metadata``
+    (victim flag, waitresource, etc.).  Falls back gracefully when ``_raw``
+    cannot be parsed.
+    """
+    from api.services.deadlock_parser import parse_raw
+
+    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
-    rows = []
+    columns: list[str] = df.columns
+
+    if _is_raw_deadlock_format(columns):
+        return _process_deadlocks_raw(df, env, parse_raw)
+    return _process_deadlocks_legacy(df, env, parse_raw)
+
+
+def _process_deadlocks_raw(
+    df: "pl.DataFrame",
+    env: str,
+    parse_raw,
+) -> list[dict]:
+    """
+    Expand each Splunk row (containing a full deadlock graph in ``_raw``) into
+    one dict per process using the DeadlockParser.
+    """
+    rows: list[dict] = []
+
     for row in df.iter_rows(named=True):
-        # Use the CSV `count` as occurrence_count — Splunk aggregated occurrences
+        raw        = row.get("_raw") or ""
+        splunk_time = _get(row, "_time")
+        splunk_host = _get(row, "host")
+
+        # Skip fragment rows (3-way deadlock overflow with empty id).
+        if not (row.get("id") or "").strip() and not raw.strip():
+            continue
+
+        processes = parse_raw(raw, splunk_time, splunk_host)
+
+        if not processes:
+            # Fallback: emit at least one row with whatever we have.
+            rows.append({
+                "time":           splunk_time,
+                "source":         "sql",
+                "host":           splunk_host,
+                "db_name":        "",
+                "environment":    env,
+                "type":           "deadlock",
+                "query_details":  _get(row, "id"),   # process IDs as last resort
+                "extra_metadata": None,
+            })
+            continue
+
+        for proc in processes:
+            rows.append({
+                "time":           proc.splunk_time,
+                "source":         "sql",
+                "host":           proc.splunk_host,
+                "db_name":        proc.currentdbname,
+                "environment":    env,
+                "type":           "deadlock",
+                "query_details":  proc.sql_text,
+                "extra_metadata": proc.to_extra_metadata(),
+            })
+
+    return rows
+
+
+def _process_deadlocks_legacy(
+    df: "pl.DataFrame",
+    env: str,
+    parse_raw,
+) -> list[dict]:
+    """
+    Process the legacy aggregated format.  ``clean_query`` / ``all_query`` are
+    used as ``query_details``.  ``_raw`` (when present) is parsed to extract
+    ``extra_metadata``; falls back to the columns already available.
+    """
+    import json
+
+    rows: list[dict] = []
+
+    for row in df.iter_rows(named=True):
+        raw        = row.get("_raw") or ""
+        splunk_time = _get(row, "earliest", "_time")
+        splunk_host = _get(row, "host")
+
+        # SQL text — prefer pre-extracted column, fall back to others.
+        query_details = _get(row, "clean_query", "all_query", "query_text",
+                                  "statement", "sql_text", "deadlock_graph")
+
+        # Splunk aggregated occurrences.
         raw_count = row.get("count")
-        occ = int(raw_count) if raw_count is not None else 1
+        occ = int(raw_count) if raw_count not in (None, "") else 1
+
+        # Try to enrich with structured metadata from _raw.
+        extra_metadata: str | None = None
+        if raw:
+            processes = parse_raw(raw, splunk_time, splunk_host)
+            if processes:
+                # Find the process whose sql_text best matches clean_query.
+                matched = next(
+                    (p for p in processes
+                     if query_details and
+                     p.sql_text and query_details[:60] in p.sql_text),
+                    processes[0],   # fallback to first process
+                )
+                # If the parser found a better SQL (starts with a DML keyword
+                # rather than a "frame procname=" reference), prefer it.
+                _dml = re.compile(
+                    r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|EXEC|WITH|MERGE|@\w)", re.I
+                )
+                if matched.sql_text and _dml.match(matched.sql_text):
+                    query_details = matched.sql_text
+                # Merge any CSV-level fields into the parsed metadata.
+                meta         = json.loads(matched.to_extra_metadata())
+                meta["source"] = "legacy_csv"
+                # Prefer CSV hostname over parsed (CSV is already extracted by SPL).
+                if not meta.get("apphost"):
+                    meta["apphost"] = _get(row, "hostname")
+                extra_metadata = json.dumps(meta, ensure_ascii=False)
+
+        # If _raw parsing failed, build best-effort metadata from CSV columns.
+        if extra_metadata is None:
+            meta = {
+                "source":          "legacy_csv",
+                "deadlock_victim": _get(row, "victim"),
+                "lockMode":        _get(row, "lockMode"),
+                "lockTimeout":     _get(row, "lockTimeout"),
+                "waittime":        _get(row, "waittime"),
+                "transactionname": _get(row, "transactionname"),
+                "apphost":         _get(row, "hostname"),
+            }
+            extra_metadata = json.dumps(
+                {k: v for k, v in meta.items() if v},
+                ensure_ascii=False,
+            )
+
         rows.append({
-            "time":             _get(row, "earliest", "_time"),
+            "time":             splunk_time,
             "source":           "sql",
-            "host":             _get(row, "host"),
+            "host":             splunk_host,
             "db_name":          _get(row, "currentdbname", "database_name", "db_name"),
             "environment":      env,
             "type":             "deadlock",
             "occurrence_count": occ,
-            "query_details":    _get(row, "all_query", "query_text", "statement",
-                                         "sql_text", "deadlock_graph"),
+            "query_details":    query_details,
+            "extra_metadata":   extra_metadata,
         })
+
     return rows
 
 
