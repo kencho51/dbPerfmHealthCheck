@@ -20,6 +20,7 @@ Thread-safety
 """
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -49,7 +50,11 @@ def _get_sync_engine() -> sa.engine.Engine:
         sync_url = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
         engine = sa.create_engine(
             sync_url,
-            connect_args={"check_same_thread": False, "timeout": 30},
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 30,
+                "detect_types": sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            },
         )
         with engine.connect() as conn:
             conn.execute(sa.text("PRAGMA journal_mode=WAL"))

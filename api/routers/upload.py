@@ -59,7 +59,7 @@ async def upload_csv(
 
         if not validation.is_valid:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "message": "CSV validation failed — no data ingested.",
                     "errors":  validation.errors,

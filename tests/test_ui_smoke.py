@@ -93,8 +93,9 @@ _TESTADMIN_AVAILABLE = False
 
 
 def _try_login_api(username: str, password: str) -> str | None:
-    """Return JWT token on success, None on failure."""
+    """Return JWT token on success, None on failure (logs the reason to stderr)."""
     import json
+    import sys
     import urllib.error
     import urllib.request
 
@@ -108,33 +109,68 @@ def _try_login_api(username: str, password: str) -> str | None:
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read()).get("access_token")
-    except Exception:
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(
+            f"\n[test_ui_smoke] Login failed for {username!r}: HTTP {e.code} — {body}",
+            file=sys.stderr,
+        )
         return None
+    except Exception as exc:
+        print(
+            f"\n[test_ui_smoke] Login request error for {username!r}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _is_our_api() -> bool:
+    """Return True only when localhost:8000 is serving our FastAPI app (has /health)."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{API_URL}/health", timeout=2) as resp:
+            data = json.loads(resp.read())
+            return data.get("status") == "ok"
+    except Exception:
+        return False
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _ensure_test_user():
     """
-    Ensure testadmin exists and can log in on the live FastAPI server.
+    Ensure the test admin exists and can log in on the live FastAPI server.
 
     Strategy:
-      1. Try to login ??if it works, we're done.
-      2. Try /register (only succeeds when the DB is empty ??first-user flow).
-      3. If both fail, set _TESTADMIN_AVAILABLE = False so auth-gated tests skip.
+      1. Confirm port 8000 is serving OUR FastAPI app via /health (guards against
+         zombie processes that happen to occupy the port).
+      2. Try login — if it works, set _TESTADMIN_AVAILABLE = True and return.
+      3. Try /register (only succeeds when the DB is empty — first-user flow).
+      4. If all fail, set _TESTADMIN_AVAILABLE = False and print a diagnostic.
 
-    If the live DB already has users but NOT testadmin, you must create it manually:
+    If the live DB already has users but NOT the test admin, create it manually:
         uv run python scripts/ensure_test_user.py
-    or via the admin API with an existing admin token.
     """
     global _TESTADMIN_AVAILABLE
+    import sys
+
     if not _api_up():
+        return
+
+    # Step 0: confirm it's our FastAPI app, not something else on port 8000
+    if not _is_our_api():
+        print(
+            f"\n[test_ui_smoke] Port 8000 is open but /health check failed — "
+            "is the FastAPI server actually running? (uv run uvicorn api.main:app --port 8000)",
+            file=sys.stderr,
+        )
         return
 
     import json
     import urllib.error
     import urllib.request
 
-    # 1. Try login first ??maybe the test admin already exists.
+    # 1. Try login first — testadmin probably already exists.
     if _try_login_api(TEST_ADMIN_USER, TEST_ADMIN_PASS):
         _TESTADMIN_AVAILABLE = True
         return
@@ -160,12 +196,20 @@ def _ensure_test_user():
     except urllib.error.HTTPError as e:
         if e.code == 403:
             # DB already has users but testadmin isn't one of them.
-            # Must be created by an admin ??cannot do it here.
+            # Must be created by an admin — cannot do it here.
             pass
     except Exception:
         pass
 
-    # 3. Cannot create testadmin ??auth tests will be skipped.
+    # 3. Cannot authenticate — auth-gated tests will be skipped.
+    print(
+        f"\n[test_ui_smoke] Could not verify {TEST_ADMIN_USER!r} on {API_URL}.\n"
+        "  Auth-gated UI tests will be skipped.\n"
+        f"  Credentials used: username={TEST_ADMIN_USER!r} (from api/.env TEST_ADMIN_USERNAME)\n"
+        "  To create the user:  uv run python scripts/ensure_test_user.py\n"
+        "  Or set TEST_ADMIN_USERNAME / TEST_ADMIN_PASSWORD in api/.env",
+        file=sys.stderr,
+    )
     _TESTADMIN_AVAILABLE = False
 
 
