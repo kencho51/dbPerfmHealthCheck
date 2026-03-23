@@ -383,23 +383,27 @@ def _by_hour_sync(
     source: str | None, environment: str | None, type_: str | None,
     host: str | None, db_name: str | None,
     month_year: str | None, system: str | None,
+    week_start: str | None = None,
+    week_end:   str | None = None,
 ) -> list[dict]:
     """
     DuckDB replaces the old SQLModel-fetch + Polars multi-step pipeline.
 
-    Old approach: load ALL raw_query rows into Python → Polars DataFrame →
-    strip TZ offset → coalesce 7 strptime formats → group_by → 4 lookups.
-
-    New approach: DuckDB executes everything in one SQL — time parsing via
-    try_strptime([format_list]), grouping by (hour, weekday, qtype, host,
-    db_name).  Python only assembles the nested {by_type, top_hosts, top_dbs}
-    structure from the already-aggregated result rows.
+    week_start / week_end are ISO date strings (e.g. '2026-01-05', '2026-01-11')
+    representing the exact Monday–Sunday (or partial-week) boundaries of the
+    chosen calendar week, as computed by the frontend.  Both must be supplied
+    together; omitting both returns all weeks.
     """
     where, params = _build_filters(
         source=source, environment=environment, type_=type_,
         host=host, db_name=db_name, month_year=month_year, system=system,
         extra=["time IS NOT NULL"],
     )
+    # Calendar week filter: compare the parsed timestamp's date against the
+    # supplied ISO date strings.  Appended after dt is already resolved.
+    week_filter = ""
+    if week_start and week_end:
+        week_filter = f"AND CAST(dt AS DATE) BETWEEN CAST('{week_start}' AS DATE) AND CAST('{week_end}' AS DATE)"
     con = get_duck("raw_query")
     try:
         rows = con.execute(f"""
@@ -424,6 +428,7 @@ def _by_hour_sync(
                 {where}
             ) t
             WHERE dt IS NOT NULL
+            {week_filter}
             GROUP BY hour, weekday, qtype, host, db_name
             ORDER BY weekday, hour
         """, params).fetchall()
@@ -473,11 +478,19 @@ async def analytics_by_hour(
     month_year:  Optional[str]             = None,
     type:        Optional[QueryType]       = None,
     system:      Optional[str]             = None,
+    week_start:  Optional[str]             = None,
+    week_end:    Optional[str]             = None,
 ) -> list[dict]:
+    """
+    week_start / week_end: ISO date strings for the chosen calendar week
+    (e.g. week_start=2026-01-05&week_end=2026-01-11).  Both must be
+    supplied together; omitting both returns all weeks in the month.
+    """
     return await asyncio.to_thread(
         _by_hour_sync,
         source and source.value, environment and environment.value,
         type and type.value, host, db_name, month_year, system,
+        week_start, week_end,
     )
 
 
