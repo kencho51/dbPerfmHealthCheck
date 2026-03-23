@@ -45,6 +45,28 @@ function typeBadge(typeName: string) {
   );
 }
 
+/**
+ * sp_executesql stores a parameter-type declaration block before the actual SQL:
+ *   "(@p? nvarchar(?),@p? nvarchar(?))select * from ..."
+ *
+ * This function strips that prefix so we display the meaningful SQL body.
+ * It also returns the number of parameters stripped so we can show a hint.
+ */
+function readableFingerprint(fp: string): { sql: string; paramCount: number } {
+  if (!fp.startsWith("(@p?")) return { sql: fp, paramCount: 0 };
+
+  // Count @p? occurrences in the param block
+  const paramBlock = fp.match(/^\((@p\?[^)]*(?:\([^)]*\)[^)]*)*)\)/);
+  const paramCount = paramBlock ? (paramBlock[0].match(/@p\?/g) ?? []).length : 0;
+
+  // Find where the actual SQL starts — the `)` followed by a SQL keyword
+  const bodyMatch = fp.match(/\)\s*(?=select|insert|update|delete|exec|with|begin|declare|create|merge)/);
+  if (bodyMatch?.index !== undefined) {
+    return { sql: fp.slice(bodyMatch.index + 1).trim(), paramCount };
+  }
+  return { sql: fp, paramCount };
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function TopFingerprintsTable({
@@ -152,16 +174,28 @@ export function TopFingerprintsTable({
 
                         {/* Fingerprint — truncated mono, click to expand */}
                         <td className="py-2 pr-3 align-top max-w-xs">
-                          <span
-                            className={`font-mono text-xs text-slate-700 break-all ${
-                              isExpanded ? "" : "line-clamp-2"
-                            }`}
-                          >
-                            {row.fingerprint || <span className="italic text-slate-400">(empty)</span>}
-                          </span>
-                          {!isExpanded && row.fingerprint.length >= 120 && (
-                            <span className="text-[10px] text-indigo-400 ml-1">▾ expand</span>
-                          )}
+                          {(() => {
+                            const { sql, paramCount } = readableFingerprint(row.fingerprint);
+                            return (
+                              <>
+                                <span
+                                  className={`font-mono text-xs text-slate-700 break-all ${
+                                    isExpanded ? "" : "line-clamp-2"
+                                  }`}
+                                >
+                                  {sql || <span className="italic text-slate-400">(empty)</span>}
+                                </span>
+                                {paramCount > 0 && (
+                                  <span className="inline-block mt-0.5 rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-400">
+                                    sp_executesql · {paramCount} param{paramCount !== 1 ? "s" : ""}
+                                  </span>
+                                )}
+                                {!isExpanded && sql.length >= 120 && (
+                                  <span className="text-[10px] text-indigo-400 ml-1">▾ expand</span>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
 
                         {/* Type badges */}
@@ -217,7 +251,22 @@ export function TopFingerprintsTable({
                             <div className="space-y-2">
                               {/* Full fingerprint */}
                               <pre className="whitespace-pre-wrap break-all text-xs font-mono text-slate-700 bg-white border border-slate-100 rounded p-2">
-                                {row.fingerprint}
+                                {(() => {
+                                  const { sql, paramCount } = readableFingerprint(row.fingerprint);
+                                  return (
+                                    <>
+                                      {sql}
+                                      {paramCount > 0 && (
+                                        <details className="mt-2">
+                                          <summary className="cursor-pointer text-[10px] text-slate-400 hover:text-slate-600">
+                                            sp_executesql parameter declaration ({paramCount} params) ▸
+                                          </summary>
+                                          <span className="text-slate-400">{row.fingerprint.slice(0, row.fingerprint.indexOf(")") + 1)}</span>
+                                        </details>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </pre>
 
                               {/* Meta row: months · environments · source */}
