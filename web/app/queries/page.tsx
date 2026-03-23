@@ -58,6 +58,60 @@ const columns: ColumnDef<RawQuery>[] = [
         : <span className="text-slate-300">—</span>;
     },
   },
+  {
+    accessorKey: "query_hash",
+    header: "Hash",
+    size: 100,
+    cell: (i) => {
+      const v = i.getValue<string>();
+      return <span className="font-mono text-[10px] text-slate-400 truncate block max-w-[90px]" title={v}>{v}</span>;
+    },
+  },
+  {
+    accessorKey: "time",
+    header: "Time",
+    size: 140,
+    cell: (i) => {
+      const v = i.getValue<string | null>();
+      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ?? "—"}</span>;
+    },
+  },
+  {
+    accessorKey: "first_seen",
+    header: "First Seen",
+    size: 140,
+    cell: (i) => {
+      const v = i.getValue<string>();
+      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
+    },
+  },
+  {
+    accessorKey: "last_seen",
+    header: "Last Seen",
+    size: 140,
+    cell: (i) => {
+      const v = i.getValue<string>();
+      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
+    },
+  },
+  {
+    accessorKey: "created_at",
+    header: "Created",
+    size: 140,
+    cell: (i) => {
+      const v = i.getValue<string>();
+      return <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
+    },
+  },
+  {
+    accessorKey: "updated_at",
+    header: "Updated",
+    size: 140,
+    cell: (i) => {
+      const v = i.getValue<string>();
+      return <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
+    },
+  },
 ];
 
 // Compact filter controls -----------------------------------------------
@@ -274,7 +328,13 @@ export default function QueriesPage() {
                     <option value="false">uncurated</option>
                   </FSelect>
                 </td>
-                <td className="px-2 py-1" />
+                <td className="px-2 py-1" />{/* query_details */}
+                <td className="px-2 py-1" />{/* query_hash */}
+                <td className="px-2 py-1" />{/* time */}
+                <td className="px-2 py-1" />{/* first_seen */}
+                <td className="px-2 py-1" />{/* last_seen */}
+                <td className="px-2 py-1" />{/* created_at */}
+                <td className="px-2 py-1" />{/* updated_at */}
               </tr>
             </thead>
             <tbody>
