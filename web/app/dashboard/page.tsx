@@ -75,12 +75,15 @@ const SYSTEMS = [
 // ---------------------------------------------------------------------------
 
 export default function DashboardPage() {
-  // ?�?� Filter state ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+  // Filter state
   const [filterHost,        setFilterHost]        = useState("");
   const [filterDb,          setFilterDb]          = useState("");
   const [filterEnvironment, setFilterEnvironment] = useState("");
   const [filterMonth,       setFilterMonth]       = useState("");
   const [filterSystem,      setFilterSystem]      = useState("");
+
+  // Incrementing this forces a full data re-fetch even when filters haven't changed
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // ?�?� Dropdown option lists (unfiltered, loaded once) ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
   const [hostOptions,  setHostOptions]  = useState<string[]>([]);
@@ -182,7 +185,7 @@ export default function DashboardPage() {
       .finally(() => setDbsLoading(false));
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterHost, filterDb, filterEnvironment, filterMonth, filterSystem]);
+  }, [filterHost, filterDb, filterEnvironment, filterMonth, filterSystem, refreshKey]);
 
   const filters = activeFilters();
   const hasActiveFilter = !!(filterHost || filterDb || filterEnvironment || filterMonth || filterSystem);
@@ -191,7 +194,7 @@ export default function DashboardPage() {
   const distinctHosts = trends ? new Set(trends.hosts.map((h) => h.host)).size : null;
   const monthsCount   = trends ? trends.months.length : null;
 
-  // ?�?� Render ??page shell is always visible; sections fill in independently ?�
+  // Render page shell is always visible; sections fill in independently ?
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -204,8 +207,10 @@ export default function DashboardPage() {
           onClick={() => {
             setFilterHost(""); setFilterDb(""); setFilterEnvironment("");
             setFilterMonth(""); setFilterSystem("");
+            setRefreshKey((k) => k + 1); // always triggers a real API re-fetch
           }}
           className="text-xs text-slate-400 hover:text-slate-700 border border-slate-200 rounded px-2 py-1 transition-colors"
+          title="Reload all dashboard data"
         >
           Refresh
         </button>
