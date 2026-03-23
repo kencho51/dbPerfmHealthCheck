@@ -99,9 +99,6 @@ export function TopFingerprintsTable({
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle>Top Query Fingerprints</CardTitle>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Ranked by total occurrence count (sum across all matching rows)
-          </p>
 
           <div className="flex items-center gap-2">
             {/* Top-N picker */}
@@ -131,6 +128,16 @@ export function TopFingerprintsTable({
             </select>
           </div>
         </div>
+
+        {/* Column legend */}
+        <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+          Each row groups all log records that share the same normalised query pattern (fingerprint),
+          ranked by <strong>Occurrences</strong> — the <strong><code>SUM(occurrence_count)</code></strong> across
+          every matching row. A single DB monitoring row that fired 500 times contributes 500, not 1.{" "}
+          <strong>Rows</strong> is the <strong><code>COUNT(*)</code></strong> of distinct log records
+          sharing that fingerprint (across hosts, months, and environments) — it is not an execution count.
+          Click any row to expand the full query text and breakdown.
+        </p>
       </CardHeader>
 
       <CardContent>
