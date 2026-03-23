@@ -12,12 +12,12 @@
  * Hover a cell to see a rich floating tooltip with type breakdown, top hosts, and top DBs.
  */
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, type HourCell, type QueryType, type AnalyticsFilters } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 // ---------------------------------------------------------------------------
-// Type filter options — mirrors MonthlyTrendCard
+// Type filter options
 // ---------------------------------------------------------------------------
 
 const TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -27,6 +27,91 @@ const TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "blocker",          label: "Blocker"             },
   { value: "deadlock",         label: "Deadlock"            },
 ];
+
+// ---------------------------------------------------------------------------
+// Calendar week helpers
+// ---------------------------------------------------------------------------
+
+interface WeekOption {
+  value: string;   // ISO start date — used as <select> value
+  start: string;   // ISO date e.g. "2026-01-05"
+  end:   string;   // ISO date e.g. "2026-01-11"
+  label: string;   // e.g. "Week 2 · Mon 5 \u2013 Sun 11 Jan"
+}
+
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MON_SHORT = ["Jan","Feb","Mar","Apr","May","Jun",
+                   "Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/** Format a local Date as YYYY-MM-DD WITHOUT converting to UTC.
+ *  `toISOString()` converts to UTC first, which shifts the date backward
+ *  in UTC+N timezones (e.g. HKT UTC+8: midnight Feb 1 local → Jan 31 UTC).
+ */
+function toIsoDate(d: Date): string {
+  const y  = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dy = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${dy}`;
+}
+
+function formatWeekRange(start: Date, end: Date): string {
+  const sm = MON_SHORT[start.getMonth()];
+  const em = MON_SHORT[end.getMonth()];
+  const sd = DAY_SHORT[start.getDay()];
+  const ed = DAY_SHORT[end.getDay()];
+  if (start.toDateString() === end.toDateString()) {
+    return `${sd} ${start.getDate()} ${sm}`;
+  }
+  // Cross-month (only possible for the last partial week)
+  if (sm !== em) {
+    return `${sd} ${start.getDate()} ${sm} \u2013 ${ed} ${end.getDate()} ${em}`;
+  }
+  return `${sd} ${start.getDate()} \u2013 ${ed} ${end.getDate()} ${sm}`;
+}
+
+/**
+ * Compute all calendar weeks (Mon\u2013Sun) that overlap the given month.
+ * Each week is clipped to the month's boundaries, so Week 1 of Jan 2026
+ * starts on Thu 1 Jan (not the preceding Mon 29 Dec).
+ */
+function getCalendarWeeks(monthYear: string): WeekOption[] {
+  const parts = monthYear.split("-").map(Number);
+  if (parts.length < 2 || !parts[0] || !parts[1]) return [];
+  const [y, m] = parts;
+
+  const monthStart = new Date(y, m - 1, 1);
+  const monthEnd   = new Date(y, m, 0);       // last day of month
+
+  // Monday on or before the 1st
+  const dow      = monthStart.getDay();       // 0=Sun
+  const daysBack = dow === 0 ? 6 : dow - 1;
+  const cursor   = new Date(monthStart);
+  cursor.setDate(monthStart.getDate() - daysBack);
+
+  const weeks: WeekOption[] = [];
+  let weekNum = 0;
+
+  while (cursor <= monthEnd) {
+    const weekSun = new Date(cursor);
+    weekSun.setDate(cursor.getDate() + 6);
+
+    // Clip to month boundaries
+    const start = cursor   < monthStart ? new Date(monthStart) : new Date(cursor);
+    const end   = weekSun  > monthEnd   ? new Date(monthEnd)   : new Date(weekSun);
+
+    weekNum++;
+    weeks.push({
+      value: toIsoDate(start),
+      start: toIsoDate(start),
+      end:   toIsoDate(end),
+      label: `Week ${weekNum} \u00b7 ${formatWeekRange(start, end)}`,
+    });
+
+    cursor.setDate(cursor.getDate() + 7);
+  }
+
+  return weeks;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,16 +285,25 @@ export function HourHeatmap({ filters }: Props) {
   const [loading, setLoading] = useState(true);
   const [hovered, setHovered] = useState<HourCell | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  // Local type filter — merged with externalFilters before the API call,
-  // matching the same pattern used by MonthlyTrendCard.
+  // Local filters: type and calendar week
   const [selectedType, setSelectedType] = useState("");
+  const [selectedWeek, setSelectedWeek] = useState("");  // holds WeekOption.value (ISO start date)
 
   // Destructure so useEffect has stable primitive deps
   const { environment, host, db_name, month_year, source } = filters ?? {};
 
+  // Recompute week options whenever the month changes; reset selection
+  const weekOptions = useMemo(
+    () => (month_year ? getCalendarWeeks(month_year) : []),
+    [month_year],
+  );
+  useEffect(() => { setSelectedWeek(""); }, [month_year]);
+
   useEffect(() => {
     setLoading(true);
     setHovered(null);
+    // Look up the selected week's end date from the computed options
+    const weekOpt = weekOptions.find((w) => w.value === selectedWeek);
     const merged: AnalyticsFilters = {
       ...(environment  ? { environment }  : {}),
       ...(host        ? { host }        : {}),
@@ -217,13 +311,14 @@ export function HourHeatmap({ filters }: Props) {
       ...(month_year  ? { month_year }  : {}),
       ...(source      ? { source }      : {}),
       ...(selectedType ? { type: selectedType as QueryType } : {}),
+      ...(weekOpt ? { week_start: weekOpt.start, week_end: weekOpt.end } : {}),
     };
     api.analytics.byHour(Object.keys(merged).length ? merged : undefined)
       .then(setCells)
       .catch(console.error)
       .finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [environment, host, db_name, month_year, source, selectedType]);
+  }, [environment, host, db_name, month_year, source, selectedType, selectedWeek]);
 
   // Build 24×7 lookup map (full HourCell — backend has already applied all filters)
   const cellMap = new Map<string, HourCell>();
@@ -244,17 +339,34 @@ export function HourHeatmap({ filters }: Props) {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <CardTitle>Peak Hour Heatmap</CardTitle>
-          <select
-            className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
-            value={selectedType}
-            onChange={(e) => { setSelectedType(e.target.value); setHovered(null); }}
-          >
-            {TYPE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            {/* Week selector — only shown when a month is selected */}
+            <select
+              className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed"
+              value={selectedWeek}
+              disabled={weekOptions.length === 0}
+              onChange={(e) => { setSelectedWeek(e.target.value); setHovered(null); }}
+              title={weekOptions.length === 0 ? "Select a month first to filter by week" : undefined}
+            >
+              <option value="">
+                {weekOptions.length === 0 ? "Select month first" : "All weeks"}
+              </option>
+              {weekOptions.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <select
+              className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:border-indigo-400"
+              value={selectedType}
+              onChange={(e) => { setSelectedType(e.target.value); setHovered(null); }}
+            >
+              {TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
         <p className="text-xs text-slate-500 mt-1 leading-relaxed">
           Each cell shows how many slow query / blocker / deadlock <strong>events</strong> occurred
@@ -267,6 +379,11 @@ export function HourHeatmap({ filters }: Props) {
         {!loading && totalEvents > 0 && (
           <p className="text-xs text-slate-400 mt-0.5">
             {fmt(totalEvents)} total occurrences · local host time
+            {selectedWeek && weekOptions.find((o) => o.value === selectedWeek) && (
+              <span className="ml-1 text-indigo-400 font-medium">
+                · {weekOptions.find((o) => o.value === selectedWeek)!.label}
+              </span>
+            )}
           </p>
         )}
       </CardHeader>

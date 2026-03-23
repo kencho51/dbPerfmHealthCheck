@@ -135,6 +135,10 @@ export interface AnalyticsFilters {
   system?:      string;
   month_year?:  string;
   top_n?:       number;
+  /** Start date of the selected calendar week, ISO format e.g. '2026-01-05' */
+  week_start?:  string;
+  /** End date of the selected calendar week, ISO format e.g. '2026-01-11' */
+  week_end?:    string;
 }
 
 function buildQS(params?: Record<string, string | number | undefined>): string {
