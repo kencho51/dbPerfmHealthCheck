@@ -508,28 +508,90 @@ def _top_fingerprints_sync(
     con = get_duck("raw_query")
     try:
         rows = con.execute(f"""
-            WITH fingerprinted AS (
+            WITH stripped AS (
+                -- Remove sp_executesql param-declaration header so the 300-char
+                -- fingerprint budget captures actual SQL and not type noise.
+                -- Handles @p0/@p1 (raw) AND @p? (pre-normalised by _clean() at ingest).
+                -- Character class [\d?]: '?' is literal inside [...], not a quantifier.
                 SELECT
-                    substring(
-                        regexp_replace(
-                            regexp_replace(
-                                regexp_replace(
-                                    lower(COALESCE(query_details, '')),
-                                    '''[^'']*''',        '?'),
-                                '\\b\\d+\\.?\\d*\\b',  '?'),
-                            '\\s+',                    ' '),
-                        1, 300
-                    ) AS fp,
+                    query_details,
+                    regexp_replace(
+                        lower(COALESCE(query_details, '')),
+                        '^\\(@p[\\d?](?:[^)(]|\\([^)]*\\))*\\)\\s*', ''
+                    ) AS body,
                     COALESCE(type,        'unknown') AS qtype,
                     COALESCE(host,        '')        AS host,
                     COALESCE(db_name,     '')        AS db_name,
                     COALESCE(month_year,  '')        AS month_year,
                     COALESCE(environment, '')        AS environment,
                     COALESCE(source,      '')        AS src,
-                    query_details                    AS sample,
                     occurrence_count                 AS occ
                 FROM raw_query
                 {where}
+            ),
+            -- For sp_executesql queries whose param block was so large the DMV
+            -- truncated the text before reaching the SQL body, look for a sibling
+            -- execution of the SAME query from the same db/host that was called with
+            -- fewer params (shorter IN-list) and DID fit in the DMV capture buffer.
+            -- We normalise that body to a fingerprint and use it as the representative
+            -- fingerprint for ALL executions of this query, truncated or not.
+            param_sql_bridge AS (
+                SELECT
+                    db_name,
+                    host,
+                    first(
+                        substring(
+                            regexp_replace(
+                                regexp_replace(
+                                    regexp_replace(body, '''[^'']*''', '?'),
+                                    '\\b\\d+\\.?\\d*\\b', '?'),
+                                '\\s+', ' '),
+                            1, 300)
+                    ) AS recovered_fp,
+                    first(query_details) AS recovered_sample
+                FROM stripped
+                WHERE query_details LIKE '(@P?%'    -- was a param-header query
+                  AND body NOT LIKE '(@p%'          -- but strip succeeded → SQL visible
+                GROUP BY db_name, host
+            ),
+            fingerprinted AS (
+                SELECT
+                    CASE
+                        -- The strip regex requires a closing ')' on the param block.
+                        -- When query_details was truncated mid-params by the DMV the
+                        -- closing ')' is absent; regexp_replace returns body unchanged
+                        -- so body still starts with '(@p'.
+                        -- Try to recover SQL from a sibling row via param_sql_bridge;
+                        -- fall back to a descriptive label if no sibling exists.
+                        WHEN length(trim(s.body)) < 5
+                          OR s.body LIKE '(@p%'
+                        THEN COALESCE(
+                                b.recovered_fp,
+                                '(sp_executesql — sql body not captured by dmv)')
+                        ELSE substring(
+                            regexp_replace(
+                                regexp_replace(
+                                    regexp_replace(s.body, '''[^'']*''', '?'),
+                                    '\\b\\d+\\.?\\d*\\b', '?'),
+                                '\\s+', ' '),
+                            1, 300)
+                    END AS fp,
+                    s.qtype,
+                    s.host,
+                    s.db_name,
+                    s.month_year,
+                    s.environment,
+                    s.src,
+                    -- For truncated rows prefer the sample from the complete sibling
+                    -- so the expanded row shows readable SQL, not a wall of params.
+                    COALESCE(
+                        CASE WHEN s.body LIKE '(@p%' THEN b.recovered_sample END,
+                        s.query_details
+                    ) AS sample,
+                    s.occ
+                FROM stripped s
+                LEFT JOIN param_sql_bridge b
+                    ON s.db_name = b.db_name AND s.host = b.host
             )
             SELECT
                 fp,
