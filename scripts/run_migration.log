@@ -1,0 +1,20 @@
+[migration] alembic.ini : C:\Users\kenlcho\Desktop\obsidian\kencho-vault\hkjc\dbPerfmHealthCheck\alembic.ini
+[migration] database    : C:\Users\kenlcho\Desktop\obsidian\kencho-vault\hkjc\dbPerfmHealthCheck\db\master.db
+[alembic] upgrade head completed (no output = already at head or applied cleanly)
+
+[migration] alembic version : 2c081eeee9d3
+[migration] tables (12):
+  alembic_version
+  curated_query
+  pattern_label
+  raw_query
+  raw_query_blocker
+  raw_query_datafile_mongo
+  raw_query_datafile_sql
+  raw_query_deadlock
+  raw_query_slow_mongo
+  raw_query_slow_sql
+  spl_query
+  user
+
+[OK] All 6 typed tables are present.
