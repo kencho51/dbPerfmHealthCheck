@@ -336,3 +336,327 @@ class SplQueryUpdate(SQLModel):
     environment: Optional[str] = None
     description: Optional[str] = None
     spl: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Type-specific raw_query_* tables
+# ---------------------------------------------------------------------------
+# These tables store every native CSV column for each file type.
+# They are written in parallel with `raw_query` during upload so that:
+#   - curated_query / labelling workflow keeps using raw_query (unchanged)
+#   - DuckDB analytics can query full-fidelity columns per type
+# ---------------------------------------------------------------------------
+
+class RawQuerySlowSql(SQLModel, table=True):
+    """maxElapsedQueries*.csv — SQL slow queries with all timing/IO metrics."""
+    __tablename__ = "raw_query_slow_sql"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    host: Optional[str] = Field(default=None, index=True)
+    db_name: Optional[str] = Field(default=None, index=True)
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    # Timing columns (native CSV)
+    creation_time: Optional[str] = Field(default=None)
+    last_execution_time: Optional[str] = Field(default=None)
+    max_elapsed_time_s: Optional[float] = Field(default=None)
+    avg_elapsed_time_s: Optional[float] = Field(default=None)
+    total_elapsed_time_s: Optional[float] = Field(default=None)
+    total_worker_time_s: Optional[float] = Field(default=None)
+    avg_io: Optional[float] = Field(default=None)
+    avg_logical_reads: Optional[float] = Field(default=None)
+    avg_logical_writes: Optional[float] = Field(default=None)
+    execution_count: Optional[int] = Field(default=None)
+    query_final: Optional[str] = Field(default=None)
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class RawQueryBlocker(SQLModel, table=True):
+    """blockers*.csv — SQL blocking events with victim/resource/lock details."""
+    __tablename__ = "raw_query_blocker"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    currentdbname: Optional[str] = Field(default=None, index=True)
+    victims: Optional[str] = Field(default=None)        # space-separated process IDs
+    resources: Optional[str] = Field(default=None)      # space-separated PAGE/KEY locks
+    lock_modes: Optional[str] = Field(default=None)     # e.g. "IX S"
+    count: Optional[int] = Field(default=None)          # occurrences in SPL window
+    latest: Optional[str] = Field(default=None)         # latest timestamp in window
+    earliest: Optional[str] = Field(default=None)       # earliest timestamp in window
+    all_query: Optional[str] = Field(default=None)      # SQL text
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class RawQueryDeadlock(SQLModel, table=True):
+    """deadlocks*.csv — SQL deadlock events (both raw and legacy formats)."""
+    __tablename__ = "raw_query_deadlock"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    host: Optional[str] = Field(default=None, index=True)
+    db_name: Optional[str] = Field(default=None, index=True)
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    event_time: Optional[str] = Field(default=None)
+    deadlock_id: Optional[str] = Field(default=None)    # process ID from _raw
+    is_victim: Optional[int] = Field(default=None)      # 0 / 1
+    lock_mode: Optional[str] = Field(default=None)      # e.g. "S", "IX"
+    wait_resource: Optional[str] = Field(default=None)
+    wait_time_ms: Optional[int] = Field(default=None)
+    transaction_name: Optional[str] = Field(default=None)
+    app_host: Optional[str] = Field(default=None)       # application hostname
+    sql_text: Optional[str] = Field(default=None)       # cleaned query text
+    raw_xml: Optional[str] = Field(default=None)        # original _raw XML (optional)
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class RawQuerySlowMongo(SQLModel, table=True):
+    """mongodbSlowQueries*.csv — MongoDB slow operation events."""
+    __tablename__ = "raw_query_slow_mongo"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    host: Optional[str] = Field(default=None, index=True)
+    db_name: Optional[str] = Field(default=None, index=True)   # extracted from attr.ns
+    collection: Optional[str] = Field(default=None, index=True) # extracted from attr.ns
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    event_time: Optional[str] = Field(default=None)     # t.$date
+    duration_ms: Optional[int] = Field(default=None)    # attr.durationMillis
+    plan_summary: Optional[str] = Field(default=None)   # attr.planSummary
+    op_type: Optional[str] = Field(default=None)        # attr.type
+    remote_client: Optional[str] = Field(default=None)  # attr.remote
+    command_json: Optional[str] = Field(default=None)   # extracted command from _raw
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class RawQueryDatafileSql(SQLModel, table=True):
+    """dataFileSize*.csv — SQL Server database file size snapshots."""
+    __tablename__ = "raw_query_datafile_sql"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    host: Optional[str] = Field(default=None, index=True)
+    db_name: Optional[str] = Field(default=None, index=True)
+    file_path: Optional[str] = Field(default=None)
+    updated_at_source: Optional[str] = Field(default=None)  # "updated" col from CSV
+    trend: Optional[str] = Field(default=None)
+    is_up: Optional[str] = Field(default=None)
+    range_mb: Optional[float] = Field(default=None)
+    used_pct: Optional[float] = Field(default=None)         # "used_%" column
+    used_mb: Optional[float] = Field(default=None)
+    allocated_mb: Optional[float] = Field(default=None)
+    free: Optional[str] = Field(default=None)
+    target_allocation_mb: Optional[float] = Field(default=None)
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class RawQueryDatafileMongo(SQLModel, table=True):
+    """mongodbDataFileSize*.csv — MongoDB storage utilisation snapshots."""
+    __tablename__ = "raw_query_datafile_mongo"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    query_hash: str = Field(unique=True, index=True)
+
+    environment: str = Field(
+        sa_column=Column(SAString, index=True, nullable=False),
+    )
+    month_year: Optional[str] = Field(default=None, index=True)
+
+    host_mount: Optional[str] = Field(default=None, index=True)  # e.g. "ptrmmdbhv01_/data"
+    max_storage_mb: Optional[float] = Field(default=None)
+    avg_storage_mb: Optional[float] = Field(default=None)
+    max_storage_free_mb: Optional[float] = Field(default=None)
+    avg_storage_free_mb: Optional[float] = Field(default=None)
+    max_storage_free_pct: Optional[float] = Field(default=None)
+    avg_storage_free_pct: Optional[float] = Field(default=None)
+    max_storage_used_mb: Optional[float] = Field(default=None)
+    avg_storage_used_mb: Optional[float] = Field(default=None)
+    max_used_percent: Optional[float] = Field(default=None)
+    avg_used_percent: Optional[float] = Field(default=None)
+
+    occurrence_count: int = Field(default=1)
+    first_seen: datetime = Field(default_factory=_now)
+    last_seen: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+# ---------------------------------------------------------------------------
+# Read schemas for type-specific tables
+# ---------------------------------------------------------------------------
+
+class RawQuerySlowSqlRead(SQLModel):
+    id: int
+    query_hash: str
+    host: Optional[str]
+    db_name: Optional[str]
+    environment: str
+    month_year: Optional[str]
+    creation_time: Optional[str]
+    last_execution_time: Optional[str]
+    max_elapsed_time_s: Optional[float]
+    avg_elapsed_time_s: Optional[float]
+    total_elapsed_time_s: Optional[float]
+    total_worker_time_s: Optional[float]
+    avg_io: Optional[float]
+    avg_logical_reads: Optional[float]
+    avg_logical_writes: Optional[float]
+    execution_count: Optional[int]
+    query_final: Optional[str]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class RawQueryBlockerRead(SQLModel):
+    id: int
+    query_hash: str
+    environment: str
+    month_year: Optional[str]
+    currentdbname: Optional[str]
+    victims: Optional[str]
+    resources: Optional[str]
+    lock_modes: Optional[str]
+    count: Optional[int]
+    latest: Optional[str]
+    earliest: Optional[str]
+    all_query: Optional[str]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class RawQueryDeadlockRead(SQLModel):
+    id: int
+    query_hash: str
+    host: Optional[str]
+    db_name: Optional[str]
+    environment: str
+    month_year: Optional[str]
+    event_time: Optional[str]
+    deadlock_id: Optional[str]
+    is_victim: Optional[int]
+    lock_mode: Optional[str]
+    wait_resource: Optional[str]
+    wait_time_ms: Optional[int]
+    transaction_name: Optional[str]
+    app_host: Optional[str]
+    sql_text: Optional[str]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class RawQuerySlowMongoRead(SQLModel):
+    id: int
+    query_hash: str
+    host: Optional[str]
+    db_name: Optional[str]
+    collection: Optional[str]
+    environment: str
+    month_year: Optional[str]
+    event_time: Optional[str]
+    duration_ms: Optional[int]
+    plan_summary: Optional[str]
+    op_type: Optional[str]
+    remote_client: Optional[str]
+    command_json: Optional[str]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class RawQueryDatafileSqlRead(SQLModel):
+    id: int
+    query_hash: str
+    environment: str
+    month_year: Optional[str]
+    host: Optional[str]
+    db_name: Optional[str]
+    file_path: Optional[str]
+    updated_at_source: Optional[str]
+    trend: Optional[str]
+    is_up: Optional[str]
+    range_mb: Optional[float]
+    used_pct: Optional[float]
+    used_mb: Optional[float]
+    allocated_mb: Optional[float]
+    free: Optional[str]
+    target_allocation_mb: Optional[float]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
+class RawQueryDatafileMongoRead(SQLModel):
+    id: int
+    query_hash: str
+    environment: str
+    month_year: Optional[str]
+    host_mount: Optional[str]
+    max_storage_mb: Optional[float]
+    avg_storage_mb: Optional[float]
+    max_storage_free_mb: Optional[float]
+    avg_storage_free_mb: Optional[float]
+    max_storage_free_pct: Optional[float]
+    avg_storage_free_pct: Optional[float]
+    max_storage_used_mb: Optional[float]
+    avg_storage_used_mb: Optional[float]
+    max_used_percent: Optional[float]
+    avg_used_percent: Optional[float]
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+
