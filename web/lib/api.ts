@@ -112,15 +112,17 @@ export interface ValidationResult {
 }
 
 export interface UploadResult {
-  filename: string;
-  file_type: string;
-  environment: string;
-  row_count: number;
-  inserted: number;
-  updated: number;
-  skipped: number;
-  warnings: string[];
-  errors: string[];
+  filename:       string;
+  file_type:      string;
+  environment:    string;
+  row_count:      number;
+  inserted:       number;
+  updated:        number;
+  skipped:        number;
+  typed_inserted: number;
+  typed_updated:  number;
+  warnings:       string[];
+  errors:         string[];
 }
 
 // ---- Analytics ------------------------------------------------------------
@@ -169,6 +171,16 @@ export interface MonthRow {
   total_occurrences: number;
   row_delta:         number | null;  // null for the first month (no prior period)
   occ_delta:         number | null;
+}
+
+export interface MonthTypeRow {
+  month_year:       string;
+  blocker:          number;
+  deadlock:         number;
+  slow_query:       number;
+  slow_query_mongo: number;
+  total_file_rows:  number | null;  // NULL for months uploaded before log tracking
+  total_inserted:   number;         // COUNT(*) — distinct rows stored in raw_query
 }
 
 export interface HostStatsRow {
@@ -287,6 +299,7 @@ export const api = {
       const qs = buildQS(Object.keys(rest).length ? rest : undefined);
       return apiFetch<CoOccurrenceRow[]>(`/analytics/co-occurrence${qs}`);
     },
+    byMonthType: () => apiFetch<MonthTypeRow[]>("/analytics/by-month-type"),
   },
 
   queries: {
@@ -355,13 +368,26 @@ export const api = {
   upload: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`${UPLOAD_BASE}/upload`, { method: "POST", body: fd })
+    // 10-minute timeout: MongoDB slow-query CSVs with large _raw JSON fields
+    // can take several minutes to extract on the server. Without a timeout
+    // the browser fetch never rejects and the spinner hangs forever.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+    return fetch(`${UPLOAD_BASE}/upload`, { method: "POST", body: fd, signal: controller.signal })
       .then(async (r) => {
+        clearTimeout(timer);
         if (!r.ok) {
           const text = await r.text().catch(() => r.statusText);
           throw new Error(`Upload failed (${r.status}): ${text}`);
         }
         return r.json() as Promise<UploadResult>;
+      })
+      .catch((err: unknown) => {
+        clearTimeout(timer);
+        if (err instanceof Error && err.name === "AbortError") {
+          throw new Error("Upload timed out after 10 minutes. Try uploading fewer files at once.");
+        }
+        throw err;
       });
   },
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-import polars as pl
 import pytest
 
 from api.services.extractor import (

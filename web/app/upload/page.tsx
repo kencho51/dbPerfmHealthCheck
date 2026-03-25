@@ -1,14 +1,118 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type ValidationResult, type UploadResult } from "@/lib/api";
+import { api, type ValidationResult, type UploadResult, type MonthTypeRow } from "@/lib/api";
 import { CheckCircle, XCircle, Upload, AlertTriangle, X } from "lucide-react";
 
 type EntryStatus = "validating" | "ready" | "uploading" | "done" | "error";
+
+// ---------------------------------------------------------------------------
+// Client-side validation — instant, no network call.
+// Reads only the first 4 KB of the file (just the header + a few rows).
+// ---------------------------------------------------------------------------
+const _REQUIRED_COLS: Record<string, string[]> = {
+  slow_query_sql:   ["host", "db_name", "query_final"],
+  blocker:          ["host", "database_name", "query_text"],
+  deadlock:         [],
+  slow_query_mongo: ["host", "_raw"],
+};
+
+function _detectFileType(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes("maxelapsed")) return "slow_query_sql";
+  if (n.includes("blocker")) return "blocker";
+  if (n.includes("deadlock")) return "deadlock";
+  if (n.includes("mongodb") && n.includes("slow")) return "slow_query_mongo";
+  return "unknown";
+}
+
+function _detectEnvironment(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes("prod")) return "prod";
+  if (n.includes("sat")) return "sat";
+  return "unknown";
+}
+
+/** Minimal CSV line parser that handles double-quoted fields. */
+function _parseCSVLine(line: string): string[] {
+  const vals: string[] = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+    else if (c === "," && !inQ) { vals.push(cur); cur = ""; }
+    else cur += c;
+  }
+  vals.push(cur);
+  return vals;
+}
+
+async function validateFileLocally(file: File): Promise<ValidationResult> {
+  // Read the FULL file as a byte buffer once.
+  // - Exact row count: count LF bytes (no string allocation for the whole file).
+  // - Preview: decode only the first 4 KB for header detection + sample rows.
+  const fullBuf   = await file.arrayBuffer();
+  const fullBytes = new Uint8Array(fullBuf);
+
+  // --- Exact row count ---------------------------------------------------
+  // Count total LF characters. Subtract 1 for the trailing LF (if present)
+  // to get data-only rows. The header's LF is naturally cancelled out:
+  //   - trailing LF present : lfCount = (1 header + N data) → N after subtract
+  //   - no trailing LF      : lfCount = N (header LF + N-1 data LFs) → N
+  let lfCount = 0;
+  for (let i = 0; i < fullBytes.length; i++) {
+    if (fullBytes[i] === 0x0a) lfCount++;
+  }
+  const hasTrailingLF = fullBytes.length > 0 && fullBytes[fullBytes.length - 1] === 0x0a;
+  const rowCount = Math.max(0, lfCount - (hasTrailingLF ? 1 : 0));
+
+  // --- Header + sample rows from the first 4 KB only --------------------
+  const CHUNK     = Math.min(fullBytes.length, 4096);
+  const sampleText = new TextDecoder("utf-8").decode(fullBytes.subarray(0, CHUNK));
+  const allLines  = sampleText.split("\n");
+  const headerLine = allLines[0] ?? "";
+  const headers   = _parseCSVLine(headerLine).map((h) => h.replace(/^"|"$/g, "").trim());
+
+  const fileType    = _detectFileType(file.name);
+  const environment = _detectEnvironment(file.name);
+  const errors: string[]   = [];
+  const warnings: string[] = [];
+
+  if (fileType === "unknown") {
+    errors.push(`Unrecognised filename '${file.name}'. Expected: maxElapsed*, blockers*, deadlocks*, mongodbSlowQueries*.`);
+  } else {
+    const missing = (_REQUIRED_COLS[fileType] ?? []).filter((col) => !headers.includes(col));
+    if (missing.length) errors.push(`Missing required columns: ${JSON.stringify(missing)}`);
+  }
+  if (environment === "unknown")
+    warnings.push("Could not detect environment (prod/sat) from filename.");
+
+  const dataLines = allLines.slice(1).filter((l) => l.trim());
+  const sampleRows = dataLines.slice(0, 5).map((line) => {
+    const vals = _parseCSVLine(line);
+    return Object.fromEntries(
+      headers.map((h, i) => [
+        h,
+        (vals[i] ?? "").replace(/^"|"$/g, "") || null,
+      ])
+    );
+  });
+
+  return {
+    is_valid:    errors.length === 0,
+    file_type:   fileType,
+    environment,
+    row_count:   rowCount,
+    warnings,
+    errors,
+    null_rates:  {},
+    sample_rows: sampleRows,
+  } as ValidationResult;
+}
 
 interface FileEntry {
   id: string;
@@ -23,6 +127,16 @@ export default function UploadPage() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [monthStats, setMonthStats] = useState<MonthTypeRow[]>([]);
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const data = await api.analytics.byMonthType();
+      setMonthStats(data);
+    } catch { /* silent — table stays stale on network failure */ }
+  }, []);
+
+  useEffect(() => { void refreshStats(); }, [refreshStats]);
 
   function updateEntry(id: string, patch: Partial<FileEntry>) {
     setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -41,11 +155,13 @@ export default function UploadPage() {
     setEntries((prev) => [...prev, ...newEntries]);
     setActiveTab((prev) => prev ?? newEntries[0]?.id ?? null);
 
+    // Validate all files in parallel — purely client-side, no network call.
     await Promise.all(
       newEntries.map(async (entry) => {
         try {
-          const v = await api.validate(entry.file);
-          updateEntry(entry.id, { status: "ready", validation: v });
+          const v = await validateFileLocally(entry.file);
+          updateEntry(entry.id, { status: v.is_valid ? "ready" : "error", validation: v,
+            error: v.errors.length ? v.errors.join("; ") : null });
         } catch (err) {
           updateEntry(entry.id, { status: "error", error: String(err) });
         }
@@ -83,6 +199,7 @@ export default function UploadPage() {
         updateEntry(entry.id, { status: "error", error: String(err) });
       }
     }
+    void refreshStats();
   }
 
   const validReadyCount = entries.filter((e) => e.status === "ready" && e.validation?.is_valid).length;
@@ -90,7 +207,7 @@ export default function UploadPage() {
   const activeEntry = entries.find((e) => e.id === activeTab) ?? null;
 
   return (
-    <div className="max-w-5xl space-y-6">
+    <div className="max-w-7xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Upload CSV</h1>
         <p className="text-sm text-slate-500 mt-1">
@@ -98,29 +215,87 @@ export default function UploadPage() {
         </p>
       </div>
 
-      {/* Drop zone — always visible */}
-      <Card>
-        <CardContent className="pt-5">
-          <div
-            className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-slate-300 p-10 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors"
-            onClick={() => inputRef.current?.click()}
-          >
-            <Upload className="h-8 w-8 text-slate-400" />
-            <p className="text-sm text-slate-500">
-              Click to select CSV files&nbsp;
-              <span className="text-slate-400">(multiple allowed)</span>
-            </p>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".csv"
-              multiple
-              className="hidden"
-              onChange={handleFileChange}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      {/* Drop zone + monthly stats — side by side */}
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
+        {/* Drop zone */}
+        <Card className="w-full lg:flex-1">
+          <CardContent className="pt-5">
+            <div
+              className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-slate-300 p-10 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors"
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files); }}
+            >
+              <Upload className="h-8 w-8 text-slate-400" />
+              <p className="text-sm text-slate-500">
+                Click or drag CSV files here&nbsp;
+                <span className="text-slate-400">(multiple allowed)</span>
+              </p>
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".csv"
+                multiple
+                className="hidden"
+                onChange={handleFileChange}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Monthly stats table */}
+        <Card className="w-full lg:w-[560px] shrink-0">
+          <CardContent className="pt-4 pb-2 px-3">
+            <h2 className="text-sm font-semibold text-slate-700 mb-3 flex items-center justify-between">
+              Monthly Upload Stats
+              <span className="text-xs text-slate-400 font-normal">(all time)</span>
+            </h2>
+            {monthStats.length === 0 ? (
+              <p className="text-xs text-slate-400 py-6 text-center">No data yet</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-100">
+                      <th className="text-left py-1 pr-3 font-medium whitespace-nowrap">Month</th>
+                      <th className="text-right py-1 px-2 font-medium">Blocker</th>
+                      <th className="text-right py-1 px-2 font-medium">Deadlock</th>
+                      <th className="text-right py-1 px-2 font-medium whitespace-nowrap">Slow SQL</th>
+                      <th className="text-right py-1 px-2 font-medium whitespace-nowrap">Slow Mongo</th>
+                      <th className="text-right py-1 px-2 font-medium whitespace-nowrap">File Rows</th>
+                      <th className="text-right py-1 pl-2 font-medium">Inserted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monthStats.map((row) => (
+                      <tr key={row.month_year} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                        <td className="py-1 pr-3 font-mono text-slate-600 whitespace-nowrap">{row.month_year}</td>
+                        <td className="text-right py-1 px-2 tabular-nums text-indigo-600">{row.blocker.toLocaleString()}</td>
+                        <td className="text-right py-1 px-2 tabular-nums text-orange-600">{row.deadlock.toLocaleString()}</td>
+                        <td className="text-right py-1 px-2 tabular-nums text-blue-600">{row.slow_query.toLocaleString()}</td>
+                        <td className="text-right py-1 px-2 tabular-nums text-purple-600">{row.slow_query_mongo.toLocaleString()}</td>
+                        <td className="text-right py-1 px-2 tabular-nums text-slate-500">{row.total_file_rows != null ? row.total_file_rows.toLocaleString() : <span className="text-slate-300">—</span>}</td>
+                        <td className="text-right py-1 pl-2 tabular-nums font-medium text-teal-600">{row.total_inserted.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                      <td className="py-1 pr-3 text-slate-500">Total</td>
+                      <td className="text-right py-1 px-2 tabular-nums text-indigo-600">{monthStats.reduce((s, r) => s + r.blocker, 0).toLocaleString()}</td>
+                      <td className="text-right py-1 px-2 tabular-nums text-orange-600">{monthStats.reduce((s, r) => s + r.deadlock, 0).toLocaleString()}</td>
+                      <td className="text-right py-1 px-2 tabular-nums text-blue-600">{monthStats.reduce((s, r) => s + r.slow_query, 0).toLocaleString()}</td>
+                      <td className="text-right py-1 px-2 tabular-nums text-purple-600">{monthStats.reduce((s, r) => s + r.slow_query_mongo, 0).toLocaleString()}</td>
+                      <td className="text-right py-1 px-2 tabular-nums text-slate-500">{monthStats.some(r => r.total_file_rows != null) ? monthStats.reduce((s, r) => s + (r.total_file_rows ?? 0), 0).toLocaleString() : <span className="text-slate-300">—</span>}</td>
+                      <td className="text-right py-1 pl-2 tabular-nums text-teal-600">{monthStats.reduce((s, r) => s + r.total_inserted, 0).toLocaleString()}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Tab panel — shown when any files are queued */}
       {entries.length > 0 && (
@@ -191,7 +366,13 @@ export default function UploadPage() {
                     <span className="text-sm font-medium text-green-700">Ingest complete</span>
                     <span className="text-xs text-slate-400 font-mono ml-1">{activeEntry.result.filename}</span>
                   </div>
-                  <dl className="grid grid-cols-3 gap-4 text-center text-sm">
+                  {/* Row count pill */}
+                  <p className="text-xs text-slate-500 mb-3">
+                    <span className="font-semibold text-slate-700">{activeEntry.result.row_count.toLocaleString()}</span> rows found in file
+                  </p>
+                  {/* raw_query stats */}
+                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">raw_query</p>
+                  <dl className="grid grid-cols-3 gap-4 text-center text-sm mb-4">
                     <div>
                       <dt className="text-slate-400 text-xs">Inserted</dt>
                       <dd className="text-2xl font-bold text-indigo-600">
@@ -210,6 +391,22 @@ export default function UploadPage() {
                         activeEntry.result.skipped > 0 ? "text-red-500" : "text-slate-400"
                       }`}>
                         {activeEntry.result.skipped.toLocaleString()}
+                      </dd>
+                    </div>
+                  </dl>
+                  {/* typed table stats */}
+                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">typed table</p>
+                  <dl className="grid grid-cols-2 gap-4 text-center text-sm mb-4">
+                    <div>
+                      <dt className="text-slate-400 text-xs">Inserted</dt>
+                      <dd className="text-2xl font-bold text-indigo-400">
+                        {(activeEntry.result.typed_inserted ?? 0).toLocaleString()}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 text-xs">Updated</dt>
+                      <dd className="text-2xl font-bold text-teal-400">
+                        {(activeEntry.result.typed_updated ?? 0).toLocaleString()}
                       </dd>
                     </div>
                   </dl>
@@ -353,6 +550,46 @@ export default function UploadPage() {
               })()}
             </div>
           )}
+
+          {/* Summary across all done files */}
+          {entries.some((e) => e.status === "done" && e.result) && (() => {
+            const doneEntries = entries.filter((e) => e.status === "done" && e.result);
+            const totals = {
+              files:          doneEntries.length,
+              rows:           doneEntries.reduce((s, e) => s + (e.result?.row_count      ?? 0), 0),
+              inserted:       doneEntries.reduce((s, e) => s + (e.result?.inserted       ?? 0), 0),
+              updated:        doneEntries.reduce((s, e) => s + (e.result?.updated        ?? 0), 0),
+              typedInserted:  doneEntries.reduce((s, e) => s + (e.result?.typed_inserted ?? 0), 0),
+              typedUpdated:   doneEntries.reduce((s, e) => s + (e.result?.typed_updated  ?? 0), 0),
+            };
+            return (
+              <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 px-4 py-3">
+                <p className="text-xs font-semibold text-indigo-700 mb-2">
+                  Upload Summary — {totals.files} file{totals.files !== 1 ? "s" : ""} · {totals.rows.toLocaleString()} rows total
+                </p>
+                <div className="grid grid-cols-4 gap-3 text-center text-xs">
+                  <div>
+                    <p className="text-slate-400">Rows Found</p>
+                    <p className="font-bold text-slate-700 text-base">{totals.rows.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Inserted</p>
+                    <p className="font-bold text-indigo-600 text-base">{totals.inserted.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Updated</p>
+                    <p className="font-bold text-teal-600 text-base">{totals.updated.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Typed (ins/upd)</p>
+                    <p className="font-bold text-slate-600 text-base">
+                      {totals.typedInserted.toLocaleString()} / {totals.typedUpdated.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Action bar */}
           <div className="flex items-center justify-between mt-4">

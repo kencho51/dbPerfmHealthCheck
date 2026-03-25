@@ -20,7 +20,6 @@ Architecture:
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,22 +29,18 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from api.models import (
     RawQueryBlocker,
-    RawQueryDatafileMongo,
-    RawQueryDatafileSql,
     RawQueryDeadlock,
     RawQuerySlowMongo,
     RawQuerySlowSql,
 )
 
-BATCH_SIZE = 50
+BATCH_SIZE = 500
 
 _TABLE_MODEL_MAP = {
-    "slow_sql":      RawQuerySlowSql,
-    "blocker":       RawQueryBlocker,
-    "deadlock":      RawQueryDeadlock,
-    "slow_mongo":    RawQuerySlowMongo,
-    "datafile_sql":  RawQueryDatafileSql,
-    "datafile_mongo": RawQueryDatafileMongo,
+    "slow_sql":   RawQuerySlowSql,
+    "blocker":    RawQueryBlocker,
+    "deadlock":   RawQueryDeadlock,
+    "slow_mongo": RawQuerySlowMongo,
 }
 
 # Columns that belong to the bookkeeping / hash infrastructure and should NOT
@@ -73,19 +68,21 @@ def _derive_month_year_from_parts(parts: list) -> Optional[str]:
         ("%Y-%m-%dT%H:%M:%S",   r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"),
         ("%Y-%m-%d %H:%M:%S",   r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
         ("%Y-%m-%d",             r"\d{4}-\d{2}-\d{2}"),
+        ("%Y/%m/%d %H:%M:%S.%f", r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+"),
         ("%Y/%m/%d %H:%M:%S",   r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"),
         ("%Y/%m/%d",             r"\d{4}/\d{2}/\d{2}"),
-        ("%m/%d/%Y %I:%M:%S %p", r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2} [AP]M"),
-        ("%m/%d/%Y",             r"\d{2}/\d{2}/\d{4}"),
+        ("%m/%d/%Y %I:%M:%S %p", r"\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2} [AP]M"),
+        ("%m/%d/%Y",             r"\d{1,2}/\d{1,2}/\d{4}"),
     ]
     for val in parts:
         s = str(val or "").strip()
         if not s:
             continue
         for fmt, pat in patterns:
-            if re.search(pat, s):
+            m = re.search(pat, s)
+            if m:
                 try:
-                    return datetime.strptime(re.search(pat, s).group(), fmt).strftime("%Y-%m")
+                    return datetime.strptime(m.group(), fmt).strftime("%Y-%m")
                 except ValueError:
                     continue
     return None
@@ -119,7 +116,10 @@ def _normalise_rows(rows: list[dict]) -> list[dict]:
 
         clean = {k: v for k, v in row.items() if k not in _INTERNAL_KEYS}
         clean["query_hash"]      = query_hash
-        clean["month_year"]      = month_year
+        # Prefer an explicitly-set month_year from the extractor (e.g. derived from
+        # event_time); fall back to the value derived from _hash_parts.  Without
+        # this, types that don't include a date in _hash_parts always get None.
+        clean["month_year"]      = clean.get("month_year") or month_year
         clean["occurrence_count"] = 1
         clean["first_seen"]      = now
         clean["last_seen"]       = now
@@ -166,6 +166,7 @@ async def ingest_typed_rows(
     normalised = _normalise_rows(rows)
 
     from api.database import open_session  # local import to avoid circular refs
+    from sqlalchemy import text
 
     async with open_session() as session:
         for i in range(0, len(normalised), BATCH_SIZE):
@@ -175,9 +176,23 @@ async def ingest_typed_rows(
             # extra keys that don't belong (e.g. "raw_xml" on a blocker row).
             valid_cols = {c.name for c in model.__table__.columns}  # type: ignore[attr-defined]
 
-            clean_batch = []
-            for r in batch:
-                clean_batch.append({k: v for k, v in r.items() if k in valid_cols})
+            clean_batch = [
+                {k: v for k, v in r.items() if k in valid_cols}
+                for r in batch
+            ]
+
+            # -- Split into new vs existing rows (accurate insert/update counts) --
+            chunk_hashes = [r["query_hash"] for r in clean_batch]
+            ph = ", ".join(f":h{j}" for j in range(len(chunk_hashes)))
+            params = {f"h{j}": h for j, h in enumerate(chunk_hashes)}
+            existing = await session.exec(
+                text(f"SELECT query_hash FROM {model.__tablename__} WHERE query_hash IN ({ph})"),  # noqa: S608
+                params=params,
+            )
+            existing_hashes: set[str] = {row[0] for row in existing}
+
+            new_rows      = [r for r in clean_batch if r["query_hash"] not in existing_hashes]
+            existing_rows = [r for r in clean_batch if r["query_hash"] in existing_hashes]
 
             stmt = sqlite_insert(model).values(clean_batch)  # type: ignore[arg-type]
 
@@ -196,12 +211,9 @@ async def ingest_typed_rows(
             )
 
             try:
-                db_result = await session.execute(stmt)
-                # SQLite rowcount for upsert: positive = inserted, 0 = no-op
-                # (SQLite does not distinguish update from insert via rowcount
-                # on ON CONFLICT DO UPDATE — we track via inserted+updated).
-                affected = db_result.rowcount if db_result.rowcount >= 0 else len(batch)
-                result.inserted += affected
+                await session.execute(stmt)
+                result.inserted += len(new_rows)
+                result.updated  += len(existing_rows)
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"Batch {i // BATCH_SIZE}: {exc}")
 

@@ -21,7 +21,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from api.services.validator import ValidationResult, validate_csv, validate_directory
+from api.services.validator import ValidationResult, validate_csv  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external dependency — plain ANSI)

@@ -30,7 +30,7 @@ import polars as pl
 import sqlalchemy as sa
 
 # Tables known to exist in SQLite
-_KNOWN_TABLES = {"raw_query", "curated_query", "pattern_label"}
+_KNOWN_TABLES = {"raw_query", "curated_query", "pattern_label", "upload_log"}
 
 # ---------------------------------------------------------------------------
 # Shared sync engine — created once, reused for all SQLite reads.
@@ -116,7 +116,11 @@ def _load_table(table: str) -> pl.DataFrame:
                 # a deadlock JSON string arrives later.  schema_overrides forces
                 # Utf8 from the start without affecting other columns.
                 {col: [row[i] for row in rows] for i, col in enumerate(columns)},
-                schema_overrides={"extra_metadata": pl.Utf8} if "extra_metadata" in columns else None,
+                schema_overrides={
+                    **( {"extra_metadata": pl.Utf8} if "extra_metadata" in columns else {} ),
+                    **( {"csv_row_count": pl.Int64, "inserted": pl.Int64, "updated": pl.Int64}
+                        if table == "upload_log" else {} ),
+                } or None,
             )
         )
         # Belt-and-suspenders: cast any column that slipped through as Null.

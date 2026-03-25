@@ -1,0 +1,12 @@
+﻿......................................................................   [100%]
+============================== warnings summary ===============================
+tests/test_upload.py::TestValidUpload::test_slow_query_upload_success
+tests/test_upload.py::TestValidUpload::test_blocker_upload_success
+tests/test_upload.py::TestValidUpload::test_prod_environment_detected
+tests/test_upload.py::TestValidUpload::test_sat_environment_detected
+tests/test_upload.py::TestValidUpload::test_response_contains_filename
+tests/test_upload.py::TestValidUpload::test_upload_requires_auth
+  C:\\Users\\kenlcho\\Desktop\\obsidian\\kencho-vault\\hkjc\\dbPerfmHealthCheck\\api\\routers\\upload.py:205: DeprecationWarning: \n          \U0001f6a8 You probably want to use `session.exec()` instead of `session.execute()`.\n  \n          This is the original SQLAlchemy `session.execute()` method that returns objects\n          of type `Row`, and that you have to call `scalars()` to get the model objects.\n  \n          For example:\n  \n          ```Python\n          result = await session.execute(select(Hero))\n          heroes = result.scalars().all()\n          ```\n  \n          instead you could use `exec()`:\n  \n          ```Python\n          result = await session.exec(select(Hero))\n          heroes = result.all()\n          ```\n          \n    await session.execute(text("""
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+70 passed, 6 warnings in 8.60s

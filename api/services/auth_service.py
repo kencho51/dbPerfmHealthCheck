@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import JWTError, jwt
+from jose import jwt
 
 # ---------------------------------------------------------------------------
 # Config
