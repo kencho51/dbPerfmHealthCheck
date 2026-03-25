@@ -75,7 +75,7 @@ def _dry_banner(command: str) -> None:
     print()
     print("  " + "-" * 58)
     print("  DRY RUN - no changes will be made.")
-    print(f"  To apply, re-run with --apply:")
+    print("  To apply, re-run with --apply:")
     print(f"    uv run python migration/manage.py {command} --apply")
     print("  " + "-" * 58)
     print()
@@ -373,7 +373,7 @@ def cmd_truncate() -> None:
 # Entry-point
 # ---------------------------------------------------------------------------
 
-_COMMANDS: dict[str, tuple[str, "function"]] = {  # type: ignore[type-arg]
+_COMMANDS: dict[str, tuple[str, object]] = {  # type: ignore[type-arg]
     "status":       ("Show DB path, tables, row counts, Alembic revision",  cmd_status),
     "create":       ("Apply migrations - create the full schema",            cmd_create),
     "drop":         ("Drop all tables (WARNING: destroys data)",             cmd_drop),

@@ -8,23 +8,114 @@ Flow:
   4. Extract rows via QueryExtractor service (normalised 7-column form → raw_query)
   5. Extract typed rows (full native columns → raw_query_* type-specific table)
   6. Ingest both (dedup upsert)
-  7. Return summary JSON
+  7. Link typed rows to raw_query via post-ingest SQL UPDATE (sets raw_query_id FK)
+  8. Return summary JSON
 
 Idempotent: uploading the same CSV twice only bumps occurrence_count.
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, status
+from sqlalchemy import text
 
+from api.database import open_session
 from api.services.extractor import extract_from_file, extract_typed_from_file
 from api.services.ingestor import ingest_rows
 from api.services.typed_ingestor import ingest_typed_rows
 from api.services.validator import validate_csv
+from api.services.ingestor import _derive_month_year
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Mapping: table_type → SQL that sets raw_query_id where NULL.
+#
+# Matching strategy: join on (environment, month_year, type) + the query-text
+# column that the normal extractor maps to raw_query.query_details.
+#
+#   slow_sql   → raw_query.query_details  =  raw_query_slow_sql.query_final
+#   blocker    → raw_query.query_details  =  raw_query_blocker.all_query
+#   deadlock   → raw_query.query_details  =  raw_query_deadlock.sql_text
+#   slow_mongo → raw_query.query_details  =  raw_query_slow_mongo.command_json
+#
+# SQLite IS operator handles NULL equality correctly (NULL IS NULL → true).
+# LIMIT 1 is a safety-net; the (environment, month_year, type, query_details)
+# combination should be unique in raw_query due to its query_hash dedup.
+# ---------------------------------------------------------------------------
+_LINK_SQL: dict[str, str] = {
+    "slow_sql": """
+        UPDATE raw_query_slow_sql
+        SET raw_query_id = (
+            SELECT rq.id FROM raw_query rq
+            WHERE rq.type        = 'slow_query'
+              AND rq.source      = 'sql'
+              AND rq.environment IS raw_query_slow_sql.environment
+              AND rq.month_year  IS raw_query_slow_sql.month_year
+              AND rq.host        IS raw_query_slow_sql.host
+              AND rq.db_name     IS raw_query_slow_sql.db_name
+              AND rq.query_details IS raw_query_slow_sql.query_final
+            LIMIT 1
+        )
+        WHERE raw_query_id IS NULL
+    """,
+    "blocker": """
+        UPDATE raw_query_blocker
+        SET raw_query_id = (
+            SELECT rq.id FROM raw_query rq
+            WHERE rq.type        = 'blocker'
+              AND rq.source      = 'sql'
+              AND rq.environment IS raw_query_blocker.environment
+              AND rq.month_year  IS raw_query_blocker.month_year
+              AND rq.query_details IS raw_query_blocker.all_query
+            LIMIT 1
+        )
+        WHERE raw_query_id IS NULL
+    """,
+    "deadlock": """
+        UPDATE raw_query_deadlock
+        SET raw_query_id = (
+            SELECT rq.id FROM raw_query rq
+            WHERE rq.type        = 'deadlock'
+              AND rq.source      = 'sql'
+              AND rq.environment IS raw_query_deadlock.environment
+              AND rq.month_year  IS raw_query_deadlock.month_year
+              AND rq.host        IS raw_query_deadlock.host
+              AND rq.db_name     IS raw_query_deadlock.db_name
+              AND rq.query_details IS raw_query_deadlock.sql_text
+            LIMIT 1
+        )
+        WHERE raw_query_id IS NULL
+    """,
+    "slow_mongo": """
+        UPDATE raw_query_slow_mongo
+        SET raw_query_id = (
+            SELECT rq.id FROM raw_query rq
+            WHERE rq.type        = 'slow_query_mongo'
+              AND rq.source      = 'mongodb'
+              AND rq.environment IS raw_query_slow_mongo.environment
+              AND rq.month_year  IS raw_query_slow_mongo.month_year
+              AND rq.host        IS raw_query_slow_mongo.host
+              AND rq.db_name     IS raw_query_slow_mongo.db_name
+              AND rq.query_details IS raw_query_slow_mongo.command_json
+            LIMIT 1
+        )
+        WHERE raw_query_id IS NULL
+    """,
+}
+
+
+async def _link_typed_to_raw(table_type: str) -> None:
+    """Run the post-ingest SQL UPDATE to set raw_query_id on the typed table."""
+    sql = _LINK_SQL.get(table_type)
+    if not sql:
+        return
+    async with open_session() as session:
+        await session.execute(text(sql))
 
 
 @router.post("/upload", summary="Upload and ingest a Splunk CSV file")
@@ -54,7 +145,7 @@ async def upload_csv(
 
     try:
         # -- Validate ------------------------------------------------------------
-        validation = validate_csv(tmp_path)
+        validation = await asyncio.to_thread(validate_csv, tmp_path)
 
         # Override detected name with the original filename for env/type detection
         from api.services.extractor import _extract_environment, _detect_file_category, _detect_typed_table
@@ -75,14 +166,16 @@ async def upload_csv(
             )
 
         # -- Extract normalised rows (raw_query) ---------------------------------
-        rows = extract_from_file(tmp_path)
+        # Run in a thread: Polars CSV parsing + per-row json.loads() is CPU-bound
+        # and will block the entire async event loop if called directly.
+        rows = await asyncio.to_thread(extract_from_file, tmp_path)
         # Patch env/type derived from original filename (temp path loses context)
         for row in rows:
             if row.get("environment") in ("unknown", "", None):
                 row["environment"] = environment
 
         # -- Extract typed rows (raw_query_<type>) --------------------------------
-        typed_rows = extract_typed_from_file(tmp_path)
+        typed_rows = await asyncio.to_thread(extract_typed_from_file, tmp_path)
         # Patch environment on typed rows too
         for row in typed_rows:
             if row.get("environment") in ("unknown", "", None):
@@ -99,6 +192,35 @@ async def upload_csv(
 
         # -- Ingest typed --------------------------------------------------------
         typed_result = await ingest_typed_rows(typed_rows, table_type)
+
+        # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
+        # Idempotent: WHERE raw_query_id IS NULL means re-uploads are safe.
+        await _link_typed_to_raw(table_type)
+
+        # -- Log the upload (persist actual CSV row count for monthly stats) ----
+        # rows from extract_from_file() have a "time" field (raw string), not "month_year".
+        # Derive month_year the same way the ingestor does.
+        month_year_log = _derive_month_year(rows[0].get("time")) if rows else None
+        async with open_session() as session:
+            await session.execute(text("""
+                INSERT INTO upload_log
+                    (filename, file_type, environment, month_year,
+                     csv_row_count, inserted, updated, uploaded_at)
+                VALUES
+                    (:filename, :file_type, :environment, :month_year,
+                     :csv_row_count, :inserted, :updated, :uploaded_at)
+            """), {
+                "filename":      filename,
+                "file_type":     file_type,
+                "environment":   environment,
+                "month_year":    month_year_log,
+                "csv_row_count": validation.row_count,
+                "inserted":      ingest_result.inserted,
+                "updated":       ingest_result.updated,
+                "uploaded_at":   datetime.now(timezone.utc).isoformat(),
+            })
+        from api.analytics_db import invalidate_cache
+        invalidate_cache("upload_log")
 
     except HTTPException:
         raise
@@ -124,6 +246,7 @@ async def upload_csv(
         "errors":         ingest_result.errors,
         # raw_query_<type> (full fidelity)
         "typed_inserted": typed_result.inserted,
+        "typed_updated":  typed_result.updated,
         "typed_skipped":  typed_result.skipped,
         "typed_errors":   typed_result.errors,
     }

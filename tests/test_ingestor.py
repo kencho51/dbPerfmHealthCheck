@@ -28,7 +28,7 @@ import pytest
 from sqlalchemy import text
 
 from api.database import open_session
-from api.services.ingestor import IngestResult, _normalize_sync, ingest_rows
+from api.services.ingestor import _normalize_sync, ingest_rows
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,8 @@ class TestUpdated:
         last_seen_before = stored_before["last_seen"]
 
         # Small sleep to ensure timestamps differ
-        import time as _time; _time.sleep(0.05)
+        import time as _time
+        _time.sleep(0.05)
 
         await ingest_rows([row])
         stored_after = await _get_raw_query_row(normalized[0]["query_hash"])
@@ -306,3 +307,76 @@ class TestEdgeCases:
         assert stored["source"] == "sql"           # clamped
         assert stored["type"] == "unknown"         # clamped
         assert stored["environment"] == "unknown"  # clamped
+
+# ---------------------------------------------------------------------------
+# 6. hash formula stability (NULLIF fix)
+#    Regression: old formula was COALESCE(NULLIF(trim(extra_metadata),''),'')
+#    which meant concat_ws received '' instead of NULL, so a row uploaded
+#    without extra_metadata and re-uploaded with extra_metadata='' would get
+#    the same hash — correct. BUT, a row uploaded originally (before the fix)
+#    had a trailing '|' appended by concat_ws whereas a re-uploaded row after
+#    the fix did not → double-count on every re-upload.
+#    The fix changes to NULLIF(trim(extra_metadata),'') with no COALESCE, so
+#    concat_ws skips the NULL entirely and the hash is identical whether the
+#    field is absent or ''.
+# ---------------------------------------------------------------------------
+
+class TestHashFormula:
+    """Hash must be stable: absent extra_metadata == empty-string extra_metadata."""
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _isolate_db(self):  # type: ignore[override]
+        """No DB access needed — _normalize_sync is a pure function.
+        Shadow the module-level autouse fixture to avoid async DB clearing."""
+        pass
+
+    def test_absent_and_empty_extra_metadata_produce_same_hash(self):
+        row_no_meta    = _raw_row(host="HASH_STABLE_01")
+        row_empty_meta = {**_raw_row(host="HASH_STABLE_01"), "extra_metadata": ""}
+
+        n1 = _normalize_sync([row_no_meta])
+        n2 = _normalize_sync([row_empty_meta])
+
+        assert n1[0]["query_hash"] == n2[0]["query_hash"], (
+            "absent and empty extra_metadata must produce identical hashes"
+        )
+
+    def test_whitespace_only_extra_metadata_treated_as_empty(self):
+        row_no_meta      = _raw_row(host="HASH_STABLE_02")
+        row_spaces_meta  = {**_raw_row(host="HASH_STABLE_02"), "extra_metadata": "   "}
+
+        n1 = _normalize_sync([row_no_meta])
+        n2 = _normalize_sync([row_spaces_meta])
+
+        assert n1[0]["query_hash"] == n2[0]["query_hash"], (
+            "whitespace-only extra_metadata must be treated as empty"
+        )
+
+    def test_nonempty_extra_metadata_gives_different_hash(self):
+        row_no_meta     = _raw_row(host="HASH_DIFF_01")
+        row_with_meta   = {**_raw_row(host="HASH_DIFF_01"), "extra_metadata": "pid=123"}
+
+        n1 = _normalize_sync([row_no_meta])
+        n2 = _normalize_sync([row_with_meta])
+
+        assert n1[0]["query_hash"] != n2[0]["query_hash"], (
+            "non-empty extra_metadata must change the hash"
+        )
+
+    def test_different_extra_metadata_gives_different_hash(self):
+        row_a = {**_raw_row(host="HASH_DIFF_02"), "extra_metadata": "pid=1"}
+        row_b = {**_raw_row(host="HASH_DIFF_02"), "extra_metadata": "pid=2"}
+
+        n1 = _normalize_sync([row_a])
+        n2 = _normalize_sync([row_b])
+
+        assert n1[0]["query_hash"] != n2[0]["query_hash"]
+
+    def test_hash_stable_across_calls(self):
+        """Hash must be deterministic — same input always produces same output."""
+        row = _raw_row(host="HASH_STABLE_03", query_details="SELECT stable")
+
+        n1 = _normalize_sync([row])
+        n2 = _normalize_sync([row])
+
+        assert n1[0]["query_hash"] == n2[0]["query_hash"]

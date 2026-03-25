@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import textwrap
 from io import BytesIO
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -43,14 +42,32 @@ def _upload(client, filename: str, content: str):
 
 @pytest.fixture(autouse=True)
 def mock_ingest():
-    """Replace ingest_rows with a no-op that returns a success IngestResult."""
+    """Replace ingest_rows / ingest_typed_rows / _link_typed_to_raw with no-ops.
+
+    The upload router calls three async functions beyond extraction:
+      - ingest_rows         → raw_query upsert
+      - ingest_typed_rows   → raw_query_<type> upsert
+      - _link_typed_to_raw  → FK backfill SQL UPDATE
+    Mocking all three lets the test focus purely on HTTP contract and
+    extraction logic without requiring a fully-migrated test database.
+    """
     result = IngestResult(inserted=2, updated=0, skipped=0)
 
     async def _fake_ingest(rows):
         result.inserted = len(rows)
         return result
 
-    with patch("api.routers.upload.ingest_rows", side_effect=_fake_ingest):
+    async def _fake_typed_ingest(rows, table_type):
+        return IngestResult(inserted=len(rows), updated=0, skipped=0)
+
+    async def _fake_link(table_type):
+        pass
+
+    with (
+        patch("api.routers.upload.ingest_rows",       side_effect=_fake_ingest),
+        patch("api.routers.upload.ingest_typed_rows", side_effect=_fake_typed_ingest),
+        patch("api.routers.upload._link_typed_to_raw", side_effect=_fake_link),
+    ):
         yield
 
 

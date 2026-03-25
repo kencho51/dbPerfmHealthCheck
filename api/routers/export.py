@@ -24,20 +24,19 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Optional
 
-warnings.filterwarnings(
-    "ignore",
-    message=".*You probably want to use.*session.exec.*",
-    category=DeprecationWarning,
-)
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session
 from api.models import CuratedQuery, EnvironmentType, PatternLabel, QueryType, RawQuery, SourceType
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*You probably want to use.*session.exec.*",
+    category=DeprecationWarning,
+)
 
 router = APIRouter()
 

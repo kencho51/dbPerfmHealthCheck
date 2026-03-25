@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile
 
 from api.services.extractor import _detect_file_category, _extract_environment
-from api.services.validator import ValidationResult, validate_csv
+from api.services.validator import validate_csv
 
 router = APIRouter()
 

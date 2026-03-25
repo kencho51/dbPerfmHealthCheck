@@ -271,6 +271,69 @@ async def analytics_by_month(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/analytics/by-month-type
+# ---------------------------------------------------------------------------
+
+def _by_month_type_sync() -> list[dict]:
+    """Pivot: one row per month_year, columns = one count per query type.
+
+    `total_file_rows` comes from upload_log — the actual number of rows
+    found in each uploaded CSV file, accumulated per month.  Returns NULL
+    for months that predate upload_log tracking.
+    """
+    con = get_duck("raw_query", "upload_log")
+    try:
+        rows = con.execute("""
+            SELECT
+                t.month_year,
+                t.blocker,
+                t.deadlock,
+                t.slow_query,
+                t.slow_query_mongo,
+                t.total_inserted,
+                u.total_file_rows
+            FROM (
+                SELECT
+                    month_year,
+                    COUNT(*) FILTER (WHERE type = 'blocker')          AS blocker,
+                    COUNT(*) FILTER (WHERE type = 'deadlock')         AS deadlock,
+                    COUNT(*) FILTER (WHERE type = 'slow_query')       AS slow_query,
+                    COUNT(*) FILTER (WHERE type = 'slow_query_mongo') AS slow_query_mongo,
+                    COUNT(*)                                          AS total_inserted
+                FROM raw_query
+                WHERE month_year IS NOT NULL
+                GROUP BY month_year
+            ) t
+            LEFT JOIN (
+                SELECT month_year, SUM(CAST(csv_row_count AS BIGINT)) AS total_file_rows
+                FROM upload_log
+                WHERE month_year IS NOT NULL
+                GROUP BY month_year
+            ) u ON t.month_year = u.month_year
+            ORDER BY t.month_year DESC
+        """).fetchall()
+        return [
+            {
+                "month_year":       r[0],
+                "blocker":          r[1],
+                "deadlock":         r[2],
+                "slow_query":       r[3],
+                "slow_query_mongo": r[4],
+                "total_inserted":   r[5],
+                "total_file_rows":  r[6],  # None for pre-log months
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+@router.get("/by-month-type", summary="Row counts per month broken down by query type")
+async def analytics_by_month_type() -> list[dict]:
+    return await asyncio.to_thread(_by_month_type_sync)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/analytics/by-db
 # ---------------------------------------------------------------------------
 
@@ -648,8 +711,10 @@ def _top_fingerprints_sync(
             g["_hosts"][host_v]      = g["_hosts"].get(host_v, 0) + occ
         if db_v:
             g["_dbs"][db_v]          = g["_dbs"].get(db_v, 0) + occ
-        if env: g["environments"].add(env)
-        if src: g["_sources"].add(src)
+        if env:
+            g["environments"].add(env)
+        if src:
+            g["_sources"].add(src)
 
     top = sorted(groups.values(), key=lambda x: -x["count"])[:top_n]
     for g in top:

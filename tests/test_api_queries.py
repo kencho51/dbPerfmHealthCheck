@@ -9,7 +9,6 @@ Run:
 """
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timezone
 from httpx import AsyncClient
 
@@ -23,7 +22,8 @@ from api.models import RawQuery
 
 async def _seed_query(**overrides) -> RawQuery:
     """Insert one RawQuery row directly and return the ORM object."""
-    import hashlib, uuid
+    import hashlib
+    import uuid
     unique = str(uuid.uuid4())
     defaults = dict(
         query_hash=hashlib.md5(unique.encode()).hexdigest(),

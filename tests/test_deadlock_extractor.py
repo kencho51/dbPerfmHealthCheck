@@ -13,7 +13,6 @@ Run:
 """
 from __future__ import annotations
 
-import io
 import json
 import textwrap
 from pathlib import Path

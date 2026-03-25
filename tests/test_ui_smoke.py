@@ -160,7 +160,7 @@ def _ensure_test_user():
     # Step 0: confirm it's our FastAPI app, not something else on port 8000
     if not _is_our_api():
         print(
-            f"\n[test_ui_smoke] Port 8000 is open but /health check failed — "
+            "\n[test_ui_smoke] Port 8000 is open but /health check failed — "
             "is the FastAPI server actually running? (uv run uvicorn api.main:app --port 8000)",
             file=sys.stderr,
         )

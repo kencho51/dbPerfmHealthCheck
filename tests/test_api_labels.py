@@ -6,7 +6,6 @@ Run:
 """
 from __future__ import annotations
 
-import pytest
 from httpx import AsyncClient
 
 
@@ -73,12 +72,12 @@ class TestListLabels:
         label_name = "UniqueListTestLabel_XYZ"
         await client.post("/api/labels", json={"name": label_name}, headers=auth_headers)
         r = await client.get("/api/labels", headers=auth_headers)
-        names = [l["name"] for l in r.json()]
+        names = [lbl["name"] for lbl in r.json()]
         assert label_name in names
 
     async def test_list_sorted_by_name(self, client: AsyncClient, auth_headers: dict):
         r = await client.get("/api/labels", headers=auth_headers)
-        names = [l["name"] for l in r.json()]
+        names = [lbl["name"] for lbl in r.json()]
         assert names == sorted(names)
 
     async def test_label_schema(self, client: AsyncClient, auth_headers: dict):
@@ -140,7 +139,7 @@ class TestDeleteLabel:
         assert r.status_code in (200, 204)
         # Verify gone
         r2 = await client.get("/api/labels", headers=auth_headers)
-        ids = [l["id"] for l in r2.json()]
+        ids = [lbl["id"] for lbl in r2.json()]
         assert label["id"] not in ids
 
     async def test_delete_nonexistent_404(self, client: AsyncClient, auth_headers: dict):

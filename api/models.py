@@ -190,6 +190,24 @@ class User(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# UploadLog table  — one row per successful CSV upload
+# ---------------------------------------------------------------------------
+
+class UploadLog(SQLModel, table=True):
+    __tablename__ = "upload_log"
+
+    id:            Optional[int] = Field(default=None, primary_key=True)
+    filename:      str           = Field(nullable=False)
+    file_type:     Optional[str] = Field(default=None)
+    environment:   Optional[str] = Field(default=None, index=True)
+    month_year:    Optional[str] = Field(default=None, index=True)
+    csv_row_count: int           = Field(nullable=False)
+    inserted:      int           = Field(default=0)
+    updated:       int           = Field(default=0)
+    uploaded_at:   str           = Field(nullable=False)
+
+
+# ---------------------------------------------------------------------------
 # Response / request schemas (not mapped to DB tables)
 # ---------------------------------------------------------------------------
 
@@ -353,6 +371,8 @@ class RawQuerySlowSql(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     query_hash: str = Field(unique=True, index=True)
+    # FK to raw_query.id — set post-ingest by the upload router
+    raw_query_id: Optional[int] = Field(default=None, foreign_key="raw_query.id", index=True)
 
     host: Optional[str] = Field(default=None, index=True)
     db_name: Optional[str] = Field(default=None, index=True)
@@ -387,6 +407,7 @@ class RawQueryBlocker(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     query_hash: str = Field(unique=True, index=True)
+    raw_query_id: Optional[int] = Field(default=None, foreign_key="raw_query.id", index=True)
 
     environment: str = Field(
         sa_column=Column(SAString, index=True, nullable=False),
@@ -415,6 +436,7 @@ class RawQueryDeadlock(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     query_hash: str = Field(unique=True, index=True)
+    raw_query_id: Optional[int] = Field(default=None, foreign_key="raw_query.id", index=True)
 
     host: Optional[str] = Field(default=None, index=True)
     db_name: Optional[str] = Field(default=None, index=True)
@@ -447,6 +469,7 @@ class RawQuerySlowMongo(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     query_hash: str = Field(unique=True, index=True)
+    raw_query_id: Optional[int] = Field(default=None, foreign_key="raw_query.id", index=True)
 
     host: Optional[str] = Field(default=None, index=True)
     db_name: Optional[str] = Field(default=None, index=True)   # extracted from attr.ns
@@ -470,69 +493,6 @@ class RawQuerySlowMongo(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
 
 
-class RawQueryDatafileSql(SQLModel, table=True):
-    """dataFileSize*.csv — SQL Server database file size snapshots."""
-    __tablename__ = "raw_query_datafile_sql"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    query_hash: str = Field(unique=True, index=True)
-
-    environment: str = Field(
-        sa_column=Column(SAString, index=True, nullable=False),
-    )
-    month_year: Optional[str] = Field(default=None, index=True)
-
-    host: Optional[str] = Field(default=None, index=True)
-    db_name: Optional[str] = Field(default=None, index=True)
-    file_path: Optional[str] = Field(default=None)
-    updated_at_source: Optional[str] = Field(default=None)  # "updated" col from CSV
-    trend: Optional[str] = Field(default=None)
-    is_up: Optional[str] = Field(default=None)
-    range_mb: Optional[float] = Field(default=None)
-    used_pct: Optional[float] = Field(default=None)         # "used_%" column
-    used_mb: Optional[float] = Field(default=None)
-    allocated_mb: Optional[float] = Field(default=None)
-    free: Optional[str] = Field(default=None)
-    target_allocation_mb: Optional[float] = Field(default=None)
-
-    occurrence_count: int = Field(default=1)
-    first_seen: datetime = Field(default_factory=_now)
-    last_seen: datetime = Field(default_factory=_now)
-    created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
-
-
-class RawQueryDatafileMongo(SQLModel, table=True):
-    """mongodbDataFileSize*.csv — MongoDB storage utilisation snapshots."""
-    __tablename__ = "raw_query_datafile_mongo"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    query_hash: str = Field(unique=True, index=True)
-
-    environment: str = Field(
-        sa_column=Column(SAString, index=True, nullable=False),
-    )
-    month_year: Optional[str] = Field(default=None, index=True)
-
-    host_mount: Optional[str] = Field(default=None, index=True)  # e.g. "ptrmmdbhv01_/data"
-    max_storage_mb: Optional[float] = Field(default=None)
-    avg_storage_mb: Optional[float] = Field(default=None)
-    max_storage_free_mb: Optional[float] = Field(default=None)
-    avg_storage_free_mb: Optional[float] = Field(default=None)
-    max_storage_free_pct: Optional[float] = Field(default=None)
-    avg_storage_free_pct: Optional[float] = Field(default=None)
-    max_storage_used_mb: Optional[float] = Field(default=None)
-    avg_storage_used_mb: Optional[float] = Field(default=None)
-    max_used_percent: Optional[float] = Field(default=None)
-    avg_used_percent: Optional[float] = Field(default=None)
-
-    occurrence_count: int = Field(default=1)
-    first_seen: datetime = Field(default_factory=_now)
-    last_seen: datetime = Field(default_factory=_now)
-    created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
-
-
 # ---------------------------------------------------------------------------
 # Read schemas for type-specific tables
 # ---------------------------------------------------------------------------
@@ -540,6 +500,7 @@ class RawQueryDatafileMongo(SQLModel, table=True):
 class RawQuerySlowSqlRead(SQLModel):
     id: int
     query_hash: str
+    raw_query_id: Optional[int]
     host: Optional[str]
     db_name: Optional[str]
     environment: str
@@ -563,6 +524,7 @@ class RawQuerySlowSqlRead(SQLModel):
 class RawQueryBlockerRead(SQLModel):
     id: int
     query_hash: str
+    raw_query_id: Optional[int]
     environment: str
     month_year: Optional[str]
     currentdbname: Optional[str]
@@ -581,6 +543,7 @@ class RawQueryBlockerRead(SQLModel):
 class RawQueryDeadlockRead(SQLModel):
     id: int
     query_hash: str
+    raw_query_id: Optional[int]
     host: Optional[str]
     db_name: Optional[str]
     environment: str
@@ -602,6 +565,7 @@ class RawQueryDeadlockRead(SQLModel):
 class RawQuerySlowMongoRead(SQLModel):
     id: int
     query_hash: str
+    raw_query_id: Optional[int]
     host: Optional[str]
     db_name: Optional[str]
     collection: Optional[str]
@@ -618,45 +582,4 @@ class RawQuerySlowMongoRead(SQLModel):
     last_seen: datetime
 
 
-class RawQueryDatafileSqlRead(SQLModel):
-    id: int
-    query_hash: str
-    environment: str
-    month_year: Optional[str]
-    host: Optional[str]
-    db_name: Optional[str]
-    file_path: Optional[str]
-    updated_at_source: Optional[str]
-    trend: Optional[str]
-    is_up: Optional[str]
-    range_mb: Optional[float]
-    used_pct: Optional[float]
-    used_mb: Optional[float]
-    allocated_mb: Optional[float]
-    free: Optional[str]
-    target_allocation_mb: Optional[float]
-    occurrence_count: int
-    first_seen: datetime
-    last_seen: datetime
-
-
-class RawQueryDatafileMongoRead(SQLModel):
-    id: int
-    query_hash: str
-    environment: str
-    month_year: Optional[str]
-    host_mount: Optional[str]
-    max_storage_mb: Optional[float]
-    avg_storage_mb: Optional[float]
-    max_storage_free_mb: Optional[float]
-    avg_storage_free_mb: Optional[float]
-    max_storage_free_pct: Optional[float]
-    avg_storage_free_pct: Optional[float]
-    max_storage_used_mb: Optional[float]
-    avg_storage_used_mb: Optional[float]
-    max_used_percent: Optional[float]
-    avg_used_percent: Optional[float]
-    occurrence_count: int
-    first_seen: datetime
-    last_seen: datetime
 

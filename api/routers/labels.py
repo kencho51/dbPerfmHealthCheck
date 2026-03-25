@@ -9,10 +9,9 @@ Label endpoints  full CRUD for PatternLabel.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import col, func, select
+from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.database import get_session

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import polars as pl
 
-from api.services.extractor import EXPECTED_COLUMNS, detect_file_category, _extract_environment
+from api.services.extractor import detect_file_category, _extract_environment
 
 SAMPLE_SIZE = 50
 
@@ -34,7 +34,7 @@ SAMPLE_SIZE = 50
 _CRITICAL_FIELDS: dict[str, list[str]] = {
     "slow_query_sql":   ["host", "db_name", "query_final"],
     "blocker":          ["host", "database_name", "query_text"],
-    "deadlock":         ["host", "_raw"],   # common to raw + legacy formats
+    "deadlock":         [],   # flexible check in section 3b — formats vary
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -126,15 +126,31 @@ def validate_csv(path: Path) -> ValidationResult:
     # -- 3b. Deadlock format detection note (informational) ----------------------
     if file_type == "deadlock" and not errors:
         col_set = set(df.columns)
+        _QUERY_TEXT_COLS = {"_raw", "all_query", "clean_query", "query_text", "statement", "sql_text"}
+        if not (_QUERY_TEXT_COLS & col_set):
+            errors.append(
+                "Deadlock CSV must contain at least one query-text column: "
+                "_raw, all_query, clean_query, or query_text."
+            )
+        if "host" not in col_set:
+            warnings.append(
+                "Column 'host' not found — host will be stored as null. "
+                "Consider adding host to the Splunk export for better analytics."
+            )
         if {"clean_query", "all_query"} & col_set:
             warnings.append(
                 "Detected legacy deadlock format (pre-extracted clean_query / all_query). "
                 "Rows will be ingested with occurrence_count from the 'count' column."
             )
-        else:
+        elif "_raw" in col_set:
             warnings.append(
                 "Detected raw deadlock format (_raw only). "
                 "Each row will be expanded into one row per process by the deadlock parser."
+            )
+        else:
+            warnings.append(
+                "Detected summarised deadlock format (aggregate columns only, no _raw). "
+                "Rows will be ingested as-is using available query-text columns."
             )
 
     # -- 4. Null rates for required columns --------------------------------------

@@ -26,6 +26,7 @@ On conflict:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -67,7 +68,10 @@ def _derive_month_year(time_str: str | None) -> str | None:
     """
     if not time_str:
         return None
-    cleaned = time_str.strip()
+    # Strip timezone offset (+HH:MM, +HHMM, -HH:MM, -HHMM) so strptime can parse
+    # formats like '2026-02-28T23:55:18.000+0800'.  Mirrors the DuckDB
+    # regexp_replace('[+-]\d{2}:?\d{2}$', '') used in the normalisation query.
+    cleaned = re.sub(r"[+-]\d{2}:?\d{2}$", "", time_str.strip()).strip()
     if not cleaned:
         return None
     for fmt in _STRPTIME_FORMATS:
@@ -136,9 +140,11 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
                     lower(trim(type)),
                     trim(time),
                     trim(query_details),
-                    -- extra_metadata included so two processes in the same deadlock
-                    -- with identical SQL still get distinct hashes (different pid).
-                    COALESCE(NULLIF(trim(extra_metadata), ''), '')
+                    -- NULLIF so concat_ws SKIPS empty extra_metadata (NULL is ignored,
+                    -- empty string is not).  Deadlock rows carry a non-empty PID marker
+                    -- so they still get distinct hashes; all other types hash identically
+                    -- to previous uploads where extra_metadata was absent.
+                    NULLIF(trim(extra_metadata), '')
                 )) AS query_hash,
 
                 NULLIF(trim(time),           '') AS time,

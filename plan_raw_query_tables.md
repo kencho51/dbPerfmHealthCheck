@@ -18,14 +18,12 @@ Each CSV type has **distinct, important columns** that are being silently droppe
 | `blockers*` | `victims`, `resources`, `lock_modes`, `count`, `latest`, `earliest`, `currentdbname` |
 | `deadlocks*` | `lockMode`, `transactionname`, `victim`, `waittime`, `waitresource`, `lockTimeout` (partially saved to `extra_metadata` JSON — lossy) |
 | `mongodbSlowQueries*` | `attr.ns`, `attr.durationMillis`, `attr.planSummary`, `attr.type`, `attr.remote`, `t.$date` |
-| `dataFileSize*` | Entirely skipped — no table exists |
-| `mongodbDataFileSize*` | Entirely skipped — no table exists |
 
 ---
 
 ## Proposed Solution: `raw_query_*` per-type tables
 
-Replace the single `raw_query` table with **6 type-specific tables**, each preserving all native CSV columns, plus shared bookkeeping columns.
+Replace the single `raw_query` table with **4 type-specific tables**, each preserving all native CSV columns, plus shared bookkeeping columns.
 
 ### Shared columns (all tables)
 | Column | Type | Notes |
@@ -205,88 +203,6 @@ Dedup key hash inputs: `host | db_name | environment | op_type | command_json`
 
 ---
 
-### Table 5 — `raw_query_datafile_sql`
-
-Source files: `dataFileSize*.csv`
-
-CSV columns:
-```
-updated, db, host, Path, trend, is_up, range_mb, used_%, used_mb,
-allocated_mb, free, target_allocation_mb
-```
-
-Table columns:
-```sql
-CREATE TABLE raw_query_datafile_sql (
-    id                   INTEGER PRIMARY KEY,
-    query_hash           TEXT UNIQUE NOT NULL,
-    environment          TEXT NOT NULL,
-    month_year           TEXT,
-    host                 TEXT,
-    db_name              TEXT,
-    file_path            TEXT,
-    updated_at_source    TEXT,                    -- "updated" from CSV
-    trend                TEXT,
-    is_up                TEXT,
-    range_mb             REAL,
-    used_pct             REAL,                    -- "used_%"
-    used_mb              REAL,
-    allocated_mb         REAL,
-    free                 TEXT,
-    target_allocation_mb REAL,
-    occurrence_count     INTEGER DEFAULT 1,
-    first_seen           DATETIME NOT NULL,
-    last_seen            DATETIME NOT NULL,
-    created_at           DATETIME NOT NULL,
-    updated_at           DATETIME NOT NULL
-);
-```
-
-Dedup key hash inputs: `host | db_name | environment | file_path | updated_at_source`
-
----
-
-### Table 6 — `raw_query_datafile_mongo`
-
-Source files: `mongodbDataFileSize*.csv` and `mongodbDataFileSizeAggregated*.csv`
-
-CSV columns (per-mount):
-```
-host_mount, max_storage, avg_storage, max_storage_free, avg_storage_free,
-max_storage_free_pct, avg_storage_free_pct, max_storage_used,
-avg_storage_used, max_used_percent, avg_used_percent
-```
-
-Table columns:
-```sql
-CREATE TABLE raw_query_datafile_mongo (
-    id                    INTEGER PRIMARY KEY,
-    query_hash            TEXT UNIQUE NOT NULL,
-    environment           TEXT NOT NULL,
-    month_year            TEXT,
-    host_mount            TEXT,                   -- e.g. "ptrmmdbhv01_/data"
-    max_storage_mb        REAL,
-    avg_storage_mb        REAL,
-    max_storage_free_mb   REAL,
-    avg_storage_free_mb   REAL,
-    max_storage_free_pct  REAL,
-    avg_storage_free_pct  REAL,
-    max_storage_used_mb   REAL,
-    avg_storage_used_mb   REAL,
-    max_used_percent      REAL,
-    avg_used_percent      REAL,
-    occurrence_count      INTEGER DEFAULT 1,
-    first_seen            DATETIME NOT NULL,
-    last_seen             DATETIME NOT NULL,
-    created_at            DATETIME NOT NULL,
-    updated_at            DATETIME NOT NULL
-);
-```
-
-Dedup key hash inputs: `environment | host_mount | month_year`
-
----
-
 ## Migration strategy
 
 ### Option A — Keep `raw_query`, add new tables (Recommended)
@@ -315,7 +231,7 @@ Drop `raw_query`, make `curated_query` point to whichever type-specific table it
 
 ### Step 1 — Add new SQLModel table classes to `models.py`
 
-Add 6 new `SQLModel` table classes (`RawQuerySlowSql`, `RawQueryBlocker`, `RawQueryDeadlock`, `RawQuerySlowMongo`, `RawQueryDatafileSql`, `RawQueryDatafileMongo`).
+Add 4 new `SQLModel` table classes (`RawQuerySlowSql`, `RawQueryBlocker`, `RawQueryDeadlock`, `RawQuerySlowMongo`).
 
 ### Step 2 — Alembic migration
 
@@ -365,8 +281,6 @@ Each table uses an MD5 hash of its **semantically meaningful columns** (not time
 | `raw_query_blocker` | `environment \| currentdbname \| lock_modes \| all_query` |
 | `raw_query_deadlock` | `host \| db_name \| environment \| sql_text \| lock_mode` |
 | `raw_query_slow_mongo` | `host \| db_name \| environment \| op_type \| command_json` |
-| `raw_query_datafile_sql` | `host \| db_name \| environment \| file_path \| updated_at_source` |
-| `raw_query_datafile_mongo` | `environment \| host_mount \| month_year` |
 
 ---
 
@@ -379,8 +293,6 @@ def detect_typed_table(filename: str) -> str:
     if "blocker" in name:                  return "blocker"
     if "deadlock" in name:                 return "deadlock"
     if "mongodbslowqueries" in name:       return "slow_mongo"
-    if "datafilesize" in name and "mongodb" not in name: return "datafile_sql"
-    if "mongodbdatafilesize" in name:      return "datafile_mongo"
     return "unknown"
 ```
 
@@ -394,6 +306,4 @@ def detect_typed_table(filename: str) -> str:
 | `blockers*.csv` | 7 cols stored, 1 dropped | All 8 cols in `raw_query_blocker` |
 | `deadlocks*.csv` | 7 cols + partial `extra_metadata` | All cols in `raw_query_deadlock` |
 | `mongodbSlowQueries*.csv` | 4 cols stored, many dropped | All cols in `raw_query_slow_mongo` |
-| `dataFileSize*.csv` | **Skipped entirely** | All 12 cols in `raw_query_datafile_sql` |
-| `mongodbDataFileSize*.csv` | **Skipped entirely** | All 11 cols in `raw_query_datafile_mongo` |
 

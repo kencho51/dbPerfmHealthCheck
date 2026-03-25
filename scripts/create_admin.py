@@ -41,7 +41,7 @@ def main():
         print(f"\nAdmin user '{user['username']}' created successfully!")
         print(f"  Role  : {user['role']}")
         print(f"  Email : {user['email']}")
-        print(f"\nYou can now log in at http://localhost:3000/login")
+        print("\nYou can now log in at http://localhost:3000/login")
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         if e.code == 403:
