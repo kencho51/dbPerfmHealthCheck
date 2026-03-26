@@ -275,42 +275,58 @@ async def analytics_by_month(
 # ---------------------------------------------------------------------------
 
 def _by_month_type_sync() -> list[dict]:
-    """Pivot: one row per month_year, columns = one count per query type.
+    """Pivot: one row per month_year.
 
-    `total_file_rows` comes from upload_log — the actual number of rows
-    found in each uploaded CSV file, accumulated per month.  Returns NULL
-    for months that predate upload_log tracking.
+    per-type columns (blocker/deadlock/slow_query/slow_query_mongo) show the
+    number of CSV rows uploaded for that type and month, taken from upload_log
+    (latest upload per filename, to avoid double-counting re-uploads).
+    They always sum to total_file_rows.
+
+    total_patterns is the COUNT(*) of distinct normalised SQL-text rows stored
+    in raw_query for that month.  It is typically larger than total_file_rows
+    because each deadlock/blocker CSV event expands to several SQL text
+    entries in the normalised table.
     """
     con = get_duck("raw_query", "upload_log")
     try:
         rows = con.execute("""
             SELECT
-                t.month_year,
-                t.blocker,
-                t.deadlock,
-                t.slow_query,
-                t.slow_query_mongo,
-                t.total_inserted,
-                u.total_file_rows
+                coalesce(r.month_year, u.month_year) AS month_year,
+                coalesce(u.blocker, 0)          AS blocker,
+                coalesce(u.deadlock, 0)         AS deadlock,
+                coalesce(u.slow_query, 0)       AS slow_query,
+                coalesce(u.slow_query_mongo, 0) AS slow_query_mongo,
+                u.total_file_rows,
+                coalesce(r.total_patterns, 0)   AS total_patterns
             FROM (
-                SELECT
-                    month_year,
-                    COUNT(*) FILTER (WHERE type = 'blocker')          AS blocker,
-                    COUNT(*) FILTER (WHERE type = 'deadlock')         AS deadlock,
-                    COUNT(*) FILTER (WHERE type = 'slow_query')       AS slow_query,
-                    COUNT(*) FILTER (WHERE type = 'slow_query_mongo') AS slow_query_mongo,
-                    COUNT(*)                                          AS total_inserted
+                SELECT month_year, COUNT(*) AS total_patterns
                 FROM raw_query
                 WHERE month_year IS NOT NULL
                 GROUP BY month_year
-            ) t
-            LEFT JOIN (
-                SELECT month_year, SUM(CAST(csv_row_count AS BIGINT)) AS total_file_rows
-                FROM upload_log
-                WHERE month_year IS NOT NULL
+            ) r
+            FULL OUTER JOIN (
+                -- Per-type CSV row counts, keeping only the latest upload for
+                -- each filename so re-uploads don't inflate the numbers.
+                SELECT
+                    month_year,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'blocker')          AS blocker,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock')         AS deadlock,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql')   AS slow_query,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo') AS slow_query_mongo,
+                    SUM(csv_row_count)                                                AS total_file_rows
+                FROM (
+                    SELECT month_year, file_type, csv_row_count,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY filename
+                               ORDER BY CAST(uploaded_at AS TIMESTAMP) DESC
+                           ) AS rn
+                    FROM upload_log
+                    WHERE month_year IS NOT NULL
+                )
+                WHERE rn = 1
                 GROUP BY month_year
-            ) u ON t.month_year = u.month_year
-            ORDER BY t.month_year DESC
+            ) u ON r.month_year = u.month_year
+            ORDER BY coalesce(r.month_year, u.month_year) DESC
         """).fetchall()
         return [
             {
@@ -319,8 +335,8 @@ def _by_month_type_sync() -> list[dict]:
                 "deadlock":         r[2],
                 "slow_query":       r[3],
                 "slow_query_mongo": r[4],
-                "total_inserted":   r[5],
-                "total_file_rows":  r[6],  # None for pre-log months
+                "total_file_rows":  r[5],  # None for pre-log months
+                "total_patterns":   r[6],  # unique SQL entries in raw_query
             }
             for r in rows
         ]

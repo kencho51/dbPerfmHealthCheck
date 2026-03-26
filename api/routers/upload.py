@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, status
 from sqlalchemy import text
 
-from api.database import open_session
+from api.database import open_session, write_session
 from api.services.extractor import extract_from_file, extract_typed_from_file
 from api.services.ingestor import ingest_rows
 from api.services.typed_ingestor import ingest_typed_rows
@@ -148,13 +148,21 @@ async def _link_typed_to_raw(table_type: str) -> None:
     This function is intentionally called as a background task (not awaited
     in the hot path) so the upload HTTP response is not blocked.
     """
+    import logging
     sql = _LINK_SQL.get(table_type)
     if not sql:
         return
     idx_ddl = _LINK_AUX_IDX.get(table_type, _CREATE_COMPOSITE_IDX)
-    async with open_session() as session:
-        await session.execute(text(idx_ddl))
-        await session.execute(text(sql))
+    try:
+        async with write_session() as session:
+            await session.execute(text(idx_ddl))
+            await session.execute(text(sql))
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "_link_typed_to_raw(%s) failed — will retry on next upload",
+            table_type,
+            exc_info=True,
+        )
 
 
 @router.post("/upload", summary="Upload and ingest a Splunk CSV file")
@@ -235,17 +243,17 @@ async def upload_csv(
         # -- Ingest typed --------------------------------------------------------
         typed_result = await ingest_typed_rows(typed_rows, table_type)
 
-        # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
-        # Fire-and-forget: linking is idempotent (WHERE raw_query_id IS NULL)
-        # and can take several seconds on large files.  Running it as a
-        # background task keeps the upload response fast.
-        asyncio.create_task(_link_typed_to_raw(table_type))
-
         # -- Log the upload (persist actual CSV row count for monthly stats) ----
         # rows from extract_from_file() have a "time" field (raw string), not "month_year".
         # Derive month_year the same way the ingestor does.
         month_year_log = _derive_month_year(rows[0].get("time")) if rows else None
-        async with open_session() as session:
+        async with write_session() as session:
+            # Remove any previous entry for this filename so re-uploads don't
+            # inflate the monthly CSV-row totals in the analytics table.
+            await session.execute(
+                text("DELETE FROM upload_log WHERE filename = :fn"),
+                {"fn": filename},
+            )
             await session.execute(text("""
                 INSERT INTO upload_log
                     (filename, file_type, environment, month_year,
@@ -265,6 +273,11 @@ async def upload_csv(
             })
         from api.analytics_db import invalidate_cache
         invalidate_cache("upload_log")
+
+        # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
+        # Scheduled AFTER upload_log commit so no active write transaction
+        # exists when the task fires.  Idempotent (WHERE raw_query_id IS NULL).
+        asyncio.create_task(_link_typed_to_raw(table_type))
 
     except HTTPException:
         raise

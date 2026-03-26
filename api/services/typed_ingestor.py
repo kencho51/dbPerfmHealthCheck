@@ -165,10 +165,10 @@ async def ingest_typed_rows(
 
     normalised = _normalise_rows(rows)
 
-    from api.database import open_session  # local import to avoid circular refs
+    from api.database import write_session  # local import to avoid circular refs
     from sqlalchemy import text
 
-    async with open_session() as session:
+    async with write_session() as session:
         for i in range(0, len(normalised), BATCH_SIZE):
             batch = normalised[i : i + BATCH_SIZE]
 

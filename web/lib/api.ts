@@ -175,12 +175,12 @@ export interface MonthRow {
 
 export interface MonthTypeRow {
   month_year:       string;
-  blocker:          number;
-  deadlock:         number;
-  slow_query:       number;
-  slow_query_mongo: number;
+  blocker:          number;  // CSV rows of type blocker uploaded for this month
+  deadlock:         number;  // CSV rows of type deadlock uploaded
+  slow_query:       number;  // CSV rows of type slow_query_sql uploaded
+  slow_query_mongo: number;  // CSV rows of type slow_query_mongo uploaded
   total_file_rows:  number | null;  // NULL for months uploaded before log tracking
-  total_inserted:   number;         // COUNT(*) — distinct rows stored in raw_query
+  total_patterns:   number;  // COUNT(*) distinct normalised SQL entries in raw_query
 }
 
 export interface HostStatsRow {

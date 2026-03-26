@@ -205,10 +205,10 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     to split new vs existing rows for accurate reporting.
     """
     from sqlalchemy import text
-    from api.database import open_session
+    from api.database import write_session
 
     try:
-        async with open_session() as session:
+        async with write_session() as session:
             for i in range(0, len(normalized), BATCH_SIZE):
                 chunk = normalized[i : i + BATCH_SIZE]
                 chunk_hashes = [r["query_hash"] for r in chunk]

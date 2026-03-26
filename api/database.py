@@ -14,12 +14,25 @@ Usage in a FastAPI route:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Global write serialisation lock
+#
+# SQLite WAL mode allows concurrent readers but only ONE writer at a time.
+# Without this lock, rapid concurrent uploads race for the write slot and
+# hit "database is locked" once the busy_timeout expires.
+#
+# asyncio.Lock() is event-loop-safe: Python 3.10+ defers loop binding until
+# first acquisition, so creating it at module level is safe with uvicorn.
+# ---------------------------------------------------------------------------
+_write_lock = asyncio.Lock()
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -152,18 +165,47 @@ async def open_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+@asynccontextmanager
+async def write_session() -> AsyncGenerator[AsyncSession, None]:
+    """open_session() wrapped with the global write lock.
+
+    All INSERT / UPDATE / DELETE operations should use this context manager
+    instead of open_session().  The lock ensures at most one coroutine holds
+    a SQLite write transaction at a time, preventing OperationalError:
+    database is locked under concurrent uploads.
+
+    Usage:
+        async with write_session() as session:
+            await session.execute(stmt)
+    """
+    async with _write_lock:
+        async with open_session() as session:
+            yield session
+
+
 # ---------------------------------------------------------------------------
 # DB initialisation helpers (called from app lifespan)
 # ---------------------------------------------------------------------------
 
 async def apply_pragmas() -> None:
-    """Set SQLite performance/safety PRAGMAs once per connection."""
+    """Set SQLite performance/safety PRAGMAs and pre-create link indexes."""
     async with engine.begin() as conn:
         await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         await conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
         await conn.exec_driver_sql("PRAGMA cache_size=-64000")   # 64 MB page cache
         await conn.exec_driver_sql("PRAGMA temp_store=MEMORY")
+        # Pre-create the two link indexes used by _link_typed_to_raw so they
+        # always exist before any upload runs, avoiding a costly full-table-scan
+        # index-build inside an active write transaction.
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_raw_query_link_key "
+            "ON raw_query (type, host, db_name, environment, month_year)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_raw_query_link_source "
+            "ON raw_query (type, source, environment, month_year)"
+        )
 
 
 async def create_db_and_tables() -> None:
