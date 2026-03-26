@@ -246,10 +246,18 @@ export default function UploadPage() {
         {/* Monthly stats table */}
         <Card className="w-full lg:w-[560px] shrink-0">
           <CardContent className="pt-4 pb-2 px-3">
-            <h2 className="text-sm font-semibold text-slate-700 mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center justify-between">
               Monthly Upload Stats
               <span className="text-xs text-slate-400 font-normal">(all time)</span>
             </h2>
+
+            {/* Column legend */}
+            <div className="mb-3 rounded bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-500 space-y-0.5">
+              <p><span className="font-medium text-indigo-600">Blocker / Deadlock / Slow SQL / Slow Mongo</span> — CSV rows uploaded per query type for that month. These four columns always add up to <span className="font-medium">File Rows</span>.</p>
+              <p><span className="font-medium text-slate-600">File Rows</span> — total rows across all uploaded CSV files (latest upload per file only, so re-uploads are not double-counted).</p>
+              <p><span className="font-medium text-teal-600">SQL Patterns</span> — unique normalised SQL entries stored in the database. Higher than File Rows because each deadlock / blocker event is expanded into multiple individual SQL statements during ingestion.</p>
+            </div>
+
             {monthStats.length === 0 ? (
               <p className="text-xs text-slate-400 py-6 text-center">No data yet</p>
             ) : (
@@ -263,7 +271,7 @@ export default function UploadPage() {
                       <th className="text-right py-1 px-2 font-medium whitespace-nowrap">Slow SQL</th>
                       <th className="text-right py-1 px-2 font-medium whitespace-nowrap">Slow Mongo</th>
                       <th className="text-right py-1 px-2 font-medium whitespace-nowrap">File Rows</th>
-                      <th className="text-right py-1 pl-2 font-medium">Inserted</th>
+                      <th className="text-right py-1 pl-2 font-medium whitespace-nowrap" title="Unique normalised SQL entries in raw_query (one deadlock/blocker event → multiple entries)">SQL Patterns</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -275,7 +283,7 @@ export default function UploadPage() {
                         <td className="text-right py-1 px-2 tabular-nums text-blue-600">{row.slow_query.toLocaleString()}</td>
                         <td className="text-right py-1 px-2 tabular-nums text-purple-600">{row.slow_query_mongo.toLocaleString()}</td>
                         <td className="text-right py-1 px-2 tabular-nums text-slate-500">{row.total_file_rows != null ? row.total_file_rows.toLocaleString() : <span className="text-slate-300">—</span>}</td>
-                        <td className="text-right py-1 pl-2 tabular-nums font-medium text-teal-600">{row.total_inserted.toLocaleString()}</td>
+                        <td className="text-right py-1 pl-2 tabular-nums font-medium text-teal-600">{row.total_patterns.toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -287,7 +295,7 @@ export default function UploadPage() {
                       <td className="text-right py-1 px-2 tabular-nums text-blue-600">{monthStats.reduce((s, r) => s + r.slow_query, 0).toLocaleString()}</td>
                       <td className="text-right py-1 px-2 tabular-nums text-purple-600">{monthStats.reduce((s, r) => s + r.slow_query_mongo, 0).toLocaleString()}</td>
                       <td className="text-right py-1 px-2 tabular-nums text-slate-500">{monthStats.some(r => r.total_file_rows != null) ? monthStats.reduce((s, r) => s + (r.total_file_rows ?? 0), 0).toLocaleString() : <span className="text-slate-300">—</span>}</td>
-                      <td className="text-right py-1 pl-2 tabular-nums text-teal-600">{monthStats.reduce((s, r) => s + r.total_inserted, 0).toLocaleString()}</td>
+                      <td className="text-right py-1 pl-2 tabular-nums text-teal-600">{monthStats.reduce((s, r) => s + r.total_patterns, 0).toLocaleString()}</td>
                     </tr>
                   </tfoot>
                 </table>
