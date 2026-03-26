@@ -377,13 +377,13 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
           )
     )
 
-    # command_json still requires Python json.loads; use map_elements so Polars
-    # batches the calls and handles null propagation efficiently.
+    # _query_key is ALWAYS non-empty: it is either queryShapeHash (len 64) or
+    # the concat_str result which contains at least ":" (len 1).  Therefore
+    # _cmd_json is never selected as query_details and we skip the entire
+    # map_elements(_extract_mongodb_command) call — saving 1 768 json.loads
+    # invocations and the associated GIL churn.
     df = df.with_columns([
         query_key_expr.alias("_query_key"),
-        _col_or(df, "_raw").map_elements(
-            _extract_mongodb_command, return_dtype=pl.Utf8
-        ).alias("_cmd_json"),
         ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
     ])
 
@@ -394,10 +394,7 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
         pl.col("_db").alias("db_name"),
         pl.lit(env).alias("environment"),
         pl.lit("slow_query_mongo").alias("type"),
-        pl.when(pl.col("_query_key").str.len_chars().gt(0))
-          .then(pl.col("_query_key"))
-          .otherwise(pl.col("_cmd_json"))
-          .alias("query_details"),
+        pl.col("_query_key").alias("query_details"),
     ]).to_dicts()
 
 

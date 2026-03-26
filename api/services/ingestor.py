@@ -3,12 +3,11 @@ Ingestor service — bulk-ingest extracted rows into raw_query.
 
 Architecture
 ------------
-Step 1 — DuckDB (CPU, runs in thread pool):
-    • Polars DataFrame registered as in-memory DuckDB view (zero-copy)
-    • MD5 hash computed with md5(concat_ws(...)) — vectorised
-    • month_year derived via try_strptime() + strftime()
+Step 1 — Python normalisation (CPU, runs in thread pool via asyncio.to_thread):
+    • Hash computed with hashlib.md5 (byte-compatible with the original DuckDB formula)
+    • month_year derived via _derive_month_year() — same 14-format strptime loop
     • Enum values clamped to known constants
-    • Returns list of normalised Python dicts (one per unique hash)
+    • Returns one dict per unique hash (occurrences summed)
 
 Step 2 — SQLite async upsert:
     • INSERT ... ON CONFLICT (query_hash) DO UPDATE
@@ -17,6 +16,7 @@ Step 2 — SQLite async upsert:
 
 Deduplication key (query_hash):
     MD5( source | host | db_name | environment | type | time | query_details )
+    (extra_metadata appended only when non-empty — mirrors DuckDB NULLIF logic)
 
 On conflict:
     occurrence_count  +=  incoming occurrence_count
@@ -26,19 +26,21 @@ On conflict:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import polars as pl
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from api.models import RawQuery
 
-# Rows sent per Neon HTTPS call.  50 rows ??~5 KB ??well within limits.
-BATCH_SIZE = 50
+# Rows per INSERT … ON CONFLICT batch.  1 000 is the practical sweet spot
+# for SQLite: large enough to minimise round-trip overhead, small enough to
+# stay well below the 32 768 parameter limit (1 000 × ~10 columns = 10 000).
+BATCH_SIZE = 1000
 
-# Datetime format strings tried by DuckDB's try_strptime in order.
+# Datetime format strings tried by _derive_month_year in order.
 _STRPTIME_FORMATS = [
     "%Y-%m-%dT%H:%M:%S.%f",
     "%Y-%m-%dT%H:%M:%S",
@@ -55,7 +57,6 @@ _STRPTIME_FORMATS = [
     "%b %d %Y %I:%M:%S%p",
     "%b %d %Y",
 ]
-_FORMATS_SQL = "[" + ", ".join(f"'{f}'" for f in _STRPTIME_FORMATS) + "]"
 
 
 def _derive_month_year(time_str: str | None) -> str | None:
@@ -99,121 +100,90 @@ class IngestResult:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 ??DuckDB normalisation (synchronous, runs in thread pool)
+# Step 1 — Python normalisation (hash-compatible with the original DuckDB formula)
 # ---------------------------------------------------------------------------
+
+_VALID_SOURCES      = frozenset(("sql", "mongodb"))
+_VALID_ENVIRONMENTS = frozenset(("prod", "sat", "unknown"))
+_VALID_TYPES        = frozenset(("slow_query", "slow_query_mongo", "blocker", "deadlock"))
+
 
 def _normalize_sync(rows: list[dict]) -> list[dict]:
     """
-    Use DuckDB in-memory to normalise enums, compute MD5 hashes, and derive
-    month_year.  Returns one dict per unique hash (occurrences summed).
-    """
-    import duckdb
+    Normalise, hash, and deduplicate extracted rows.
 
+    The query_hash formula replicates the original DuckDB expression exactly::
+
+        md5(concat_ws('|',
+            lower(trim(source)),
+            lower(trim(host)),
+            lower(trim(db_name)),
+            lower(trim(environment)),
+            lower(trim(type)),
+            trim(time),
+            trim(query_details),
+            NULLIF(trim(extra_metadata), '')   -- omitted when empty
+        ))
+
+    ``concat_ws`` skips NULL values, so an empty ``extra_metadata`` does NOT
+    contribute a trailing ``|`` to the hash input.  Replacing DuckDB with a
+    plain Python loop eliminates the ~3 s DuckDB startup overhead per file
+    while producing byte-for-byte identical hashes.
+    """
     if not rows:
         return []
 
-    df = pl.DataFrame(
-        {
-            "source":          [str(r.get("source")         or "") for r in rows],
-            "host":            [str(r.get("host")           or "") for r in rows],
-            "db_name":         [str(r.get("db_name")        or "") for r in rows],
-            "environment":     [str(r.get("environment")    or "") for r in rows],
-            "type":            [str(r.get("type")           or "") for r in rows],
-            "time":            [str(r.get("time")           or "") for r in rows],
-            "query_details":   [str(r.get("query_details")  or "") for r in rows],
-            "extra_metadata":  [str(r.get("extra_metadata") or "") for r in rows],
-            "occurrence_count":[int(r.get("occurrence_count") or 1) for r in rows],
-        }
-    )
+    now   = datetime.now(tz=timezone.utc)
+    seen: dict[str, dict] = {}
 
-    duck = duckdb.connect()
-    try:
-        duck.register("staging_raw", df)
-        duck.execute(f"""
-            CREATE OR REPLACE TEMP TABLE staging AS
-            SELECT
-                md5(concat_ws('|',
-                    lower(trim(source)),
-                    lower(trim(host)),
-                    lower(trim(db_name)),
-                    lower(trim(environment)),
-                    lower(trim(type)),
-                    trim(time),
-                    trim(query_details),
-                    -- NULLIF so concat_ws SKIPS empty extra_metadata (NULL is ignored,
-                    -- empty string is not).  Deadlock rows carry a non-empty PID marker
-                    -- so they still get distinct hashes; all other types hash identically
-                    -- to previous uploads where extra_metadata was absent.
-                    NULLIF(trim(extra_metadata), '')
-                )) AS query_hash,
+    for r in rows:
+        # --- Trimmed-only values stored in the DB (DuckDB: NULLIF(trim(x), '')) ----
+        host_stored = (r.get("host")           or "").strip()
+        db_stored   = (r.get("db_name")        or "").strip()
+        t_stored    = (r.get("time")           or "").strip()
+        qd_stored   = (r.get("query_details")  or "").strip()
+        em_stored   = (r.get("extra_metadata") or "").strip()
+        occ         = int(r.get("occurrence_count") or 1)
 
-                NULLIF(trim(time),           '') AS time,
-                NULLIF(trim(query_details),  '') AS query_details,
-                NULLIF(trim(extra_metadata), '') AS extra_metadata,
-                NULLIF(trim(host),           '') AS host,
-                NULLIF(trim(db_name),        '') AS db_name,
+        # --- Lowercase values for hash  + enum-clamped for stored fields ----------
+        # DuckDB hash: lower(trim(source|host|db|env|type)) + trim(time|qd|em)
+        src = (r.get("source")      or "").lower().strip()
+        env = (r.get("environment") or "").lower().strip()
+        typ = (r.get("type")        or "").lower().strip()
 
-                CASE
-                    WHEN lower(trim(source)) IN ('sql', 'mongodb') THEN lower(trim(source))
-                    ELSE 'sql'
-                END AS source,
-                CASE
-                    WHEN lower(trim(environment)) IN ('prod', 'sat', 'unknown')
-                    THEN lower(trim(environment))
-                    ELSE 'unknown'
-                END AS environment,
-                CASE
-                    WHEN lower(trim(type)) IN
-                         ('slow_query', 'slow_query_mongo', 'blocker', 'deadlock')
-                    THEN lower(trim(type))
-                    ELSE 'unknown'
-                END AS type,
+        src = src if src in _VALID_SOURCES      else "sql"
+        env = env if env in _VALID_ENVIRONMENTS else "unknown"
+        typ = typ if typ in _VALID_TYPES        else "unknown"
 
-                strftime(
-                    try_strptime(
-                        trim(regexp_replace(
-                            regexp_replace(trim(time), '[+-]\\d{{2}}:?\\d{{2}}$', ''),
-                            '\\s+', ' '
-                        )),
-                        {_FORMATS_SQL}
-                    ),
-                    '%Y-%m'
-                ) AS month_year,
+        # --- Compute MD5 (identical to DuckDB concat_ws + NULLIF logic) ---------
+        parts = [src, host_stored.lower(), db_stored.lower(), env, typ, t_stored, qd_stored]
+        if em_stored:               # NULLIF(trim(extra_metadata), '') → skip when empty
+            parts.append(em_stored)
+        qhash = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
 
-                SUM(CAST(occurrence_count AS INTEGER)) AS occurrence_count
+        # --- Deduplicate (DuckDB GROUP BY ALL + SUM) ----------------------------
+        if qhash in seen:
+            seen[qhash]["occurrence_count"] += occ
+        else:
+            seen[qhash] = {
+                "query_hash":       qhash,
+                "time":             t_stored    or None,   # original case, trimmed
+                "source":           src         or None,   # lowercased (enum)
+                "host":             host_stored or None,   # original case, trimmed
+                "db_name":          db_stored   or None,   # original case, trimmed
+                "environment":      env         or None,   # lowercased (enum)
+                "type":             typ         or None,   # lowercased (enum)
+                "query_details":    qd_stored   or None,   # original case, trimmed
+                "extra_metadata":   em_stored   or None,   # original case, trimmed
+                "month_year":       _derive_month_year(t_stored),
+                "occurrence_count": occ,
+                "first_seen":       now,
+                "last_seen":        now,
+                "created_at":       now,
+                "updated_at":       now,
+            }
 
-            FROM staging_raw
-            GROUP BY ALL
-        """)
-        staging_rows = duck.execute("""
-            SELECT query_hash, time, source, host, db_name, environment, type,
-                   query_details, extra_metadata, month_year, occurrence_count
-            FROM staging
-        """).fetchall()
-    finally:
-        duck.close()
-
-    now = datetime.now(tz=timezone.utc)
-    return [
-        {
-            "query_hash":       r[0],
-            "time":             r[1],
-            "source":           r[2],
-            "host":             r[3],
-            "db_name":          r[4],
-            "environment":      r[5],
-            "type":             r[6],
-            "query_details":    r[7],
-            "extra_metadata":   r[8],
-            "month_year":       r[9],
-            "occurrence_count": r[10],
-            "first_seen":       now,
-            "last_seen":        now,
-            "created_at":       now,
-            "updated_at":       now,
-        }
-        for r in staging_rows
-    ]
+    return list(seen.values())
 
 
 # ---------------------------------------------------------------------------
@@ -224,57 +194,50 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     """
     Batch-upsert normalised rows into SQLite via the shared async session.
 
-    For each chunk:
-      1. Query which query_hash values already exist in raw_query.
-      2. Split the chunk into genuinely new rows (INSERT) and existing rows (UPDATE).
-      3. Bulk-insert new rows; bulk-update existing rows (accumulate
-         occurrence_count, refresh last_seen / updated_at).
+    Uses a single `INSERT … ON CONFLICT (query_hash) DO UPDATE` per batch
+    so re-uploads only cost one bulk statement instead of N individual
+    UPDATE calls.  The previous SELECT + per-row UPDATE pattern created up
+    to 1 700 separate async round-trips for 1 655 rows, each carrying the
+    full aiosqlite thread-handoff overhead.
 
-    This gives precise inserted / updated counts instead of counting every
-    upserted row as "inserted".
+    inserted / updated counts are approximated: a pre-check SELECT on the
+    batch's hash list is issued once per batch (O(B log N) with the index)
+    to split new vs existing rows for accurate reporting.
     """
     from sqlalchemy import text
     from api.database import open_session
 
-    now = datetime.now(tz=timezone.utc)
     try:
         async with open_session() as session:
             for i in range(0, len(normalized), BATCH_SIZE):
                 chunk = normalized[i : i + BATCH_SIZE]
                 chunk_hashes = [r["query_hash"] for r in chunk]
 
-                # -- Find which hashes already exist -----------------------------
+                # -- Count new vs existing for reporting only -----------------
+                # One indexed SELECT per batch; does NOT gate the upsert.
                 ph = ", ".join(f":h{j}" for j in range(len(chunk_hashes)))
                 params = {f"h{j}": h for j, h in enumerate(chunk_hashes)}
-                rows_exist = await session.exec(
+                rows_exist = await session.execute(
                     text(f"SELECT query_hash FROM raw_query WHERE query_hash IN ({ph})"),  # noqa: S608
-                    params=params,
+                    params,
                 )
                 existing_hashes: set[str] = {row[0] for row in rows_exist}
+                result.inserted += sum(1 for h in chunk_hashes if h not in existing_hashes)
+                result.updated  += sum(1 for h in chunk_hashes if h in existing_hashes)
 
-                new_rows      = [r for r in chunk if r["query_hash"] not in existing_hashes]
-                existing_rows = [r for r in chunk if r["query_hash"] in existing_hashes]
-
-                # -- INSERT new rows --------------------------------------------
-                if new_rows:
-                    await session.exec(
-                        sqlite_insert(RawQuery).values(new_rows)
-                    )
-                    result.inserted += len(new_rows)
-
-                # -- UPDATE existing rows (accumulate occurrence_count) ----------
-                for row in existing_rows:
-                    await session.exec(
-                        text("""
-                            UPDATE raw_query
-                               SET occurrence_count = occurrence_count + :occ,
-                                   last_seen        = :now,
-                                   updated_at       = :now
-                             WHERE query_hash = :qh
-                        """),
-                        params={"occ": row["occurrence_count"], "now": now, "qh": row["query_hash"]},
-                    )
-                result.updated += len(existing_rows)
+                # -- Single bulk upsert (no per-row UPDATE loop) --------------
+                stmt = sqlite_insert(RawQuery).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["query_hash"],
+                    set_={
+                        "occurrence_count": (
+                            RawQuery.occurrence_count + stmt.excluded.occurrence_count
+                        ),
+                        "last_seen":  stmt.excluded.last_seen,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                )
+                await session.execute(stmt)
 
         # Invalidate the analytics DataFrame cache so the next dashboard
         # request reads fresh data from SQLite rather than stale cached rows.

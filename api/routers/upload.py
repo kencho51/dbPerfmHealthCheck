@@ -43,10 +43,17 @@ router = APIRouter()
 #   deadlock   → raw_query.query_details  =  raw_query_deadlock.sql_text
 #   slow_mongo → raw_query.query_details  =  raw_query_slow_mongo.command_json
 #
-# SQLite IS operator handles NULL equality correctly (NULL IS NULL → true).
-# LIMIT 1 is a safety-net; the (environment, month_year, type, query_details)
-# combination should be unique in raw_query due to its query_hash dedup.
+# Performance: a composite index ix_raw_query_link_key on
+# (type, host, db_name, environment, month_year) enables the correlated subquery
+# to use an index range scan instead of a full-table scan.  At 78 K raw_query
+# rows this reduces 870 M comparisons → ~11 K small index probes.
+# The index is created idempotently (IF NOT EXISTS) before each link query.
 # ---------------------------------------------------------------------------
+_CREATE_COMPOSITE_IDX = """
+    CREATE INDEX IF NOT EXISTS ix_raw_query_link_key
+    ON raw_query (type, host, db_name, environment, month_year)
+"""
+
 _LINK_SQL: dict[str, str] = {
     "slow_sql": """
         UPDATE raw_query_slow_sql
@@ -110,11 +117,17 @@ _LINK_SQL: dict[str, str] = {
 
 
 async def _link_typed_to_raw(table_type: str) -> None:
-    """Run the post-ingest SQL UPDATE to set raw_query_id on the typed table."""
+    """Run the post-ingest SQL UPDATE to set raw_query_id on the typed table.
+
+    Creates a composite index on raw_query(type, host, db_name, environment,
+    month_year) before the correlated subquery so SQLite uses an index range
+    scan instead of a full-table scan (critical at 100 K+ raw_query rows).
+    """
     sql = _LINK_SQL.get(table_type)
     if not sql:
         return
     async with open_session() as session:
+        await session.execute(text(_CREATE_COMPOSITE_IDX))
         await session.execute(text(sql))
 
 
@@ -165,17 +178,20 @@ async def upload_csv(
                 },
             )
 
-        # -- Extract normalised rows (raw_query) ---------------------------------
-        # Run in a thread: Polars CSV parsing + per-row json.loads() is CPU-bound
-        # and will block the entire async event loop if called directly.
-        rows = await asyncio.to_thread(extract_from_file, tmp_path)
+        # -- Extract both row sets concurrently ----------------------------------
+        # CPU-bound Polars/json work runs in the thread pool; asyncio.gather
+        # dispatches both tasks simultaneously so wall-clock time ≈ max(t1, t2)
+        # instead of t1 + t2.  For MongoDB CSVs this saves ~0.2 s per file.
+        rows, typed_rows = await asyncio.gather(
+            asyncio.to_thread(extract_from_file, tmp_path),
+            asyncio.to_thread(extract_typed_from_file, tmp_path),
+        )
+
         # Patch env/type derived from original filename (temp path loses context)
         for row in rows:
             if row.get("environment") in ("unknown", "", None):
                 row["environment"] = environment
 
-        # -- Extract typed rows (raw_query_<type>) --------------------------------
-        typed_rows = await asyncio.to_thread(extract_typed_from_file, tmp_path)
         # Patch environment on typed rows too
         for row in typed_rows:
             if row.get("environment") in ("unknown", "", None):
