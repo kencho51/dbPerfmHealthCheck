@@ -54,6 +54,22 @@ _CREATE_COMPOSITE_IDX = """
     ON raw_query (type, host, db_name, environment, month_year)
 """
 
+# Separate index for blocker link query which has NO host/db_name predicate.
+# Using (type, source, environment, month_year) lets SQLite narrow the scan
+# without the host/db_name columns that blocker rows don't carry.
+_CREATE_SOURCE_IDX = """
+    CREATE INDEX IF NOT EXISTS ix_raw_query_link_source
+    ON raw_query (type, source, environment, month_year)
+"""
+
+# Map each table_type to the most selective index DDL for its link query.
+_LINK_AUX_IDX: dict[str, str] = {
+    "slow_sql":   _CREATE_COMPOSITE_IDX,
+    "deadlock":   _CREATE_COMPOSITE_IDX,
+    "slow_mongo": _CREATE_COMPOSITE_IDX,
+    "blocker":    _CREATE_SOURCE_IDX,
+}
+
 _LINK_SQL: dict[str, str] = {
     "slow_sql": """
         UPDATE raw_query_slow_sql
@@ -117,17 +133,27 @@ _LINK_SQL: dict[str, str] = {
 
 
 async def _link_typed_to_raw(table_type: str) -> None:
-    """Run the post-ingest SQL UPDATE to set raw_query_id on the typed table.
+    """Run the post-ingest UPDATE to set raw_query_id FK on the typed table.
 
-    Creates a composite index on raw_query(type, host, db_name, environment,
-    month_year) before the correlated subquery so SQLite uses an index range
-    scan instead of a full-table scan (critical at 100 K+ raw_query rows).
+    Creates the most selective available index before the correlated subquery:
+    - slow_sql / deadlock / slow_mongo: ix_raw_query_link_key on
+      (type, host, db_name, environment, month_year) — these queries filter on
+      both host AND db_name so the full composite prefix is used.
+    - blocker: ix_raw_query_link_source on (type, source, environment,
+      month_year) — the blocker link SQL has no host/db_name predicate, so
+      the composite index is useless; without this fix: 28 K×35 K = 875 M
+      comparisons = 10-minute timeout.
+
+    Both indexes use IF NOT EXISTS so there is no overhead on repeat uploads.
+    This function is intentionally called as a background task (not awaited
+    in the hot path) so the upload HTTP response is not blocked.
     """
     sql = _LINK_SQL.get(table_type)
     if not sql:
         return
+    idx_ddl = _LINK_AUX_IDX.get(table_type, _CREATE_COMPOSITE_IDX)
     async with open_session() as session:
-        await session.execute(text(_CREATE_COMPOSITE_IDX))
+        await session.execute(text(idx_ddl))
         await session.execute(text(sql))
 
 
@@ -210,8 +236,10 @@ async def upload_csv(
         typed_result = await ingest_typed_rows(typed_rows, table_type)
 
         # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
-        # Idempotent: WHERE raw_query_id IS NULL means re-uploads are safe.
-        await _link_typed_to_raw(table_type)
+        # Fire-and-forget: linking is idempotent (WHERE raw_query_id IS NULL)
+        # and can take several seconds on large files.  Running it as a
+        # background task keeps the upload response fast.
+        asyncio.create_task(_link_typed_to_raw(table_type))
 
         # -- Log the upload (persist actual CSV row count for monthly stats) ----
         # rows from extract_from_file() have a "time" field (raw string), not "month_year".
