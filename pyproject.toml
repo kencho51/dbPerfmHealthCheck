@@ -29,6 +29,12 @@ dependencies = [
 line-length = 100
 target-version = "py314"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
