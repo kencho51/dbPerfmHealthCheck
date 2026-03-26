@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, SummaryRow, HostRow, MonthRow, DbRow, CurationCoverage, AnalyticsFilters } from "@/lib/api";
+import { api, SummaryRow, HostRow, MonthRow, MonthTypeRow, DbRow, CurationCoverage, AnalyticsFilters } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardValue, CardContent } from "@/components/ui/card";
 import {
   SummaryBarChart,
@@ -92,10 +92,11 @@ export default function DashboardPage() {
 
   // ?�?� Section data + per-section loading flags ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
   const [kpi, setKpi] = useState<{
-    totalQueries: number;
+    totalCsvRows: number;
     coverage: CurationCoverage;
   } | null>(null);
   const [kpiLoading, setKpiLoading] = useState(true);
+  const [monthType, setMonthType] = useState<MonthTypeRow[]>([]);
 
   const [summary, setSummary] = useState<SummaryRow[] | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -146,14 +147,18 @@ export default function DashboardPage() {
     if (filters.system)      countParams.system      = filters.system;
     const hasCountFilter = Object.keys(countParams).length > 0;
 
-    // Group 1 ??KPI cards (count + coverage)
+    // Group 1 — KPI cards (total CSV rows from upload_log + coverage)
     setKpiLoading(true);
     Promise.all([
-      api.queries.count(hasCountFilter ? countParams : undefined),
+      api.analytics.byMonthType(),
       api.analytics.curationCoverage(filters).catch(() => DEFAULT_COVERAGE),
     ])
-      .then(([queryCount, coverage]) => {
-        setKpi({ totalQueries: queryCount.count, coverage });
+      .then(([monthTypeRows, coverage]) => {
+        setMonthType(monthTypeRows);
+        const totalCsvRows = monthTypeRows.reduce(
+          (sum, r) => sum + (r.total_file_rows ?? 0), 0
+        );
+        setKpi({ totalCsvRows, coverage });
       })
       .catch(console.error)
       .finally(() => setKpiLoading(false));
@@ -331,8 +336,8 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle>Total Queries</CardTitle>
-              <CardValue>{fmt(kpi?.totalQueries ?? 0)}</CardValue>
-              <p className="text-xs text-slate-400 mt-1">Distinct query rows ingested (after deduplication)</p>
+              <CardValue>{fmt(kpi?.totalCsvRows ?? 0)}</CardValue>
+              <p className="text-xs text-slate-400 mt-1">Total rows from all uploaded CSV files (latest upload per file counts once)</p>
             </CardHeader>
           </Card>
           <Card>
@@ -353,7 +358,7 @@ export default function DashboardPage() {
             <CardHeader>
               <CardTitle>Queries Curated</CardTitle>
               <CardValue>{fmt(kpi?.coverage.curated_rows ?? 0)}</CardValue>
-              <p className="text-xs text-slate-400 mt-1">Queries manually reviewed and labelled so far</p>
+              <p className="text-xs text-slate-400 mt-1">SQL patterns manually reviewed and labelled so far</p>
             </CardHeader>
           </Card>
         </div>
@@ -364,7 +369,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Queries by Type</CardTitle>
-            <p className="text-xs text-slate-400 mt-0.5">Total occurrences per query type</p>
+            <p className="text-xs text-slate-400 mt-0.5">Distinct query entries per type</p>
           </CardHeader>
           <CardContent>
             {summaryLoading ? <ChartSkeleton /> : <SummaryBarChart data={summary ?? []} />}
@@ -373,7 +378,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>By Environment</CardTitle>
-            <p className="text-xs text-slate-400 mt-0.5">Share of activity from Production vs SAT environments</p>
+            <p className="text-xs text-slate-400 mt-0.5">Share of query activity from Production vs SAT</p>
           </CardHeader>
           <CardContent>
             {summaryLoading ? <ChartSkeleton /> : <EnvPieChart data={summary ?? []} />}
@@ -389,7 +394,11 @@ export default function DashboardPage() {
             <CardContent><ChartSkeleton height={240} /></CardContent>
           </Card>
         ) : (
-          <MonthlyTrendCard initialData={trends?.months ?? []} filters={filters} />
+          <MonthlyTrendCard
+              initialData={trends?.months ?? []}
+              monthTypeData={monthType}
+              filters={filters}
+            />
         )}
         <Card>
           <CardHeader>
@@ -423,8 +432,8 @@ export default function DashboardPage() {
                 <thead>
                   <tr className="border-b border-slate-100 text-left text-xs text-slate-400">
                     <th className="pb-2">Database</th>
-                    <th className="pb-2 text-right">Rows</th>
-                    <th className="pb-2 text-right">Occurrences</th>
+                    <th className="pb-2" title="Distinct query entries for this database">Queries</th>
+                    <th className="pb-2 text-right" title="Total observed executions (sum of occurrence_count)">Occurrences</th>
                   </tr>
                 </thead>
                 <tbody>
