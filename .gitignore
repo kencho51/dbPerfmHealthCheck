@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.python-version
+
+# Virtual environment
+.venv/
+
+# uv
+.uv/
+
+# Database (local data files - do not commit)
+db/master.db
+db/master.db-shm
+db/master.db-wal
+db/*.db
+db/*.db-shm
+db/*.db-wal
+
+# DuckDB
+*.duckdb
+*.duckdb.wal
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+api/.env
+
+# Output / reports
+output/
+reports/
+
+# Next.js
+web/.next/
+web/node_modules/
+web/.env.local
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
