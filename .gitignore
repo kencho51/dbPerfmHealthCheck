@@ -41,6 +41,7 @@ reports/
 web/.next/
 web/node_modules/
 web/.env.local
+web/package-lock.json
 
 # Misc
 .DS_Store
