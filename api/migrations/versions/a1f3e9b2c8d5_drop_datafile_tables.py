@@ -12,6 +12,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = 'a1f3e9b2c8d5'
@@ -23,23 +24,30 @@ _S = sa.String
 
 
 def upgrade() -> None:
-    """Drop the datafile tables."""
-    with op.batch_alter_table('raw_query_datafile_sql', schema=None) as batch_op:
-        batch_op.drop_index('ix_raw_query_datafile_sql_query_hash')
-        batch_op.drop_index('ix_raw_query_datafile_sql_month_year')
-        batch_op.drop_index('ix_raw_query_datafile_sql_host')
-        batch_op.drop_index('ix_raw_query_datafile_sql_environment')
-        batch_op.drop_index('ix_raw_query_datafile_sql_db_name')
+    """Drop the datafile tables if they exist.
 
-    op.drop_table('raw_query_datafile_sql')
+    These tables were present in the production DB when this migration was
+    created but are never created on a fresh install.  Guarding with an
+    existence check makes the migration idempotent across both paths.
+    """
+    existing = set(inspect(op.get_bind()).get_table_names())
 
-    with op.batch_alter_table('raw_query_datafile_mongo', schema=None) as batch_op:
-        batch_op.drop_index('ix_raw_query_datafile_mongo_query_hash')
-        batch_op.drop_index('ix_raw_query_datafile_mongo_month_year')
-        batch_op.drop_index('ix_raw_query_datafile_mongo_host_mount')
-        batch_op.drop_index('ix_raw_query_datafile_mongo_environment')
+    if 'raw_query_datafile_sql' in existing:
+        with op.batch_alter_table('raw_query_datafile_sql', schema=None) as batch_op:
+            batch_op.drop_index('ix_raw_query_datafile_sql_query_hash')
+            batch_op.drop_index('ix_raw_query_datafile_sql_month_year')
+            batch_op.drop_index('ix_raw_query_datafile_sql_host')
+            batch_op.drop_index('ix_raw_query_datafile_sql_environment')
+            batch_op.drop_index('ix_raw_query_datafile_sql_db_name')
+        op.drop_table('raw_query_datafile_sql')
 
-    op.drop_table('raw_query_datafile_mongo')
+    if 'raw_query_datafile_mongo' in existing:
+        with op.batch_alter_table('raw_query_datafile_mongo', schema=None) as batch_op:
+            batch_op.drop_index('ix_raw_query_datafile_mongo_query_hash')
+            batch_op.drop_index('ix_raw_query_datafile_mongo_month_year')
+            batch_op.drop_index('ix_raw_query_datafile_mongo_host_mount')
+            batch_op.drop_index('ix_raw_query_datafile_mongo_environment')
+        op.drop_table('raw_query_datafile_mongo')
 
 
 def downgrade() -> None:
