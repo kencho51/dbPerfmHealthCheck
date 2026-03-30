@@ -37,7 +37,7 @@ print(f"_link_typed_to_raw (mongo) time: {t1 - t0:.2f}s")
 
 # Also time the upsert batch pattern (SELECT + individual UPDATE vs bulk)
 t2 = time.perf_counter()
-test_hashes = [hashlib.md5(str(i).encode()).hexdigest() for i in range(50)]
+test_hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(50)]
 ph = ", ".join("?" for _ in test_hashes)
 conn.execute(f"SELECT query_hash FROM raw_query WHERE query_hash IN ({ph})", test_hashes).fetchall()
 t3 = time.perf_counter()

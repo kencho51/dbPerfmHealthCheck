@@ -29,7 +29,7 @@ from api.models import RawQuery
 async def _seed_export_query(**overrides) -> RawQuery:
     unique = str(uuid.uuid4())
     defaults = dict(
-        query_hash=hashlib.md5(unique.encode()).hexdigest(),
+        query_hash=hashlib.sha256(unique.encode()).hexdigest(),
         source="sql",
         host="EXPORTHOST01",
         db_name="export_db",

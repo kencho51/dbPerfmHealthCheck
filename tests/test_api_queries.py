@@ -29,7 +29,7 @@ async def _seed_query(**overrides) -> RawQuery:
 
     unique = str(uuid.uuid4())
     defaults = dict(
-        query_hash=hashlib.md5(unique.encode()).hexdigest(),
+        query_hash=hashlib.sha256(unique.encode()).hexdigest(),
         source="sql",
         host="WINFODB06HV11",
         db_name="fb_db_v2",
