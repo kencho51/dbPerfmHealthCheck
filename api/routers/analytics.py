@@ -693,6 +693,143 @@ async def analytics_by_hour(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/analytics/by-hour-queries  — drill-down: raw rows for one cell
+# ---------------------------------------------------------------------------
+
+
+def _by_hour_queries_sync(
+    source: str | None,
+    environment: str | None,
+    type_: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
+    week_start: str | None,
+    week_end: str | None,
+    hour: int,
+    weekday: int,
+    limit: int,
+    offset: int,
+) -> dict:
+    """
+    Return the paginated list of raw_query rows whose timestamp falls in
+    the given hour-of-day × weekday bucket.
+
+    Returns { "rows": [...], "total": int } where total is the full count
+    (before pagination) computed via COUNT(*) OVER() in one DuckDB pass.
+    """
+    where, params = _build_filters(
+        source=source,
+        environment=environment,
+        type_=type_,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
+        extra=["time IS NOT NULL"],
+    )
+    week_filter = ""
+    if week_start and week_end:
+        week_filter = (
+            f"AND CAST(dt AS DATE) BETWEEN CAST('{week_start}' AS DATE)"
+            f" AND CAST('{week_end}' AS DATE)"
+        )
+    # hour and weekday are injected as integer literals — no user-controlled
+    # string interpolation because they are validated as int by FastAPI first.
+    con = get_duck("raw_query")
+    try:
+        rows = con.execute(
+            f"""
+            SELECT
+                id, type, host, db_name, environment, source,
+                time, month_year, occurrence_count, query_details,
+                COUNT(*) OVER() AS total_count
+            FROM (
+                SELECT
+                    id, type, host, db_name, environment, source,
+                    time, month_year, occurrence_count, query_details,
+                    try_strptime(
+                        trim(regexp_replace(
+                            regexp_replace(COALESCE(time, ''), '[+-]\\d{{2}}:?\\d{{2}}$', ''),
+                            '\\s+', ' '
+                        )),
+                        {_STRPTIME_SQL}
+                    ) AS dt
+                FROM raw_query
+                {where}
+            ) t
+            WHERE dt IS NOT NULL
+              AND datepart('hour',   dt) = {hour}
+              AND datepart('isodow', dt) - 1 = {weekday}
+              {week_filter}
+            ORDER BY occurrence_count DESC, id DESC
+            LIMIT {limit} OFFSET {offset}
+        """,
+            params,
+        ).fetchall()
+    finally:
+        con.close()
+
+    result_rows = []
+    total = 0
+    for r in rows:
+        result_rows.append(
+            {
+                "id":               r[0],
+                "type":             r[1],
+                "host":             r[2],
+                "db_name":          r[3],
+                "environment":      r[4],
+                "source":           r[5],
+                "time":             r[6],
+                "month_year":       r[7],
+                "occurrence_count": r[8],
+                "query_details":    r[9],
+            }
+        )
+        total = r[10]  # COUNT(*) OVER() — same for every row
+    return {"rows": result_rows, "total": total}
+
+
+@router.get(
+    "/by-hour-queries",
+    summary="Drill-down: raw query rows for a specific hour × weekday cell",
+)
+async def analytics_by_hour_queries(
+    hour:        int              = Query(..., ge=0, le=23),
+    weekday:     int              = Query(..., ge=0, le=6),
+    environment: EnvironmentType | None = None,
+    source:      SourceType      | None = None,
+    host:        str  | None            = None,
+    db_name:     str  | None            = None,
+    month_year:  str  | None            = None,
+    type:        QueryType | None       = None,
+    system:      str  | None            = None,
+    week_start:  str  | None            = None,
+    week_end:    str  | None            = None,
+    limit:       int                    = Query(default=50, ge=1, le=200),
+    offset:      int                    = Query(default=0, ge=0),
+) -> dict:
+    return await asyncio.to_thread(
+        _by_hour_queries_sync,
+        source and source.value,
+        environment and environment.value,
+        type and type.value,
+        host,
+        db_name,
+        month_year,
+        system,
+        week_start,
+        week_end,
+        hour,
+        weekday,
+        limit,
+        offset,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/analytics/top-fingerprints
 # ---------------------------------------------------------------------------
 
