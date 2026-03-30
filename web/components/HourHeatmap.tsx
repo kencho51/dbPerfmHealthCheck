@@ -15,6 +15,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, type HourCell, type QueryType, type AnalyticsFilters } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { HourCellModal } from "@/components/HourCellModal";
 
 // ---------------------------------------------------------------------------
 // Type filter options
@@ -285,6 +286,7 @@ export function HourHeatmap({ filters }: Props) {
   const [loading, setLoading] = useState(true);
   const [hovered, setHovered] = useState<HourCell | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [clickedCell, setClickedCell] = useState<HourCell | null>(null);
   // Local filters: type and calendar week
   const [selectedType, setSelectedType] = useState("");
   const [selectedWeek, setSelectedWeek] = useState("");  // holds WeekOption.value (ISO start date)
@@ -375,6 +377,7 @@ export function HourHeatmap({ filters }: Props) {
           rows whose timestamp falls in that bucket — so a single Splunk row that fired 50 times
           contributes 50 to the cell, not 1.
           Darker indigo = more events. Hover a cell to see the full breakdown by type, host, and database.
+          <strong> Click</strong> a cell to open a full drill-down table of every query record in that bucket.
         </p>
         {!loading && totalEvents > 0 && (
           <p className="text-xs text-slate-400 mt-0.5">
@@ -449,9 +452,10 @@ export function HourHeatmap({ filters }: Props) {
                             borderRadius: 3,
                             outline: isHovered ? "2px solid #4f46e5" : "1px solid transparent",
                             transition: "outline 0.05s",
-                            cursor: count > 0 ? "crosshair" : "default",
+                            cursor: count > 0 ? "pointer" : "default",
                           }}
                           onMouseEnter={() => setHovered(cell ?? null)}
+                          onClick={() => { if (cell && cell.count > 0) setClickedCell(cell); }}
                         />
                       );
                     })}
@@ -497,6 +501,28 @@ export function HourHeatmap({ filters }: Props) {
 
       {/* Floating tooltip — rendered at viewport level, follows cursor */}
       {hovered && <HoverTooltip cell={hovered} x={mousePos.x} y={mousePos.y} />}
+
+      {/* Drill-down modal — opens when a cell is clicked */}
+      {clickedCell && (() => {
+        const weekOpt = weekOptions.find((o) => o.value === selectedWeek);
+        const modalFilters: AnalyticsFilters = {
+          ...(environment ? { environment } : {}),
+          ...(host        ? { host }        : {}),
+          ...(db_name     ? { db_name }     : {}),
+          ...(month_year  ? { month_year }  : {}),
+          ...(source      ? { source }      : {}),
+          ...(weekOpt ? { week_start: weekOpt.start, week_end: weekOpt.end } : {}),
+        };
+        return (
+          <HourCellModal
+            cell={clickedCell}
+            filters={modalFilters}
+            selectedType={selectedType}
+            weekLabel={weekOpt?.label}
+            onClose={() => setClickedCell(null)}
+          />
+        );
+      })()}
     </Card>
   );
 }

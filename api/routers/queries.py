@@ -19,7 +19,15 @@ from api.models import (
     EnvironmentType,
     QueryType,
     RawQuery,
+    RawQueryBlocker,
+    RawQueryBlockerRead,
+    RawQueryDeadlock,
+    RawQueryDeadlockRead,
     RawQueryRead,
+    RawQuerySlowMongo,
+    RawQuerySlowMongoRead,
+    RawQuerySlowSql,
+    RawQuerySlowSqlRead,
     SourceType,
 )
 
@@ -207,6 +215,84 @@ async def count_queries(
     )
     total = (await session.exec(stmt)).one()
     return {"count": total}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/queries/{id}/typed-detail
+# ---------------------------------------------------------------------------
+
+_TYPED_MODEL_MAP = {
+    "slow_query":       (RawQuerySlowSql,   RawQuerySlowSqlRead),
+    "blocker":          (RawQueryBlocker,   RawQueryBlockerRead),
+    "deadlock":         (RawQueryDeadlock,  RawQueryDeadlockRead),
+    "slow_query_mongo": (RawQuerySlowMongo, RawQuerySlowMongoRead),
+}
+
+
+@router.get("/{query_id}/typed-detail", summary="Get type-specific rich detail for a raw_query row")
+async def get_typed_detail(
+    query_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Returns { "type": str, "data": <typed-row dict> | null }.
+
+    Looks up %raw_query to determine the type, then queries the corresponding
+    typed table (raw_query_slow_sql / raw_query_blocker / raw_query_deadlock /
+    raw_query_slow_mongo) via the raw_query_id FK.
+    Returns data=null when no typed row has been linked yet.
+    """
+    rq = await session.get(RawQuery, query_id)
+    if not rq:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Query not found")
+
+    # rq.type is stored as a plain str in SQLite — normalise before lookup
+    rq_type = rq.type if isinstance(rq.type, str) else rq.type.value
+
+    type_pair = _TYPED_MODEL_MAP.get(rq_type)
+    if type_pair is None:
+        return {"type": rq_type, "data": None}
+
+    model_cls, read_cls = type_pair
+
+    # Map each type to the typed-table column that mirrors raw_query.query_details
+    _QUERY_TEXT_COL: dict[str, str] = {
+        "slow_query":       "query_final",
+        "blocker":          "all_query",
+        "deadlock":         "sql_text",
+        "slow_query_mongo": "command_json",
+    }
+    text_col = _QUERY_TEXT_COL.get(rq_type)
+
+    # 1) Fast path — FK is already set
+    typed_row = (
+        await session.exec(
+            select(model_cls).where(model_cls.raw_query_id == query_id)
+        )
+    ).first()
+
+    # 2) Fallback — match on query text (same logic as the post-ingest link SQL)
+    if not typed_row and text_col and rq.query_details:
+        text_col_attr = getattr(model_cls, text_col)
+        typed_row = (
+            await session.exec(
+                select(model_cls).where(text_col_attr == rq.query_details)
+            )
+        ).first()
+        # Backfill the FK so future lookups hit the fast path
+        if typed_row and typed_row.raw_query_id is None:
+            typed_row.raw_query_id = query_id
+            session.add(typed_row)
+            await session.commit()
+            await session.refresh(typed_row)
+
+    if not typed_row:
+        return {"type": rq_type, "data": None}
+
+    return {
+        "type": rq_type,
+        "data": read_cls.model_validate(typed_row).model_dump(mode="json"),
+    }
 
 
 # ---------------------------------------------------------------------------
