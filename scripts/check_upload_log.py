@@ -39,4 +39,3 @@ for r in final:
     print(r)
 
 con.close()
-

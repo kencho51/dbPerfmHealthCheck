@@ -12,6 +12,7 @@ Usage in a FastAPI route:
     async with get_session() as session:
         result = await session.exec(select(RawQuery))
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +20,7 @@ import os
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -32,12 +33,12 @@ from pathlib import Path
 # asyncio.Lock() is event-loop-safe: Python 3.10+ defers loop binding until
 # first acquisition, so creating it at module level is safe with uvicorn.
 # ---------------------------------------------------------------------------
-_write_lock = asyncio.Lock()
-
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+_write_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Explicit sqlite3 datetime adapters (replaces the deprecated implicit ones)
@@ -49,10 +50,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 # is created — silences the warning across the whole application.
 # ---------------------------------------------------------------------------
 
+
 def _adapt_datetime(val: datetime) -> str:
     """Serialise a datetime to an ISO-8601 string for storage in SQLite TEXT."""
     if val.tzinfo is None:
-        val = val.replace(tzinfo=timezone.utc)
+        val = val.replace(tzinfo=UTC)
     return val.isoformat()
 
 
@@ -60,13 +62,15 @@ def _convert_datetime(val: bytes) -> datetime:
     """Deserialise an ISO-8601 SQLite TEXT back to a timezone-aware datetime."""
     dt = datetime.fromisoformat(val.decode())
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
 sqlite3.register_adapter(datetime, _adapt_datetime)
 sqlite3.register_converter("datetime", _convert_datetime)
-sqlite3.register_converter("DATETIME", _convert_datetime)  # SQLite column names are case-insensitive
+sqlite3.register_converter(
+    "DATETIME", _convert_datetime
+)  # SQLite column names are case-insensitive
 
 # ---------------------------------------------------------------------------
 # Load api/.env before reading any env vars
@@ -74,7 +78,7 @@ sqlite3.register_converter("DATETIME", _convert_datetime)  # SQLite column names
 # ---------------------------------------------------------------------------
 
 _ENV_FILE = Path(__file__).resolve().parent / ".env"
-load_dotenv(_ENV_FILE, override=False)   # don't override vars already in OS env
+load_dotenv(_ENV_FILE, override=False)  # don't override vars already in OS env
 
 # ---------------------------------------------------------------------------
 # Backend selector
@@ -83,7 +87,7 @@ load_dotenv(_ENV_FILE, override=False)   # don't override vars already in OS env
 DB_BACKEND: str = os.getenv("DB_BACKEND", "sqlite").lower().strip()
 
 if DB_BACKEND == "neon":
-    raise EnvironmentError(
+    raise OSError(
         "DB_BACKEND=neon is not supported on this branch "
         "(integration-query-analysis-app uses SQLite only).\n"
         "Switch to the 'migrate-to-neon-psql-db' branch for Neon support, "
@@ -91,9 +95,7 @@ if DB_BACKEND == "neon":
     )
 
 if DB_BACKEND != "sqlite":
-    raise EnvironmentError(
-        f"Unknown DB_BACKEND={DB_BACKEND!r}. Valid values: 'sqlite'."
-    )
+    raise OSError(f"Unknown DB_BACKEND={DB_BACKEND!r}. Valid values: 'sqlite'.")
 
 # ---------------------------------------------------------------------------
 # Resolve SQLite path
@@ -108,7 +110,7 @@ SQLITE_URL: str = os.getenv("SQLITE_URL", f"sqlite+aiosqlite:///{SQLITE_PATH}")
 # Keep SQLITE_PATH in sync when a full URL is provided
 if SQLITE_URL.startswith("sqlite+aiosqlite:///"):
     _raw = SQLITE_URL.removeprefix("sqlite+aiosqlite:///")
-    if _raw and not _raw.startswith(":"):   # skip special URIs like :memory:
+    if _raw and not _raw.startswith(":"):  # skip special URIs like :memory:
         SQLITE_PATH = Path(_raw)
 
 # ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ if SQLITE_URL.startswith("sqlite+aiosqlite:///"):
 
 engine: AsyncEngine = create_async_engine(
     SQLITE_URL,
-    echo=False,           # set True to log SQL for debugging
+    echo=False,  # set True to log SQL for debugging
     connect_args={
         "check_same_thread": False,
         "timeout": 30,
@@ -135,7 +137,8 @@ engine: AsyncEngine = create_async_engine(
 # Session: FastAPI Depends (async generator) + direct use (context manager)
 # ---------------------------------------------------------------------------
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Async generator — for use with FastAPI `Depends(get_session)`."""
     async with AsyncSession(engine, expire_on_commit=False) as session:
         try:
@@ -147,7 +150,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @asynccontextmanager
-async def open_session() -> AsyncGenerator[AsyncSession, None]:
+async def open_session() -> AsyncGenerator[AsyncSession]:
     """
     Async context manager — for direct programmatic use (scripts, tests,
     services that are called outside a FastAPI request lifecycle).
@@ -166,7 +169,7 @@ async def open_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @asynccontextmanager
-async def write_session() -> AsyncGenerator[AsyncSession, None]:
+async def write_session() -> AsyncGenerator[AsyncSession]:
     """open_session() wrapped with the global write lock.
 
     All INSERT / UPDATE / DELETE operations should use this context manager
@@ -187,13 +190,14 @@ async def write_session() -> AsyncGenerator[AsyncSession, None]:
 # DB initialisation helpers (called from app lifespan)
 # ---------------------------------------------------------------------------
 
+
 async def apply_pragmas() -> None:
     """Set SQLite performance/safety PRAGMAs and pre-create link indexes."""
     async with engine.begin() as conn:
         await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         await conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
-        await conn.exec_driver_sql("PRAGMA cache_size=-64000")   # 64 MB page cache
+        await conn.exec_driver_sql("PRAGMA cache_size=-64000")  # 64 MB page cache
         await conn.exec_driver_sql("PRAGMA temp_store=MEMORY")
         # Pre-create the two link indexes used by _link_typed_to_raw so they
         # always exist before any upload runs, avoiding a costly full-table-scan

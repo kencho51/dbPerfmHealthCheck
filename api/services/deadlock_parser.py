@@ -35,6 +35,7 @@ Each ``DeadlockProcess`` becomes one row in ``raw_query`` with:
   * ``query_details`` = ``sql_text`` (best SQL candidate)
   * ``extra_metadata`` = JSON with all structured deadlock fields
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -57,108 +58,111 @@ _PROCESS_SPLIT = re.compile(r"(?m)^[\t ]*process id=")
 
 # Per-attribute patterns — applied to the full "process id=<attr_line>".
 _ATTRS: dict[str, re.Pattern] = {
-    "spid":            re.compile(r"\bspid=(\d+)\b"),
-    "kpid":            re.compile(r"\bkpid=(\d+)\b"),
-    "logused":         re.compile(r"\blogused=(\d+)\b"),
-    "waitresource":    re.compile(r"\bwaitresource=(.+?)\s+(?:waittime|ownerId)="),
-    "waittime":        re.compile(r"\bwaittime=(\d+)\b"),
-    "lockMode":        re.compile(r"\blockMode=(\S+)"),
-    "trancount":       re.compile(r"\btrancount=(\d+)\b"),
+    "spid": re.compile(r"\bspid=(\d+)\b"),
+    "kpid": re.compile(r"\bkpid=(\d+)\b"),
+    "logused": re.compile(r"\blogused=(\d+)\b"),
+    "waitresource": re.compile(r"\bwaitresource=(.+?)\s+(?:waittime|ownerId)="),
+    "waittime": re.compile(r"\bwaittime=(\d+)\b"),
+    "lockMode": re.compile(r"\blockMode=(\S+)"),
+    "trancount": re.compile(r"\btrancount=(\d+)\b"),
     "transactionname": re.compile(r"\btransactionname=(\S+)"),
     "lasttranstarted": re.compile(r"\blasttranstarted=(\S+)"),
-    "isolationlevel":  re.compile(r"\bisolationlevel=([^(]+\(\d+\))"),
-    "loginname":       re.compile(r"\bloginname=(\S+)"),
-    "clientapp":       re.compile(r"\bclientapp=(.+?)\s+hostname="),
-    "apphost":         re.compile(r"\bhostname=(\S+)"),
-    "currentdbname":   re.compile(r"\bcurrentdbname=(\w+)"),
-    "lockTimeout":     re.compile(r"\blockTimeout=(\d+)"),
-    "status":          re.compile(r"\bstatus=(\S+)"),
+    "isolationlevel": re.compile(r"\bisolationlevel=([^(]+\(\d+\))"),
+    "loginname": re.compile(r"\bloginname=(\S+)"),
+    "clientapp": re.compile(r"\bclientapp=(.+?)\s+hostname="),
+    "apphost": re.compile(r"\bhostname=(\S+)"),
+    "currentdbname": re.compile(r"\bcurrentdbname=(\w+)"),
+    "lockTimeout": re.compile(r"\blockTimeout=(\d+)"),
+    "status": re.compile(r"\bstatus=(\S+)"),
 }
 
 # Matches a real (non-adhoc, non-unknown) stored-proc frame line.
-_REAL_FRAME   = re.compile(r"frame procname=(?!unknown|adhoc)(\S+)")
+_REAL_FRAME = re.compile(r"frame procname=(?!unknown|adhoc)(\S+)")
 # Matches ANY frame line (to know when a new frame starts).
-_ANY_FRAME    = re.compile(r"^\s*frame procname=")
+_ANY_FRAME = re.compile(r"^\s*frame procname=")
 # Lines that are just the word "unknown" (blank execution stack).
 _UNKNOWN_ONLY = re.compile(r"^\s*unknown\s*$")
 # A "Proc [Database Id …]" inputbuf stub — means the SQL is inside a stored proc.
-_PROC_STUB    = re.compile(r"^\s*Proc \[Database Id")
+_PROC_STUB = re.compile(r"^\s*Proc \[Database Id")
 # Starts with a DML/DQL/parameter-list keyword → actual SQL.
-_DML_START    = re.compile(r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|EXEC|WITH|MERGE|@\w)", re.I)
+_DML_START = re.compile(r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|EXEC|WITH|MERGE|@\w)", re.I)
 
 
 # ---------------------------------------------------------------------------
 # Data class
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class DeadlockProcess:
     # Incident identity
-    deadlock_id:     str = ""
-    deadlock_victim: str = ""   # space-joined for multi-victim incidents
-    splunk_time:     str = ""
-    splunk_host:     str = ""
-    is_victim:       bool = False
+    deadlock_id: str = ""
+    deadlock_victim: str = ""  # space-joined for multi-victim incidents
+    splunk_time: str = ""
+    splunk_host: str = ""
+    is_victim: bool = False
 
     # Process attributes (from the process-list block)
-    pid:             str = ""
-    spid:            str = ""
-    kpid:            str = ""
-    logused:         str = ""
-    waitresource:    str = ""
-    waittime:        str = ""
-    lockMode:        str = ""
-    trancount:       str = ""
+    pid: str = ""
+    spid: str = ""
+    kpid: str = ""
+    logused: str = ""
+    waitresource: str = ""
+    waittime: str = ""
+    lockMode: str = ""
+    trancount: str = ""
     transactionname: str = ""
     lasttranstarted: str = ""
-    isolationlevel:  str = ""
-    loginname:       str = ""
-    clientapp:       str = ""
-    apphost:         str = ""
-    currentdbname:   str = ""
-    lockTimeout:     str = ""
-    status:          str = ""
+    isolationlevel: str = ""
+    loginname: str = ""
+    clientapp: str = ""
+    apphost: str = ""
+    currentdbname: str = ""
+    lockTimeout: str = ""
+    status: str = ""
 
     # SQL extraction
-    proc_name:       str = ""   # stored-proc name (if any)
-    exec_sql:        str = ""   # SQL found inside executionStack (stored-proc body)
-    inputbuf_sql:    str = ""   # SQL found after inputbuf marker (adhoc / JDBC)
-    sql_text:        str = ""   # best candidate → stored as query_details
+    proc_name: str = ""  # stored-proc name (if any)
+    exec_sql: str = ""  # SQL found inside executionStack (stored-proc body)
+    inputbuf_sql: str = ""  # SQL found after inputbuf marker (adhoc / JDBC)
+    sql_text: str = ""  # best candidate → stored as query_details
 
     def to_extra_metadata(self) -> str:
         """Serialise deadlock-specific fields to a JSON string for extra_metadata."""
         fields = {
-            "deadlock_id":     self.deadlock_id,
+            "deadlock_id": self.deadlock_id,
             "deadlock_victim": self.deadlock_victim,
-            "pid":             self.pid,
-            "is_victim":       self.is_victim,
-            "spid":            self.spid,
-            "kpid":            self.kpid,
-            "logused":         self.logused,
-            "waitresource":    self.waitresource,
-            "waittime":        self.waittime,
-            "lockMode":        self.lockMode,
-            "trancount":       self.trancount,
+            "pid": self.pid,
+            "is_victim": self.is_victim,
+            "spid": self.spid,
+            "kpid": self.kpid,
+            "logused": self.logused,
+            "waitresource": self.waitresource,
+            "waittime": self.waittime,
+            "lockMode": self.lockMode,
+            "trancount": self.trancount,
             "transactionname": self.transactionname,
             "lasttranstarted": self.lasttranstarted,
-            "currentdbname":   self.currentdbname,
-            "isolationlevel":  self.isolationlevel,
-            "loginname":       self.loginname,
-            "clientapp":       self.clientapp,
-            "apphost":         self.apphost,
-            "lockTimeout":     self.lockTimeout,
-            "status":          self.status,
-            "proc_name":       self.proc_name,
-            "exec_sql":        self.exec_sql,
-            "inputbuf_sql":    self.inputbuf_sql,
+            "currentdbname": self.currentdbname,
+            "isolationlevel": self.isolationlevel,
+            "loginname": self.loginname,
+            "clientapp": self.clientapp,
+            "apphost": self.apphost,
+            "lockTimeout": self.lockTimeout,
+            "status": self.status,
+            "proc_name": self.proc_name,
+            "exec_sql": self.exec_sql,
+            "inputbuf_sql": self.inputbuf_sql,
         }
-        return json.dumps({k: v for k, v in fields.items() if v not in ("", False, None)},
-                          ensure_ascii=False)
+        return json.dumps(
+            {k: v for k, v in fields.items() if v not in ("", False, None)}, ensure_ascii=False
+        )
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _strip_ts_prefix(raw: str) -> str:
     """
@@ -202,9 +206,9 @@ def _extract_sql(block_lines: list[str]) -> tuple[str, str, str, str]:
     IDLE, EXEC_STACK, REAL_FRAME, INPUTBUF = range(4)
     state = IDLE
 
-    proc_name:       str       = ""
-    exec_sql_lines:  list[str] = []
-    inputbuf_lines:  list[str] = []
+    proc_name: str = ""
+    exec_sql_lines: list[str] = []
+    inputbuf_lines: list[str] = []
 
     for line in block_lines:
         stripped = line.strip()
@@ -230,7 +234,7 @@ def _extract_sql(block_lines: list[str]) -> tuple[str, str, str, str]:
                 if m:
                     if not proc_name:
                         proc_name = m.group(1)
-                    exec_sql_lines = []   # reset: collect SQL for THIS frame only
+                    exec_sql_lines = []  # reset: collect SQL for THIS frame only
                     state = REAL_FRAME
                 else:
                     # adhoc / unknown frame — stop collecting exec_sql
@@ -238,7 +242,7 @@ def _extract_sql(block_lines: list[str]) -> tuple[str, str, str, str]:
                 continue
 
             if _UNKNOWN_ONLY.match(line):
-                continue   # skip blank placeholder lines
+                continue  # skip blank placeholder lines
 
             if state == REAL_FRAME and stripped:
                 exec_sql_lines.append(stripped)
@@ -248,7 +252,7 @@ def _extract_sql(block_lines: list[str]) -> tuple[str, str, str, str]:
             if stripped and not _PROC_STUB.match(line) and not _UNKNOWN_ONLY.match(line):
                 inputbuf_lines.append(stripped)
 
-    exec_sql     = _clean_sql(exec_sql_lines)
+    exec_sql = _clean_sql(exec_sql_lines)
     inputbuf_sql = _clean_sql(inputbuf_lines)
 
     # Best-candidate selection:
@@ -276,6 +280,7 @@ def _extract_sql(block_lines: list[str]) -> tuple[str, str, str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProcess]:
     """
     Parse one Splunk ``_raw`` deadlock event into one ``DeadlockProcess`` per
@@ -298,10 +303,8 @@ def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProc
         return []
 
     # Stable deadlock_id: hash of time + host + sorted victims.
-    victim_key  = "|".join(sorted(victims))
-    deadlock_id = hashlib.md5(
-        f"{splunk_time}|{splunk_host}|{victim_key}".encode()
-    ).hexdigest()[:16]
+    victim_key = "|".join(sorted(victims))
+    deadlock_id = hashlib.md5(f"{splunk_time}|{splunk_host}|{victim_key}".encode()).hexdigest()[:16]  # nosec B324 – non-security stable ID, must stay MD5 to match existing stored IDs
 
     # Split into process blocks on "process id=" anchors.
     # parts[0] = preamble (deadlock-list / process-list header)
@@ -309,7 +312,7 @@ def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProc
     parts = _PROCESS_SPLIT.split(clean)
 
     results: list[DeadlockProcess] = []
-    seen_pids: set[str] = set()   # deduplicate process blocks from interleaved spids
+    seen_pids: set[str] = set()  # deduplicate process blocks from interleaved spids
 
     for part in parts[1:]:
         lines = [ln for ln in part.splitlines() if ln.strip()]
@@ -324,7 +327,7 @@ def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProc
         pid = pid_match.group(1)
 
         if pid in seen_pids:
-            continue   # interleaved-spid duplicate
+            continue  # interleaved-spid duplicate
         seen_pids.add(pid)
 
         # Build full attribute string for pattern matching.
@@ -350,9 +353,7 @@ def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProc
             continue
 
         # Extract SQL from the remaining lines of this block.
-        proc.proc_name, proc.exec_sql, proc.inputbuf_sql, proc.sql_text = (
-            _extract_sql(lines[1:])
-        )
+        proc.proc_name, proc.exec_sql, proc.inputbuf_sql, proc.sql_text = _extract_sql(lines[1:])
 
         # UpdateQPStats: SQL Server internal auto-stats update deadlock.
         # These never have SQL text — use transactionname as the canonical label.

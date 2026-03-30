@@ -7,26 +7,29 @@ avoid depending on the upload pipeline.
 Run:
     uv run pytest tests/test_api_queries.py -v
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from httpx import AsyncClient
 
 from api.database import open_session
 from api.models import RawQuery
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _seed_query(**overrides) -> RawQuery:
     """Insert one RawQuery row directly and return the ORM object."""
     import hashlib
     import uuid
+
     unique = str(uuid.uuid4())
     defaults = dict(
-        query_hash=hashlib.md5(unique.encode()).hexdigest(),
+        query_hash=hashlib.sha256(unique.encode()).hexdigest(),
         source="sql",
         host="WINFODB06HV11",
         db_name="fb_db_v2",
@@ -36,10 +39,10 @@ async def _seed_query(**overrides) -> RawQuery:
         query_details=f"SELECT * FROM bet WHERE id = @P? /* {unique} */",
         month_year="2026-01",
         occurrence_count=3,
-        first_seen=datetime.now(tz=timezone.utc),
-        last_seen=datetime.now(tz=timezone.utc),
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        first_seen=datetime.now(tz=UTC),
+        last_seen=datetime.now(tz=UTC),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
     )
     defaults.update(overrides)
     row = RawQuery(**defaults)
@@ -48,6 +51,7 @@ async def _seed_query(**overrides) -> RawQuery:
         await session.commit()
         # Fetch with ID
         from sqlmodel import select
+
         result = await session.exec(select(RawQuery).where(RawQuery.query_hash == row.query_hash))
         return result.one()
 
@@ -55,6 +59,7 @@ async def _seed_query(**overrides) -> RawQuery:
 # ---------------------------------------------------------------------------
 # GET /api/queries
 # ---------------------------------------------------------------------------
+
 
 class TestListQueries:
     async def test_returns_list(self, client: AsyncClient, auth_headers: dict):
@@ -111,14 +116,23 @@ class TestListQueries:
         rows = r.json()
         if rows:
             row = rows[0]
-            for field in ("id", "query_hash", "source", "environment", "type",
-                          "occurrence_count", "first_seen", "last_seen"):
+            for field in (
+                "id",
+                "query_hash",
+                "source",
+                "environment",
+                "type",
+                "occurrence_count",
+                "first_seen",
+                "last_seen",
+            ):
                 assert field in row, f"Missing field: {field}"
 
 
 # ---------------------------------------------------------------------------
 # GET /api/queries/count
 # ---------------------------------------------------------------------------
+
 
 class TestQueryCount:
     async def test_count_returns_integer(self, client: AsyncClient, auth_headers: dict):
@@ -143,6 +157,7 @@ class TestQueryCount:
 # GET /api/queries/distinct
 # ---------------------------------------------------------------------------
 
+
 class TestDistinct:
     async def test_distinct_returns_hosts_and_dbs(self, client: AsyncClient, auth_headers: dict):
         r = await client.get("/api/queries/distinct", headers=auth_headers)
@@ -154,6 +169,7 @@ class TestDistinct:
 # ---------------------------------------------------------------------------
 # GET /api/queries/{id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetQuery:
     async def test_get_existing(self, client: AsyncClient, auth_headers: dict):

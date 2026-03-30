@@ -17,13 +17,13 @@ Architecture:
   Step 1 — MD5 hash computed in-process (no DuckDB needed here — simple concat)
   Step 2 — aiosqlite async upsert via SQLAlchemy Core INSERT … ON CONFLICT
 """
+
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -37,9 +37,9 @@ from api.models import (
 BATCH_SIZE = 500
 
 _TABLE_MODEL_MAP = {
-    "slow_sql":   RawQuerySlowSql,
-    "blocker":    RawQueryBlocker,
-    "deadlock":   RawQueryDeadlock,
+    "slow_sql": RawQuerySlowSql,
+    "blocker": RawQueryBlocker,
+    "deadlock": RawQueryDeadlock,
     "slow_mongo": RawQuerySlowMongo,
 }
 
@@ -49,30 +49,31 @@ _INTERNAL_KEYS = {"table_type", "_hash_parts"}
 
 
 def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def _make_hash(parts: list[str]) -> str:
     raw = "|".join(str(p or "").strip() for p in parts)
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()  # nosec B324 – non-security dedup key, must stay MD5 to match existing stored hashes
 
 
-def _derive_month_year_from_parts(parts: list) -> Optional[str]:
+def _derive_month_year_from_parts(parts: list) -> str | None:
     """
     Try to derive a YYYY-MM string from any date-like value in `parts`.
     Falls back to None if nothing parses.
     """
     import re
+
     patterns = [
         ("%Y-%m-%dT%H:%M:%S.%f", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+"),
-        ("%Y-%m-%dT%H:%M:%S",   r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"),
-        ("%Y-%m-%d %H:%M:%S",   r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
-        ("%Y-%m-%d",             r"\d{4}-\d{2}-\d{2}"),
+        ("%Y-%m-%dT%H:%M:%S", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"),
+        ("%Y-%m-%d %H:%M:%S", r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
+        ("%Y-%m-%d", r"\d{4}-\d{2}-\d{2}"),
         ("%Y/%m/%d %H:%M:%S.%f", r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+"),
-        ("%Y/%m/%d %H:%M:%S",   r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"),
-        ("%Y/%m/%d",             r"\d{4}/\d{2}/\d{2}"),
+        ("%Y/%m/%d %H:%M:%S", r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"),
+        ("%Y/%m/%d", r"\d{4}/\d{2}/\d{2}"),
         ("%m/%d/%Y %I:%M:%S %p", r"\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2} [AP]M"),
-        ("%m/%d/%Y",             r"\d{1,2}/\d{1,2}/\d{4}"),
+        ("%m/%d/%Y", r"\d{1,2}/\d{1,2}/\d{4}"),
     ]
     for val in parts:
         s = str(val or "").strip()
@@ -115,16 +116,16 @@ def _normalise_rows(rows: list[dict]) -> list[dict]:
         month_year = _derive_month_year_from_parts(hash_parts)
 
         clean = {k: v for k, v in row.items() if k not in _INTERNAL_KEYS}
-        clean["query_hash"]      = query_hash
+        clean["query_hash"] = query_hash
         # Prefer an explicitly-set month_year from the extractor (e.g. derived from
         # event_time); fall back to the value derived from _hash_parts.  Without
         # this, types that don't include a date in _hash_parts always get None.
-        clean["month_year"]      = clean.get("month_year") or month_year
+        clean["month_year"] = clean.get("month_year") or month_year
         clean["occurrence_count"] = 1
-        clean["first_seen"]      = now
-        clean["last_seen"]       = now
-        clean["created_at"]      = now
-        clean["updated_at"]      = now
+        clean["first_seen"] = now
+        clean["last_seen"] = now
+        clean["created_at"] = now
+        clean["updated_at"] = now
         normalised.append(clean)
 
     # Deduplicate within the batch by query_hash (keep first occurrence,
@@ -165,8 +166,9 @@ async def ingest_typed_rows(
 
     normalised = _normalise_rows(rows)
 
-    from api.database import write_session  # local import to avoid circular refs
     from sqlalchemy import text
+
+    from api.database import write_session  # local import to avoid circular refs
 
     async with write_session() as session:
         for i in range(0, len(normalised), BATCH_SIZE):
@@ -176,10 +178,7 @@ async def ingest_typed_rows(
             # extra keys that don't belong (e.g. "raw_xml" on a blocker row).
             valid_cols = {c.name for c in model.__table__.columns}  # type: ignore[attr-defined]
 
-            clean_batch = [
-                {k: v for k, v in r.items() if k in valid_cols}
-                for r in batch
-            ]
+            clean_batch = [{k: v for k, v in r.items() if k in valid_cols} for r in batch]
 
             # -- Split into new vs existing rows (accurate insert/update counts) --
             chunk_hashes = [r["query_hash"] for r in clean_batch]
@@ -191,7 +190,7 @@ async def ingest_typed_rows(
             )
             existing_hashes: set[str] = {row[0] for row in existing}
 
-            new_rows      = [r for r in clean_batch if r["query_hash"] not in existing_hashes]
+            new_rows = [r for r in clean_batch if r["query_hash"] not in existing_hashes]
             existing_rows = [r for r in clean_batch if r["query_hash"] in existing_hashes]
 
             stmt = sqlite_insert(model).values(clean_batch)  # type: ignore[arg-type]
@@ -205,15 +204,15 @@ async def ingest_typed_rows(
                         model.occurrence_count  # type: ignore[attr-defined]
                         + stmt.excluded.occurrence_count
                     ),
-                    "last_seen":   stmt.excluded.last_seen,
-                    "updated_at":  stmt.excluded.updated_at,
+                    "last_seen": stmt.excluded.last_seen,
+                    "updated_at": stmt.excluded.updated_at,
                 },
             )
 
             try:
                 await session.execute(stmt)
                 result.inserted += len(new_rows)
-                result.updated  += len(existing_rows)
+                result.updated += len(existing_rows)
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"Batch {i // BATCH_SIZE}: {exc}")
 
@@ -227,7 +226,7 @@ async def ingest_typed_file(file_path: Path) -> TypedIngestResult:
     Convenience wrapper: extract + ingest a single typed CSV file.
     Returns TypedIngestResult(table_type="unknown") for unrecognised files.
     """
-    from api.services.extractor import extract_typed_from_file, _detect_typed_table
+    from api.services.extractor import _detect_typed_table, extract_typed_from_file
 
     table_type = _detect_typed_table(file_path.name)
     if table_type == "unknown":
@@ -235,4 +234,3 @@ async def ingest_typed_file(file_path: Path) -> TypedIngestResult:
 
     rows = extract_typed_from_file(file_path)
     return await ingest_typed_rows(rows, table_type)
-

@@ -11,6 +11,7 @@ Tests cover:
 Run:
     uv run pytest tests/test_deadlock_extractor.py -v
 """
+
 from __future__ import annotations
 
 import json
@@ -20,14 +21,13 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from api.services.deadlock_parser import parse_raw
 from api.services.extractor import (
     _is_raw_deadlock_format,
     _process_deadlocks_legacy,
     _process_deadlocks_raw,
     extract_from_file,
 )
-from api.services.deadlock_parser import parse_raw
-
 
 # ---------------------------------------------------------------------------
 # Minimal _raw snippets used across tests
@@ -74,14 +74,13 @@ _RAW_ADHOC_TWO_WAY = """\
 
 def _make_df(col_names: list[str], rows: list[dict]) -> pl.DataFrame:
     """Build a Polars DataFrame with all-string schema from column names and row dicts."""
-    return pl.DataFrame(
-        {col: [str(r.get(col, "")) for r in rows] for col in col_names}
-    )
+    return pl.DataFrame({col: [str(r.get(col, "")) for r in rows] for col in col_names})
 
 
 # ---------------------------------------------------------------------------
 # TestIsRawDeadlockFormat
 # ---------------------------------------------------------------------------
+
 
 class TestIsRawDeadlockFormat:
     def test_raw_only_format_detected(self):
@@ -101,14 +100,18 @@ class TestIsRawDeadlockFormat:
         assert _is_raw_deadlock_format(["_TIME", "HOST", "_RAW", "CLEAN_QUERY"]) is False
 
     def test_extra_columns_do_not_affect_detection(self):
-        assert _is_raw_deadlock_format(
-            ["_time", "host", "id", "lockMode", "transactionname", "victim", "waittime", "_raw"]
-        ) is True
+        assert (
+            _is_raw_deadlock_format(
+                ["_time", "host", "id", "lockMode", "transactionname", "victim", "waittime", "_raw"]
+            )
+            is True
+        )
 
 
 # ---------------------------------------------------------------------------
 # TestProcessDeadlocksRaw
 # ---------------------------------------------------------------------------
+
 
 class TestProcessDeadlocksRaw:
     @pytest.fixture
@@ -117,13 +120,13 @@ class TestProcessDeadlocksRaw:
             ["_time", "host", "id", "lockMode", "victim", "waittime", "_raw"],
             [
                 {
-                    "_time":   "2026-02-28T17:57:48.240+0800",
-                    "host":    "WGCSRV32",
-                    "id":      "processAAA processBBB",
+                    "_time": "2026-02-28T17:57:48.240+0800",
+                    "host": "WGCSRV32",
+                    "id": "processAAA processBBB",
                     "lockMode": "X",
-                    "victim":  "processAAA",
+                    "victim": "processAAA",
                     "waittime": "3040",
-                    "_raw":    _RAW_TWO_WAY,
+                    "_raw": _RAW_TWO_WAY,
                 },
             ],
         )
@@ -135,8 +138,16 @@ class TestProcessDeadlocksRaw:
     def test_each_row_has_required_keys(self, raw_df):
         rows = _process_deadlocks_raw(raw_df, "prod", parse_raw)
         for row in rows:
-            for key in ("time", "source", "host", "db_name", "environment",
-                        "type", "query_details", "extra_metadata"):
+            for key in (
+                "time",
+                "source",
+                "host",
+                "db_name",
+                "environment",
+                "type",
+                "query_details",
+                "extra_metadata",
+            ):
                 assert key in row, f"Missing key: {key}"
 
     def test_query_details_contains_actual_sql(self, raw_df):
@@ -197,8 +208,18 @@ class TestProcessDeadlocksRaw:
         df = _make_df(
             ["_time", "host", "id", "_raw"],
             [
-                {"_time": "2026-02-28T17:57:48.240+0800", "host": "H1", "id": "A B", "_raw": _RAW_TWO_WAY},
-                {"_time": "2026-02-22T04:01:25.640+0800", "host": "H2", "id": "C D", "_raw": _RAW_ADHOC_TWO_WAY},
+                {
+                    "_time": "2026-02-28T17:57:48.240+0800",
+                    "host": "H1",
+                    "id": "A B",
+                    "_raw": _RAW_TWO_WAY,
+                },
+                {
+                    "_time": "2026-02-22T04:01:25.640+0800",
+                    "host": "H2",
+                    "id": "C D",
+                    "_raw": _RAW_ADHOC_TWO_WAY,
+                },
             ],
         )
         rows = _process_deadlocks_raw(df, "sat", parse_raw)
@@ -209,28 +230,41 @@ class TestProcessDeadlocksRaw:
 # TestProcessDeadlocksLegacy
 # ---------------------------------------------------------------------------
 
+
 class TestProcessDeadlocksLegacy:
     @pytest.fixture
     def legacy_df(self):
         return _make_df(
-            ["_time", "host", "hostname", "currentdbname", "id", "victim",
-             "transactionname", "lockMode", "lockTimeout", "waittime",
-             "count", "clean_query", "_raw"],
+            [
+                "_time",
+                "host",
+                "hostname",
+                "currentdbname",
+                "id",
+                "victim",
+                "transactionname",
+                "lockMode",
+                "lockTimeout",
+                "waittime",
+                "count",
+                "clean_query",
+                "_raw",
+            ],
             [
                 {
-                    "_time":          "2026-02-28T17:57:48.240+0800",
-                    "host":           "WGCSRV32",
-                    "hostname":       "apphost01",
-                    "currentdbname":  "my_db",
-                    "id":             "processAAA processBBB",
-                    "victim":         "processAAA",
+                    "_time": "2026-02-28T17:57:48.240+0800",
+                    "host": "WGCSRV32",
+                    "hostname": "apphost01",
+                    "currentdbname": "my_db",
+                    "id": "processAAA processBBB",
+                    "victim": "processAAA",
                     "transactionname": "user_transaction",
-                    "lockMode":       "X",
-                    "lockTimeout":    "4294967295",
-                    "waittime":       "3040",
-                    "count":          "5",
-                    "clean_query":    "SELECT @x = col FROM my_table WHERE id = @id",
-                    "_raw":           _RAW_TWO_WAY,
+                    "lockMode": "X",
+                    "lockTimeout": "4294967295",
+                    "waittime": "3040",
+                    "count": "5",
+                    "clean_query": "SELECT @x = col FROM my_table WHERE id = @id",
+                    "_raw": _RAW_TWO_WAY,
                 },
             ],
         )
@@ -247,14 +281,16 @@ class TestProcessDeadlocksLegacy:
         """Parser finds exec_sql with full DML — should replace frame-reference clean_query."""
         df = _make_df(
             ["_time", "host", "currentdbname", "count", "clean_query", "_raw"],
-            [{
-                "_time":         "2026-02-28T17:57:48.240+0800",
-                "host":          "HOST",
-                "currentdbname": "my_db",
-                "count":         "1",
-                "clean_query":   "frame procname=my_db.dbo.usp_do_work line=10 stmtstart=24158",
-                "_raw":          _RAW_TWO_WAY,
-            }],
+            [
+                {
+                    "_time": "2026-02-28T17:57:48.240+0800",
+                    "host": "HOST",
+                    "currentdbname": "my_db",
+                    "count": "1",
+                    "clean_query": "frame procname=my_db.dbo.usp_do_work line=10 stmtstart=24158",
+                    "_raw": _RAW_TWO_WAY,
+                }
+            ],
         )
         rows = _process_deadlocks_legacy(df, "prod", parse_raw)
         # The parser finds actual SQL in exec_sql; it should replace the frame reference.
@@ -284,20 +320,32 @@ class TestProcessDeadlocksLegacy:
     def test_fallback_metadata_when_raw_empty(self):
         """When _raw is absent, extra_metadata is built from CSV columns only."""
         df = _make_df(
-            ["_time", "host", "currentdbname", "count", "clean_query",
-             "victim", "lockMode", "lockTimeout", "waittime", "transactionname"],
-            [{
-                "_time":          "2026-02-22T04:01:25.640+0800",
-                "host":           "HOST",
-                "currentdbname":  "test_db",
-                "count":          "2",
-                "clean_query":    "INSERT INTO t VALUES (@P0)",
-                "victim":         "proc_x",
-                "lockMode":       "X",
-                "lockTimeout":    "100",
-                "waittime":       "50",
-                "transactionname": "user_transaction",
-            }],
+            [
+                "_time",
+                "host",
+                "currentdbname",
+                "count",
+                "clean_query",
+                "victim",
+                "lockMode",
+                "lockTimeout",
+                "waittime",
+                "transactionname",
+            ],
+            [
+                {
+                    "_time": "2026-02-22T04:01:25.640+0800",
+                    "host": "HOST",
+                    "currentdbname": "test_db",
+                    "count": "2",
+                    "clean_query": "INSERT INTO t VALUES (@P0)",
+                    "victim": "proc_x",
+                    "lockMode": "X",
+                    "lockTimeout": "100",
+                    "waittime": "50",
+                    "transactionname": "user_transaction",
+                }
+            ],
         )
         rows = _process_deadlocks_legacy(df, "sat", parse_raw)
         assert len(rows) == 1
@@ -318,6 +366,7 @@ class TestProcessDeadlocksLegacy:
 # ---------------------------------------------------------------------------
 # TestExtractFromFileDeadlock — end-to-end routing via extract_from_file()
 # ---------------------------------------------------------------------------
+
 
 class TestExtractFromFileDeadlock:
     def _write_csv(self, tmp_path: Path, filename: str, content: str) -> Path:

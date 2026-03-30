@@ -8,6 +8,7 @@ shared in-memory engine by conftest.py.
 Run:
     uv run pytest tests/test_db_connection.py -v
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -16,21 +17,22 @@ import pytest
 import sqlalchemy as sa
 from sqlmodel import Session
 
-
 # ---------------------------------------------------------------------------
 # Helpers — seed data into the shared in-memory DB for these tests
 # ---------------------------------------------------------------------------
 
+
 def _sync_url() -> str:
     """Return a synchronous SQLite URL derived from the patched database module."""
     from api.database import SQLITE_URL
+
     return str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
 
 
 @pytest.fixture()
 def seeded_raw_query():
     """Insert two rows into raw_query via ORM (so Python defaults are applied)."""
-    from api.models import RawQuery, SourceType, QueryType, EnvironmentType
+    from api.models import EnvironmentType, QueryType, RawQuery, SourceType
 
     engine = sa.create_engine(_sync_url())
     rows = [
@@ -63,20 +65,24 @@ def seeded_raw_query():
 # _load_table
 # ---------------------------------------------------------------------------
 
+
 class TestLoadTable:
     def test_unknown_table_raises(self):
         from api.analytics_db import _load_table
+
         with pytest.raises(ValueError, match="Unknown table"):
             _load_table("nonexistent_table")
 
     def test_returns_dataframe(self, seeded_raw_query):
         from api.analytics_db import _load_table
+
         df = _load_table("raw_query")
         assert isinstance(df, pl.DataFrame)
         assert "query_hash" in df.columns
 
     def test_has_seeded_rows(self, seeded_raw_query):
         from api.analytics_db import _load_table
+
         df = _load_table("raw_query")
         hashes = df["query_hash"].to_list()
         assert "aaa" in hashes
@@ -85,6 +91,7 @@ class TestLoadTable:
     def test_empty_table_returns_empty_dataframe(self):
         """curated_query is empty in a fresh test DB — should not error."""
         from api.analytics_db import _load_table
+
         df = _load_table("curated_query")
         assert isinstance(df, pl.DataFrame)
 
@@ -93,15 +100,18 @@ class TestLoadTable:
 # get_duck
 # ---------------------------------------------------------------------------
 
+
 class TestGetDuck:
     def test_returns_duckdb_connection(self, seeded_raw_query):
         from api.analytics_db import get_duck
+
         con = get_duck("raw_query")
         assert isinstance(con, duckdb.DuckDBPyConnection)
         con.close()
 
     def test_table_queryable(self, seeded_raw_query):
         from api.analytics_db import get_duck
+
         con = get_duck("raw_query")
         result = con.execute("SELECT COUNT(*) AS n FROM raw_query").fetchone()
         assert result[0] >= 2
@@ -109,7 +119,8 @@ class TestGetDuck:
 
     def test_defaults_to_raw_query(self, seeded_raw_query):
         from api.analytics_db import get_duck
-        con = get_duck()          # no table arg → defaults to raw_query
+
+        con = get_duck()  # no table arg → defaults to raw_query
         result = con.execute("SELECT 1").fetchone()
         assert result[0] == 1
         con.close()
@@ -119,9 +130,11 @@ class TestGetDuck:
 # build_where
 # ---------------------------------------------------------------------------
 
+
 class TestBuildWhere:
     def _bw(self, clauses):
         from api.analytics_db import build_where
+
         return build_where(clauses)
 
     def test_empty_clauses(self):

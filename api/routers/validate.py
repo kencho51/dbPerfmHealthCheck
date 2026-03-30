@@ -5,6 +5,7 @@ Accepts a multipart file upload and returns a `ValidationResult` without
 touching the database.  Used by the upload page's preview step in the
 Next.js frontend.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -42,7 +43,7 @@ async def validate_upload(file: UploadFile) -> dict:
     try:
         result = validate_csv(tmp_path)
         # Patch with original filename context
-        result.file_type   = _detect_file_category(filename)
+        result.file_type = _detect_file_category(filename)
         result.environment = _extract_environment(filename)
         return result.to_dict()
     except Exception as exc:
