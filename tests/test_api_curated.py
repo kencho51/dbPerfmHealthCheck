@@ -29,7 +29,7 @@ async def _seed_raw_query(**overrides) -> RawQuery:
     """Insert one RawQuery row and return it with its DB-assigned id."""
     unique = str(uuid.uuid4())
     defaults = dict(
-        query_hash=hashlib.md5(unique.encode()).hexdigest(),
+        query_hash=hashlib.sha256(unique.encode()).hexdigest(),
         source="sql",
         host="WINFODB06HV11",
         db_name="fb_db_v2",

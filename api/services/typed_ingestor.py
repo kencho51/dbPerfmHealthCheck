@@ -54,7 +54,7 @@ def _now() -> datetime:
 
 def _make_hash(parts: list[str]) -> str:
     raw = "|".join(str(p or "").strip() for p in parts)
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()  # nosec B324 – non-security dedup key, must stay MD5 to match existing stored hashes
 
 
 def _derive_month_year_from_parts(parts: list) -> str | None:

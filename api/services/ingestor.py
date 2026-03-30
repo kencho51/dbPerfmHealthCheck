@@ -161,7 +161,7 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
         parts = [src, host_stored.lower(), db_stored.lower(), env, typ, t_stored, qd_stored]
         if em_stored:  # NULLIF(trim(extra_metadata), '') → skip when empty
             parts.append(em_stored)
-        qhash = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+        qhash = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()  # nosec B324 – non-security dedup key, must stay MD5 to match existing stored hashes
 
         # --- Deduplicate (DuckDB GROUP BY ALL + SUM) ----------------------------
         if qhash in seen:

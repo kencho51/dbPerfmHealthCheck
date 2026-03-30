@@ -304,7 +304,7 @@ def parse_raw(raw: str, splunk_time: str, splunk_host: str) -> list[DeadlockProc
 
     # Stable deadlock_id: hash of time + host + sorted victims.
     victim_key = "|".join(sorted(victims))
-    deadlock_id = hashlib.md5(f"{splunk_time}|{splunk_host}|{victim_key}".encode()).hexdigest()[:16]
+    deadlock_id = hashlib.md5(f"{splunk_time}|{splunk_host}|{victim_key}".encode()).hexdigest()[:16]  # nosec B324 – non-security stable ID, must stay MD5 to match existing stored IDs
 
     # Split into process blocks on "process id=" anchors.
     # parts[0] = preamble (deadlock-list / process-list header)
