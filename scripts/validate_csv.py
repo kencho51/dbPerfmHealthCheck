@@ -10,6 +10,7 @@ Exit code:
     0 — all files valid (warnings allowed)
     1 — one or more files have errors
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,12 +27,12 @@ from api.services.validator import ValidationResult, validate_csv  # noqa: E402
 # ---------------------------------------------------------------------------
 # Terminal colours (no external dependency — plain ANSI)
 # ---------------------------------------------------------------------------
-_RESET  = "\033[0m"
-_GREEN  = "\033[92m"
+_RESET = "\033[0m"
+_GREEN = "\033[92m"
 _YELLOW = "\033[93m"
-_RED    = "\033[91m"
-_CYAN   = "\033[96m"
-_BOLD   = "\033[1m"
+_RED = "\033[91m"
+_CYAN = "\033[96m"
+_BOLD = "\033[1m"
 
 
 def _colour(text: str, code: str) -> str:
@@ -40,9 +41,7 @@ def _colour(text: str, code: str) -> str:
 
 def _print_result(filename: str, r: ValidationResult) -> None:
     status_str = (
-        _colour("VALID  ", _GREEN + _BOLD)
-        if r.is_valid
-        else _colour("INVALID", _RED + _BOLD)
+        _colour("VALID  ", _GREEN + _BOLD) if r.is_valid else _colour("INVALID", _RED + _BOLD)
     )
     print(f"\n{status_str}  {_colour(filename, _CYAN)}")
     print(f"  Type        : {r.file_type}")

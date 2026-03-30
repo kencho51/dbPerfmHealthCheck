@@ -26,10 +26,11 @@ GET /api/analytics/host-stats       — P50/P95/P99 occurrence distribution per 
 GET /api/analytics/co-occurrence    — hosts with both blocker + deadlock events (8D)
                                       by-month now includes row_delta / occ_delta via LAG (8E)
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Query
 
@@ -43,16 +44,17 @@ router = APIRouter()
 # Shared filter builder
 # ---------------------------------------------------------------------------
 
+
 def _build_filters(
     *,
-    source:      Optional[str] = None,
-    environment: Optional[str] = None,
-    host:        Optional[str] = None,
-    db_name:     Optional[str] = None,
-    month_year:  Optional[str] = None,
-    type_:       Optional[str] = None,
-    system:      Optional[str] = None,
-    extra:       list[str]     | None = None,
+    source: str | None = None,
+    environment: str | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    type_: str | None = None,
+    system: str | None = None,
+    extra: list[str] | None = None,
 ) -> tuple[str, list[Any]]:
     """
     Return (WHERE clause string, positional params list) for DuckDB queries.
@@ -63,15 +65,15 @@ def _build_filters(
     Extra raw SQL conditions (no params) can be added via ``extra``.
     """
     conditions: list[str] = ["1=1"]
-    params:     list[Any] = []
+    params: list[Any] = []
 
     for col_name, val in [
-        ("source",      source),
+        ("source", source),
         ("environment", environment),
-        ("host",        host),
-        ("db_name",     db_name),
-        ("month_year",  month_year),
-        ("type",        type_),
+        ("host", host),
+        ("db_name", db_name),
+        ("month_year", month_year),
+        ("type", type_),
     ]:
         if val is not None:
             conditions.append(f"{col_name} = ?")
@@ -79,15 +81,16 @@ def _build_filters(
 
     if system is not None:
         from api.host_system import SYSTEM_HOSTS
+
         hosts = SYSTEM_HOSTS.get(system.upper(), [])
         if hosts:
             ph = ", ".join("?" * len(hosts))
             conditions.append(f"upper(host) IN ({ph})")
             params.extend(h.upper() for h in hosts)
         else:
-            conditions.append("1 = 0")   # unknown system → no rows
+            conditions.append("1 = 0")  # unknown system → no rows
 
-    for cond in (extra or []):
+    for cond in extra or []:
         conditions.append(cond)
 
     return "WHERE " + " AND ".join(conditions), params
@@ -107,18 +110,27 @@ _STRPTIME_SQL = """[
 # GET /api/analytics/summary
 # ---------------------------------------------------------------------------
 
+
 def _summary_sync(
-    source: str | None, environment: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     where, params = _build_filters(
-        source=source, environment=environment, host=host,
-        db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT environment, type, source,
                    COUNT(*) AS row_count,
                    SUM(occurrence_count) AS total_occurrences
@@ -126,10 +138,17 @@ def _summary_sync(
             {where}
             GROUP BY environment, type, source
             ORDER BY environment, type
-        """, params).fetchall()
+        """,
+            params,
+        ).fetchall()
         return [
-            {"environment": r[0], "type": r[1], "source": r[2],
-             "row_count": r[3], "total_occurrences": r[4]}
+            {
+                "environment": r[0],
+                "type": r[1],
+                "source": r[2],
+                "row_count": r[3],
+                "total_occurrences": r[4],
+            }
             for r in rows
         ]
     finally:
@@ -138,17 +157,21 @@ def _summary_sync(
 
 @router.get("/summary", summary="Row counts grouped by environment and type")
 async def analytics_summary(
-    source:      Optional[SourceType]      = None,
-    environment: Optional[EnvironmentType] = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    source: SourceType | None = None,
+    environment: EnvironmentType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _summary_sync,
-        source and source.value, environment and environment.value,
-        host, db_name, month_year, system,
+        source and source.value,
+        environment and environment.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
@@ -156,20 +179,29 @@ async def analytics_summary(
 # GET /api/analytics/by-host
 # ---------------------------------------------------------------------------
 
+
 def _by_host_sync(
     top_n: int,
-    source: str | None, environment: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     where, params = _build_filters(
-        source=source, environment=environment, host=host,
-        db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["host IS NOT NULL"],
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT host, environment,
                    COUNT(*) AS row_count,
                    SUM(occurrence_count) AS total_occurrences
@@ -178,10 +210,11 @@ def _by_host_sync(
             GROUP BY host, environment
             ORDER BY SUM(occurrence_count) DESC
             LIMIT ?
-        """, params + [top_n]).fetchall()
+        """,
+            params + [top_n],
+        ).fetchall()
         return [
-            {"host": r[0], "environment": r[1],
-             "row_count": r[2], "total_occurrences": r[3]}
+            {"host": r[0], "environment": r[1], "row_count": r[2], "total_occurrences": r[3]}
             for r in rows
         ]
     finally:
@@ -191,17 +224,22 @@ def _by_host_sync(
 @router.get("/by-host", summary="Top hosts by total occurrence count")
 async def analytics_by_host(
     top_n: int = Query(default=20, ge=1, le=100),
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
-        _by_host_sync, top_n,
-        source and source.value, environment and environment.value,
-        host, db_name, month_year, system,
+        _by_host_sync,
+        top_n,
+        source and source.value,
+        environment and environment.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
@@ -209,19 +247,30 @@ async def analytics_by_host(
 # GET /api/analytics/by-month
 # ---------------------------------------------------------------------------
 
+
 def _by_month_sync(
-    source: str | None, environment: str | None, type_: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    type_: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     where, params = _build_filters(
-        source=source, environment=environment, type_=type_,
-        host=host, db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        type_=type_,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["month_year IS NOT NULL"],
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT month_year,
                    row_count,
                    total_occurrences,
@@ -238,14 +287,16 @@ def _by_month_sync(
                 GROUP BY month_year
             ) t
             ORDER BY month_year
-        """, params).fetchall()
+        """,
+            params,
+        ).fetchall()
         return [
             {
-                "month_year":        r[0],
-                "row_count":         r[1],
+                "month_year": r[0],
+                "row_count": r[1],
                 "total_occurrences": r[2],
-                "row_delta":         r[3],  # None for the first month
-                "occ_delta":         r[4],
+                "row_delta": r[3],  # None for the first month
+                "occ_delta": r[4],
             }
             for r in rows
         ]
@@ -255,24 +306,30 @@ def _by_month_sync(
 
 @router.get("/by-month", summary="Row count per month (trend line)")
 async def analytics_by_month(
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    type:        Optional[QueryType]       = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    type: QueryType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _by_month_sync,
-        source and source.value, environment and environment.value,
-        type and type.value, host, db_name, month_year, system,
+        source and source.value,
+        environment and environment.value,
+        type and type.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
 # ---------------------------------------------------------------------------
 # GET /api/analytics/by-month-type
 # ---------------------------------------------------------------------------
+
 
 def _by_month_type_sync() -> list[dict]:
     """Pivot: one row per month_year.
@@ -312,8 +369,9 @@ def _by_month_type_sync() -> list[dict]:
                     SUM(csv_row_count) FILTER (WHERE file_type = 'blocker')          AS blocker,
                     SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock')         AS deadlock,
                     SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql')   AS slow_query,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo') AS slow_query_mongo,
-                    SUM(csv_row_count)                                                AS total_file_rows
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo')
+                        AS slow_query_mongo,
+                    SUM(csv_row_count) AS total_file_rows
                 FROM (
                     SELECT month_year, file_type, csv_row_count,
                            ROW_NUMBER() OVER (
@@ -330,13 +388,13 @@ def _by_month_type_sync() -> list[dict]:
         """).fetchall()
         return [
             {
-                "month_year":       r[0],
-                "blocker":          r[1],
-                "deadlock":         r[2],
-                "slow_query":       r[3],
+                "month_year": r[0],
+                "blocker": r[1],
+                "deadlock": r[2],
+                "slow_query": r[3],
                 "slow_query_mongo": r[4],
-                "total_file_rows":  r[5],  # None for pre-log months
-                "total_patterns":   r[6],  # unique SQL entries in raw_query
+                "total_file_rows": r[5],  # None for pre-log months
+                "total_patterns": r[6],  # unique SQL entries in raw_query
             }
             for r in rows
         ]
@@ -353,20 +411,29 @@ async def analytics_by_month_type() -> list[dict]:
 # GET /api/analytics/by-db
 # ---------------------------------------------------------------------------
 
+
 def _by_db_sync(
     top_n: int,
-    source: str | None, environment: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     where, params = _build_filters(
-        source=source, environment=environment, host=host,
-        db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["db_name IS NOT NULL", "db_name != ''"],
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT db_name, source,
                    COUNT(*) AS row_count,
                    SUM(occurrence_count) AS total_occurrences
@@ -375,10 +442,11 @@ def _by_db_sync(
             GROUP BY db_name, source
             ORDER BY SUM(occurrence_count) DESC
             LIMIT ?
-        """, params + [top_n]).fetchall()
+        """,
+            params + [top_n],
+        ).fetchall()
         return [
-            {"db_name": r[0], "source": r[1],
-             "row_count": r[2], "total_occurrences": r[3]}
+            {"db_name": r[0], "source": r[1], "row_count": r[2], "total_occurrences": r[3]}
             for r in rows
         ]
     finally:
@@ -388,17 +456,22 @@ def _by_db_sync(
 @router.get("/by-db", summary="Top databases by occurrence count")
 async def analytics_by_db(
     top_n: int = Query(default=20, ge=1, le=100),
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
-        _by_db_sync, top_n,
-        source and source.value, environment and environment.value,
-        host, db_name, month_year, system,
+        _by_db_sync,
+        top_n,
+        source and source.value,
+        environment and environment.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
@@ -406,33 +479,44 @@ async def analytics_by_db(
 # GET /api/analytics/curation-coverage
 # ---------------------------------------------------------------------------
 
+
 def _coverage_sync(
-    source: str | None, environment: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> dict:
     # DuckDB LEFT JOIN across both SQLite tables — single query, no round-trips
     where, params = _build_filters(
-        source=source, environment=environment, host=host,
-        db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
     )
     con = get_duck("raw_query", "curated_query")
     try:
-        row = con.execute(f"""
+        row = con.execute(
+            f"""
             SELECT
                 COUNT(*)         AS total,
                 COUNT(cq.id)     AS curated
             FROM raw_query rq
             LEFT JOIN curated_query cq ON cq.raw_query_id = rq.id
             {where}
-        """, params).fetchone()
+        """,
+            params,
+        ).fetchone()
         total, curated = row[0], row[1]
         coverage_pct = round(curated / total * 100, 4) if total else 0.0
         return {
-            "total_rows":     total,
-            "curated_rows":   curated,
+            "total_rows": total,
+            "curated_rows": curated,
             "uncurated_rows": total - curated,
-            "coverage_pct":   coverage_pct,
+            "coverage_pct": coverage_pct,
         }
     finally:
         con.close()
@@ -440,17 +524,21 @@ def _coverage_sync(
 
 @router.get("/curation-coverage", summary="Curation coverage statistics")
 async def analytics_curation_coverage(
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> dict:
     return await asyncio.to_thread(
         _coverage_sync,
-        source and source.value, environment and environment.value,
-        host, db_name, month_year, system,
+        source and source.value,
+        environment and environment.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
@@ -458,12 +546,17 @@ async def analytics_curation_coverage(
 # GET /api/analytics/by-hour
 # ---------------------------------------------------------------------------
 
+
 def _by_hour_sync(
-    source: str | None, environment: str | None, type_: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    type_: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
     week_start: str | None = None,
-    week_end:   str | None = None,
+    week_end: str | None = None,
 ) -> list[dict]:
     """
     DuckDB replaces the old SQLModel-fetch + Polars multi-step pipeline.
@@ -474,18 +567,27 @@ def _by_hour_sync(
     together; omitting both returns all weeks.
     """
     where, params = _build_filters(
-        source=source, environment=environment, type_=type_,
-        host=host, db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        type_=type_,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["time IS NOT NULL"],
     )
     # Calendar week filter: compare the parsed timestamp's date against the
     # supplied ISO date strings.  Appended after dt is already resolved.
     week_filter = ""
     if week_start and week_end:
-        week_filter = f"AND CAST(dt AS DATE) BETWEEN CAST('{week_start}' AS DATE) AND CAST('{week_end}' AS DATE)"
+        week_filter = (
+            f"AND CAST(dt AS DATE) BETWEEN CAST('{week_start}' AS DATE)"
+            f" AND CAST('{week_end}' AS DATE)"
+        )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT
                 datepart('hour',   dt) AS hour,
                 datepart('isodow', dt) - 1 AS weekday,
@@ -510,55 +612,66 @@ def _by_hour_sync(
             {week_filter}
             GROUP BY hour, weekday, qtype, host, db_name
             ORDER BY weekday, hour
-        """, params).fetchall()
+        """,
+            params,
+        ).fetchall()
     finally:
         con.close()
 
     # Assemble nested structure in Python (minimal work — DuckDB already aggregated)
     cells: dict[tuple[int, int], dict] = {}
     for hour, weekday, occ, qtype, host_v, db_v in rows:
-        key  = (hour, weekday)
-        cell = cells.setdefault(key, {
-            "hour": hour, "weekday": weekday, "count": 0,
-            "by_type": {}, "_hosts": {}, "_dbs": {},
-        })
-        cell["count"]           += occ
-        cell["by_type"][qtype]   = cell["by_type"].get(qtype, 0) + occ
+        key = (hour, weekday)
+        cell = cells.setdefault(
+            key,
+            {
+                "hour": hour,
+                "weekday": weekday,
+                "count": 0,
+                "by_type": {},
+                "_hosts": {},
+                "_dbs": {},
+            },
+        )
+        cell["count"] += occ
+        cell["by_type"][qtype] = cell["by_type"].get(qtype, 0) + occ
         if host_v:
             cell["_hosts"][host_v] = cell["_hosts"].get(host_v, 0) + occ
         if db_v:
-            cell["_dbs"][db_v]     = cell["_dbs"].get(db_v, 0) + occ
+            cell["_dbs"][db_v] = cell["_dbs"].get(db_v, 0) + occ
 
     result = []
     for cell in sorted(cells.values(), key=lambda c: (c["weekday"], c["hour"])):
-        result.append({
-            "hour":      cell["hour"],
-            "weekday":   cell["weekday"],
-            "count":     cell["count"],
-            "by_type":   cell["by_type"],
-            "top_hosts": sorted(
-                [{"host": h, "count": c} for h, c in cell["_hosts"].items()],
-                key=lambda x: -x["count"],
-            )[:5],
-            "top_dbs": sorted(
-                [{"db_name": d, "count": c} for d, c in cell["_dbs"].items()],
-                key=lambda x: -x["count"],
-            )[:5],
-        })
+        result.append(
+            {
+                "hour": cell["hour"],
+                "weekday": cell["weekday"],
+                "count": cell["count"],
+                "by_type": cell["by_type"],
+                "top_hosts": sorted(
+                    [{"host": h, "count": c} for h, c in cell["_hosts"].items()],
+                    key=lambda x: -x["count"],
+                )[:5],
+                "top_dbs": sorted(
+                    [{"db_name": d, "count": c} for d, c in cell["_dbs"].items()],
+                    key=lambda x: -x["count"],
+                )[:5],
+            }
+        )
     return result
 
 
 @router.get("/by-hour", summary="Query count heatmap: hour-of-day × day-of-week")
 async def analytics_by_hour(
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    type:        Optional[QueryType]       = None,
-    system:      Optional[str]             = None,
-    week_start:  Optional[str]             = None,
-    week_end:    Optional[str]             = None,
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    type: QueryType | None = None,
+    system: str | None = None,
+    week_start: str | None = None,
+    week_end: str | None = None,
 ) -> list[dict]:
     """
     week_start / week_end: ISO date strings for the chosen calendar week
@@ -567,9 +680,15 @@ async def analytics_by_hour(
     """
     return await asyncio.to_thread(
         _by_hour_sync,
-        source and source.value, environment and environment.value,
-        type and type.value, host, db_name, month_year, system,
-        week_start, week_end,
+        source and source.value,
+        environment and environment.value,
+        type and type.value,
+        host,
+        db_name,
+        month_year,
+        system,
+        week_start,
+        week_end,
     )
 
 
@@ -577,10 +696,16 @@ async def analytics_by_hour(
 # GET /api/analytics/top-fingerprints
 # ---------------------------------------------------------------------------
 
+
 def _top_fingerprints_sync(
-    source: str | None, environment: str | None, type_: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None, top_n: int,
+    source: str | None,
+    environment: str | None,
+    type_: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
+    top_n: int,
 ) -> list[dict]:
     """
     DuckDB replaces the old SQLModel-fetch-all + Polars regex pipeline.
@@ -593,13 +718,19 @@ def _top_fingerprints_sync(
       5. Truncate to 300 chars.
     """
     where, params = _build_filters(
-        source=source, environment=environment, type_=type_,
-        host=host, db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        type_=type_,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["query_details IS NOT NULL", "query_details != ''"],
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             WITH stripped AS (
                 -- Remove sp_executesql param-declaration header so the 300-char
                 -- fingerprint budget captures actual SQL and not type noise.
@@ -699,34 +830,39 @@ def _top_fingerprints_sync(
             FROM fingerprinted
             GROUP BY fp, qtype, host, db_name, month_year, environment, src
             ORDER BY total_occ DESC
-        """, params).fetchall()
+        """,
+            params,
+        ).fetchall()
     finally:
         con.close()
 
     # Group by fingerprint across all dimension combos, pick top_n
     groups: dict[str, dict] = {}
     for fp, qtype, host_v, db_v, my, env, src, occ, rcount, sample in rows:
-        g = groups.setdefault(fp, {
-            "fingerprint":  fp,
-            "sample_query": sample,
-            "count":        0,
-            "row_count":    0,
-            "by_type":      {},
-            "_by_month":    {},
-            "_hosts":       {},
-            "_dbs":         {},
-            "environments": set(),
-            "_sources":     set(),
-        })
-        g["count"]                  += occ
-        g["row_count"]              += rcount
-        g["by_type"][qtype]          = g["by_type"].get(qtype, 0) + occ
+        g = groups.setdefault(
+            fp,
+            {
+                "fingerprint": fp,
+                "sample_query": sample,
+                "count": 0,
+                "row_count": 0,
+                "by_type": {},
+                "_by_month": {},
+                "_hosts": {},
+                "_dbs": {},
+                "environments": set(),
+                "_sources": set(),
+            },
+        )
+        g["count"] += occ
+        g["row_count"] += rcount
+        g["by_type"][qtype] = g["by_type"].get(qtype, 0) + occ
         if my:
-            g["_by_month"][my]       = g["_by_month"].get(my, 0) + occ
+            g["_by_month"][my] = g["_by_month"].get(my, 0) + occ
         if host_v:
-            g["_hosts"][host_v]      = g["_hosts"].get(host_v, 0) + occ
+            g["_hosts"][host_v] = g["_hosts"].get(host_v, 0) + occ
         if db_v:
-            g["_dbs"][db_v]          = g["_dbs"].get(db_v, 0) + occ
+            g["_dbs"][db_v] = g["_dbs"].get(db_v, 0) + occ
         if env:
             g["environments"].add(env)
         if src:
@@ -736,31 +872,37 @@ def _top_fingerprints_sync(
     for g in top:
         # Flatten to the shape FingerprintRow expects
         hosts_sorted = sorted(g.pop("_hosts").items(), key=lambda x: -x[1])
-        dbs_sorted   = sorted(g.pop("_dbs").items(),   key=lambda x: -x[1])
-        sources      = sorted(g.pop("_sources"))
-        g["example_host"]   = hosts_sorted[0][0] if hosts_sorted else ""
-        g["example_db"]     = dbs_sorted[0][0]   if dbs_sorted   else ""
-        g["months"]         = sorted(g.pop("_by_month").keys())
-        g["environments"]   = sorted(g["environments"])
+        dbs_sorted = sorted(g.pop("_dbs").items(), key=lambda x: -x[1])
+        sources = sorted(g.pop("_sources"))
+        g["example_host"] = hosts_sorted[0][0] if hosts_sorted else ""
+        g["example_db"] = dbs_sorted[0][0] if dbs_sorted else ""
+        g["months"] = sorted(g.pop("_by_month").keys())
+        g["environments"] = sorted(g["environments"])
         g["example_source"] = sources[0] if sources else ""
     return top
 
 
 @router.get("/top-fingerprints", summary="Top normalised query fingerprints by occurrence count")
 async def analytics_top_fingerprints(
-    top_n:       int                       = Query(default=20, ge=1, le=200),
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    type:        Optional[QueryType]       = None,
-    system:      Optional[str]             = None,
+    top_n: int = Query(default=20, ge=1, le=200),
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    type: QueryType | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _top_fingerprints_sync,
-        source and source.value, environment and environment.value,
-        type and type.value, host, db_name, month_year, system, top_n,
+        source and source.value,
+        environment and environment.value,
+        type and type.value,
+        host,
+        db_name,
+        month_year,
+        system,
+        top_n,
     )
 
 
@@ -769,11 +911,15 @@ async def analytics_top_fingerprints(
 # P50 / P95 / P99 occurrence distribution per host via DuckDB QUANTILE_CONT
 # ---------------------------------------------------------------------------
 
+
 def _host_stats_sync(
     top_n: int,
-    source: str | None, environment: str | None,
-    host: str | None, db_name: str | None,
-    month_year: str | None, system: str | None,
+    source: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     """
     QUANTILE_CONT(col, q) computes an exact continuous percentile over the
@@ -782,13 +928,18 @@ def _host_stats_sync(
     Hosts with fewer than 3 rows are excluded (percentile is meaningless).
     """
     where, params = _build_filters(
-        source=source, environment=environment,
-        host=host, db_name=db_name, month_year=month_year, system=system,
+        source=source,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["host IS NOT NULL", "host != ''"],
     )
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT
                 host,
                 ROUND(QUANTILE_CONT(occurrence_count::DOUBLE, 0.50), 1) AS p50,
@@ -803,16 +954,18 @@ def _host_stats_sync(
             HAVING COUNT(*) >= 3
             ORDER BY p95 DESC
             LIMIT ?
-        """, params + [top_n]).fetchall()
+        """,
+            params + [top_n],
+        ).fetchall()
         return [
             {
-                "host":              r[0],
-                "p50":               r[1],
-                "p95":               r[2],
-                "p99":               r[3],
-                "max_occ":           r[4],
+                "host": r[0],
+                "p50": r[1],
+                "p95": r[2],
+                "p99": r[3],
+                "max_occ": r[4],
                 "total_occurrences": r[5],
-                "row_count":         r[6],
+                "row_count": r[6],
             }
             for r in rows
         ]
@@ -822,19 +975,23 @@ def _host_stats_sync(
 
 @router.get("/host-stats", summary="P50/P95/P99 occurrence distribution per host")
 async def analytics_host_stats(
-    top_n:       int                       = Query(default=30, ge=1, le=200),
-    environment: Optional[EnvironmentType] = None,
-    source:      Optional[SourceType]      = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    top_n: int = Query(default=30, ge=1, le=200),
+    environment: EnvironmentType | None = None,
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _host_stats_sync,
         top_n,
-        source and source.value, environment and environment.value,
-        host, db_name, month_year, system,
+        source and source.value,
+        environment and environment.value,
+        host,
+        db_name,
+        month_year,
+        system,
     )
 
 
@@ -843,9 +1000,13 @@ async def analytics_host_stats(
 # Hosts where both blocker AND deadlock events appear in the same month
 # ---------------------------------------------------------------------------
 
+
 def _co_occurrence_sync(
-    environment: str | None, host: str | None,
-    db_name: str | None, month_year: str | None, system: str | None,
+    environment: str | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: str | None,
+    system: str | None,
 ) -> list[dict]:
     """
     FULL OUTER JOIN between blocker-aggregated and deadlock-aggregated CTEs on
@@ -855,14 +1016,18 @@ def _co_occurrence_sync(
     """
     # Build shared dimension filters — type is forced inside each CTE
     base_where, params = _build_filters(
-        environment=environment, host=host,
-        db_name=db_name, month_year=month_year, system=system,
+        environment=environment,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        system=system,
         extra=["host IS NOT NULL", "host != ''", "month_year IS NOT NULL"],
     )
     # params list is reused for both CTEs — DuckDB positional params are per-statement
     con = get_duck("raw_query")
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             WITH blockers AS (
                 SELECT host, month_year, SUM(occurrence_count) AS blocker_count
                 FROM raw_query
@@ -886,12 +1051,14 @@ def _co_occurrence_sync(
             FULL OUTER JOIN deadlocks d
                 ON b.host = d.host AND b.month_year = d.month_year
             ORDER BY combined_score DESC, host, month_year
-        """, params + params).fetchall()   # params duplicated for both CTEs
+        """,
+            params + params,
+        ).fetchall()  # params duplicated for both CTEs
         return [
             {
-                "host":           r[0],
-                "month_year":     r[1],
-                "blocker_count":  r[2],
+                "host": r[0],
+                "month_year": r[1],
+                "blocker_count": r[2],
                 "deadlock_count": r[3],
                 "combined_score": r[4],
             }
@@ -903,14 +1070,17 @@ def _co_occurrence_sync(
 
 @router.get("/co-occurrence", summary="Hosts with blocker and/or deadlock events per month")
 async def analytics_co_occurrence(
-    environment: Optional[EnvironmentType] = None,
-    host:        Optional[str]             = None,
-    db_name:     Optional[str]             = None,
-    month_year:  Optional[str]             = None,
-    system:      Optional[str]             = None,
+    environment: EnvironmentType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    system: str | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _co_occurrence_sync,
         environment and environment.value,
-        host, db_name, month_year, system,
+        host,
+        db_name,
+        month_year,
+        system,
     )

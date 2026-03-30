@@ -15,6 +15,7 @@ February 2026 Splunk CSVs:
 Run:
     uv run pytest tests/test_deadlock_parser.py -v
 """
+
 from __future__ import annotations
 
 import json
@@ -132,6 +133,7 @@ _RAW_THREE_WAY = """\
 # TestParseRaw — core contract
 # ---------------------------------------------------------------------------
 
+
 class TestParseRaw:
     def test_returns_empty_for_empty_string(self):
         assert parse_raw("", "2026-02-01T00:00:00.000+0800", "HOST1") == []
@@ -191,6 +193,7 @@ class TestParseRaw:
 # TestStoredProcPattern
 # ---------------------------------------------------------------------------
 
+
 class TestStoredProcPattern:
     @pytest.fixture
     def procs(self):
@@ -241,6 +244,7 @@ class TestStoredProcPattern:
 # TestAdhocPattern
 # ---------------------------------------------------------------------------
 
+
 class TestAdhocPattern:
     @pytest.fixture
     def procs(self):
@@ -280,6 +284,7 @@ class TestAdhocPattern:
 # TestUpdateQPStats
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateQPStats:
     @pytest.fixture
     def procs(self):
@@ -313,6 +318,7 @@ class TestUpdateQPStats:
 # ---------------------------------------------------------------------------
 # TestThreeWayDeadlock
 # ---------------------------------------------------------------------------
+
 
 class TestThreeWayDeadlock:
     @pytest.fixture
@@ -369,6 +375,7 @@ class TestThreeWayDeadlock:
 # TestDeadlockProcess — to_extra_metadata()
 # ---------------------------------------------------------------------------
 
+
 class TestDeadlockProcess:
     @pytest.fixture
     def process(self):
@@ -385,8 +392,16 @@ class TestDeadlockProcess:
 
     def test_mandatory_fields_present(self, process):
         meta = json.loads(process.to_extra_metadata())
-        for field in ("deadlock_id", "pid", "lockMode", "waitresource", "waittime",
-                      "currentdbname", "isolationlevel", "transactionname"):
+        for field in (
+            "deadlock_id",
+            "pid",
+            "lockMode",
+            "waitresource",
+            "waittime",
+            "currentdbname",
+            "isolationlevel",
+            "transactionname",
+        ):
             assert field in meta, f"Missing field in extra_metadata: {field}"
 
     def test_is_victim_true_in_metadata(self, process):
@@ -398,8 +413,8 @@ class TestDeadlockProcess:
         proc = DeadlockProcess(deadlock_id="abc123", pid="proc1", sql_text="SELECT 1")
         meta = json.loads(proc.to_extra_metadata())
         # is_victim=False is falsy — must also be excluded
-        assert "apphost" not in meta     # empty string → excluded
-        assert "proc_name" not in meta   # empty string → excluded
+        assert "apphost" not in meta  # empty string → excluded
+        assert "proc_name" not in meta  # empty string → excluded
 
     def test_deadlock_id_matches_process_attribute(self, process):
         meta = json.loads(process.to_extra_metadata())
@@ -413,6 +428,7 @@ class TestDeadlockProcess:
 # ---------------------------------------------------------------------------
 # TestEdgeCases
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     def test_tempdb_processes_excluded(self):
@@ -456,7 +472,7 @@ class TestEdgeCases:
         for p in procs:
             assert "\n" not in p.sql_text
             assert "\t" not in p.sql_text
-            assert "  " not in p.sql_text   # no double-spaces
+            assert "  " not in p.sql_text  # no double-spaces
 
     def test_param_placeholders_preserved(self):
         """@P0, @P1 style parameter placeholders must survive extraction."""

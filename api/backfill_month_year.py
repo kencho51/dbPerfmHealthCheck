@@ -5,6 +5,7 @@ but a parseable time string is present.
 Run with:
     uv run python -m api.backfill_month_year
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,8 +23,8 @@ async def backfill() -> None:
         # Fetch only rows missing month_year that have a non-null time
         stmt = (
             select(RawQuery)
-            .where(RawQuery.month_year.is_(None))   # type: ignore[union-attr]
-            .where(RawQuery.time.isnot(None))        # type: ignore[union-attr]
+            .where(RawQuery.month_year.is_(None))  # type: ignore[union-attr]
+            .where(RawQuery.time.isnot(None))  # type: ignore[union-attr]
         )
         rows = (await session.exec(stmt)).all()
 

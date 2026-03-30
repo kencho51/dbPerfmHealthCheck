@@ -32,6 +32,16 @@ target-version = "py314"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# Test files contain long raw SQL/deadlock trace strings and fixture signatures
+# that cannot be wrapped without breaking the test data.
+"tests/*" = ["E501"]
+# Standalone utility scripts are not production code; allow long lines.
+"scripts/*" = ["E501"]
+# SQLModel forward-reference Relationships need str+Enum and quoted type args.
+# StrEnum (UP042) and removing quotes (UP037/UP045) breaks SQLAlchemy mapper init.
+"api/models.py" = ["UP042"]
+
 [tool.ruff.format]
 quote-style = "double"
 

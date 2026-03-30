@@ -13,12 +13,12 @@ Usage inside FastAPI:
     from api.services.extractor import extract_from_path
     rows = extract_from_path(Path("/tmp/uploaded.csv"))
 """
+
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 
@@ -26,21 +26,20 @@ import polars as pl
 # timestamps (e.g. '2026-02-28T23:55:18.000+0800') into 'YYYY-MM'.
 from api.services.ingestor import _derive_month_year as _month_from_time  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Expected columns per file type (used by the validator service too)
 # ---------------------------------------------------------------------------
 
 EXPECTED_COLUMNS: dict[str, list[str]] = {
-    "slow_query_sql":   ["host", "db_name", "query_final"],
-    "blocker":          ["host", "database_name", "query_text"],
+    "slow_query_sql": ["host", "db_name", "query_final"],
+    "blocker": ["host", "database_name", "query_text"],
     # Deadlock accepts three CSV formats:
     #   Raw (new):         _time, host, id, lockMode, transactionname, victim, waittime, _raw
     #   Legacy (old):      _time, host, hostname, currentdbname, id, victim, transactionname,
     #                      lockMode, lockTimeout, waittime, es_text, clean_query, _raw
     #   Summarised (Nov25):currentdbname, victims, resources, lock_modes, count,
     #                      latest, earliest, all_query  (no host, no _raw)
-    "deadlock":         [],   # flexible — at least one of: _raw, all_query, clean_query
+    "deadlock": [],  # flexible — at least one of: _raw, all_query, clean_query
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -48,6 +47,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_environment(filename: str) -> str:
     name = filename.lower()
@@ -112,7 +112,7 @@ def _extract_mongodb_command(raw_json: str) -> str:
             return json.dumps(data["attr"]["command"], separators=(",", ":"))
         if "attr" in data and "type" in data["attr"]:
             return f'{{"type":"{data["attr"]["type"]}"}}'
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except json.JSONDecodeError, KeyError, TypeError:
         prefix = str(raw_json)[:100].replace('"', "'")
         return f'{{"error":"parse_failed","raw_prefix":"{prefix}"}}'
     return ""
@@ -122,51 +122,54 @@ def _extract_mongodb_command(raw_json: str) -> str:
 # Per-type processors
 # ---------------------------------------------------------------------------
 
+
 def _process_slow_query_sql(file_path: Path) -> list[dict]:
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     # Choose the best available time column; both are trimmed and nulls guarded.
     time_expr = (
         pl.when(_col_or(df, "last_execution_time").str.len_chars().gt(0))
-          .then(_col_or(df, "last_execution_time"))
-          .otherwise(_col_or(df, "creation_time"))
+        .then(_col_or(df, "last_execution_time"))
+        .otherwise(_col_or(df, "creation_time"))
     )
-    return df.select([
-        time_expr.alias("time"),
-        pl.lit("sql").alias("source"),
-        _col_or(df, "host").alias("host"),
-        _col_or(df, "db_name").alias("db_name"),
-        pl.lit(env).alias("environment"),
-        pl.lit("slow_query").alias("type"),
-        _clean_expr(_col_or(df, "query_final")).alias("query_details"),
-    ]).to_dicts()
+    return df.select(
+        [
+            time_expr.alias("time"),
+            pl.lit("sql").alias("source"),
+            _col_or(df, "host").alias("host"),
+            _col_or(df, "db_name").alias("db_name"),
+            pl.lit(env).alias("environment"),
+            pl.lit("slow_query").alias("type"),
+            _clean_expr(_col_or(df, "query_final")).alias("query_details"),
+        ]
+    ).to_dicts()
 
 
 def _process_blockers(file_path: Path) -> list[dict]:
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     # Support both per-session format (database_name, query_text) and
     # legacy aggregated format (each guarded with _col_or).
     time_expr = _col_or(df, "_time")
-    db_expr   = (
+    db_expr = (
         _col_or(df, "database_name")
         if "database_name" in df.columns
         else _col_or(df, "currentdbname")
     )
     query_expr = (
-        _col_or(df, "query_text")
-        if "query_text" in df.columns
-        else _col_or(df, "all_query")
+        _col_or(df, "query_text") if "query_text" in df.columns else _col_or(df, "all_query")
     )
-    return df.select([
-        time_expr.alias("time"),
-        pl.lit("sql").alias("source"),
-        _col_or(df, "host").alias("host"),
-        db_expr.alias("db_name"),
-        pl.lit(env).alias("environment"),
-        pl.lit("blocker").alias("type"),
-        _clean_expr(query_expr).alias("query_details"),
-    ]).to_dicts()
+    return df.select(
+        [
+            time_expr.alias("time"),
+            pl.lit("sql").alias("source"),
+            _col_or(df, "host").alias("host"),
+            db_expr.alias("db_name"),
+            pl.lit(env).alias("environment"),
+            pl.lit("blocker").alias("type"),
+            _clean_expr(query_expr).alias("query_details"),
+        ]
+    ).to_dicts()
 
 
 def _is_raw_deadlock_format(columns: list[str]) -> bool:
@@ -177,8 +180,8 @@ def _is_raw_deadlock_format(columns: list[str]) -> bool:
     ``all_query`` already extracted by SPL.
     """
     col_set = set(c.strip().lower() for c in columns)
-    has_raw   = "_raw" in col_set
-    has_agg   = bool({"clean_query", "all_query"} & col_set)
+    has_raw = "_raw" in col_set
+    has_agg = bool({"clean_query", "all_query"} & col_set)
     return has_raw and not has_agg
 
 
@@ -208,7 +211,7 @@ def _process_deadlocks(file_path: Path) -> list[dict]:
     """
     from api.services.deadlock_parser import parse_raw
 
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     columns: list[str] = df.columns
 
@@ -218,7 +221,7 @@ def _process_deadlocks(file_path: Path) -> list[dict]:
 
 
 def _process_deadlocks_raw(
-    df: "pl.DataFrame",
+    df: pl.DataFrame,
     env: str,
     parse_raw,
 ) -> list[dict]:
@@ -229,7 +232,7 @@ def _process_deadlocks_raw(
     rows: list[dict] = []
 
     for row in df.iter_rows(named=True):
-        raw        = row.get("_raw") or ""
+        raw = row.get("_raw") or ""
         splunk_time = _get(row, "_time")
         splunk_host = _get(row, "host")
 
@@ -241,35 +244,39 @@ def _process_deadlocks_raw(
 
         if not processes:
             # Fallback: emit at least one row with whatever we have.
-            rows.append({
-                "time":           splunk_time,
-                "source":         "sql",
-                "host":           splunk_host,
-                "db_name":        "",
-                "environment":    env,
-                "type":           "deadlock",
-                "query_details":  _get(row, "id"),   # process IDs as last resort
-                "extra_metadata": None,
-            })
+            rows.append(
+                {
+                    "time": splunk_time,
+                    "source": "sql",
+                    "host": splunk_host,
+                    "db_name": "",
+                    "environment": env,
+                    "type": "deadlock",
+                    "query_details": _get(row, "id"),  # process IDs as last resort
+                    "extra_metadata": None,
+                }
+            )
             continue
 
         for proc in processes:
-            rows.append({
-                "time":           proc.splunk_time,
-                "source":         "sql",
-                "host":           proc.splunk_host,
-                "db_name":        proc.currentdbname,
-                "environment":    env,
-                "type":           "deadlock",
-                "query_details":  proc.sql_text,
-                "extra_metadata": proc.to_extra_metadata(),
-            })
+            rows.append(
+                {
+                    "time": proc.splunk_time,
+                    "source": "sql",
+                    "host": proc.splunk_host,
+                    "db_name": proc.currentdbname,
+                    "environment": env,
+                    "type": "deadlock",
+                    "query_details": proc.sql_text,
+                    "extra_metadata": proc.to_extra_metadata(),
+                }
+            )
 
     return rows
 
 
 def _process_deadlocks_legacy(
-    df: "pl.DataFrame",
+    df: pl.DataFrame,
     env: str,
     parse_raw,
 ) -> list[dict]:
@@ -283,13 +290,14 @@ def _process_deadlocks_legacy(
     rows: list[dict] = []
 
     for row in df.iter_rows(named=True):
-        raw        = row.get("_raw") or ""
+        raw = row.get("_raw") or ""
         splunk_time = _get(row, "earliest", "_time")
         splunk_host = _get(row, "host")
 
         # SQL text — prefer pre-extracted column, fall back to others.
-        query_details = _get(row, "clean_query", "all_query", "query_text",
-                                  "statement", "sql_text", "deadlock_graph")
+        query_details = _get(
+            row, "clean_query", "all_query", "query_text", "statement", "sql_text", "deadlock_graph"
+        )
 
         # Splunk aggregated occurrences.
         raw_count = row.get("count")
@@ -302,20 +310,20 @@ def _process_deadlocks_legacy(
             if processes:
                 # Find the process whose sql_text best matches clean_query.
                 matched = next(
-                    (p for p in processes
-                     if query_details and
-                     p.sql_text and query_details[:60] in p.sql_text),
-                    processes[0],   # fallback to first process
+                    (
+                        p
+                        for p in processes
+                        if query_details and p.sql_text and query_details[:60] in p.sql_text
+                    ),
+                    processes[0],  # fallback to first process
                 )
                 # If the parser found a better SQL (starts with a DML keyword
                 # rather than a "frame procname=" reference), prefer it.
-                _dml = re.compile(
-                    r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|EXEC|WITH|MERGE|@\w)", re.I
-                )
+                _dml = re.compile(r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|EXEC|WITH|MERGE|@\w)", re.I)
                 if matched.sql_text and _dml.match(matched.sql_text):
                     query_details = matched.sql_text
                 # Merge any CSV-level fields into the parsed metadata.
-                meta         = json.loads(matched.to_extra_metadata())
+                meta = json.loads(matched.to_extra_metadata())
                 meta["source"] = "legacy_csv"
                 # Prefer CSV hostname over parsed (CSV is already extracted by SPL).
                 if not meta.get("apphost"):
@@ -325,56 +333,60 @@ def _process_deadlocks_legacy(
         # If _raw parsing failed, build best-effort metadata from CSV columns.
         if extra_metadata is None:
             meta = {
-                "source":          "legacy_csv",
+                "source": "legacy_csv",
                 "deadlock_victim": _get(row, "victim"),
-                "lockMode":        _get(row, "lockMode"),
-                "lockTimeout":     _get(row, "lockTimeout"),
-                "waittime":        _get(row, "waittime"),
+                "lockMode": _get(row, "lockMode"),
+                "lockTimeout": _get(row, "lockTimeout"),
+                "waittime": _get(row, "waittime"),
                 "transactionname": _get(row, "transactionname"),
-                "apphost":         _get(row, "hostname"),
+                "apphost": _get(row, "hostname"),
             }
             extra_metadata = json.dumps(
                 {k: v for k, v in meta.items() if v},
                 ensure_ascii=False,
             )
 
-        rows.append({
-            "time":             splunk_time,
-            "source":           "sql",
-            "host":             splunk_host,
-            "db_name":          _get(row, "currentdbname", "database_name", "db_name"),
-            "environment":      env,
-            "type":             "deadlock",
-            "occurrence_count": occ,
-            "query_details":    query_details,
-            "extra_metadata":   extra_metadata,
-        })
+        rows.append(
+            {
+                "time": splunk_time,
+                "source": "sql",
+                "host": splunk_host,
+                "db_name": _get(row, "currentdbname", "database_name", "db_name"),
+                "environment": env,
+                "type": "deadlock",
+                "occurrence_count": occ,
+                "query_details": query_details,
+                "extra_metadata": extra_metadata,
+            }
+        )
 
     return rows
 
 
 def _process_mongodb_slow(file_path: Path) -> list[dict]:
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
 
     # --- query key (pure Polars, zero Python per row) -------------------------
     # Prefer CSV column attr.queryShapeHash (set by MongoDB 7.0+) as the dedup
     # key.  Fall back to "ns:c" or "ns:type" — all Rust string ops.
     shape_col = _col_or(df, "attr.queryShapeHash")
-    c_col     = _col_or(df, "c")
-    ns_col    = _col_or(df, "attr.ns")
-    type_col  = _col_or(df, "attr.type")
+    c_col = _col_or(df, "c")
+    ns_col = _col_or(df, "attr.ns")
+    type_col = _col_or(df, "attr.type")
 
     query_key_expr = (
         pl.when(shape_col.str.len_chars().gt(0))
-          .then(shape_col)
-          .otherwise(
-              pl.concat_str([
-                  ns_col,
-                  pl.lit(":"),
-                  pl.when(c_col.str.len_chars().gt(0)).then(c_col).otherwise(type_col),
-              ])
-          )
+        .then(shape_col)
+        .otherwise(
+            pl.concat_str(
+                [
+                    ns_col,
+                    pl.lit(":"),
+                    pl.when(c_col.str.len_chars().gt(0)).then(c_col).otherwise(type_col),
+                ]
+            )
+        )
     )
 
     # _query_key is ALWAYS non-empty: it is either queryShapeHash (len 64) or
@@ -382,25 +394,30 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
     # _cmd_json is never selected as query_details and we skip the entire
     # map_elements(_extract_mongodb_command) call — saving 1 768 json.loads
     # invocations and the associated GIL churn.
-    df = df.with_columns([
-        query_key_expr.alias("_query_key"),
-        ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
-    ])
+    df = df.with_columns(
+        [
+            query_key_expr.alias("_query_key"),
+            ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
+        ]
+    )
 
-    return df.select([
-        _col_or(df, "t.$date").alias("time"),
-        pl.lit("mongodb").alias("source"),
-        _col_or(df, "host").alias("host"),
-        pl.col("_db").alias("db_name"),
-        pl.lit(env).alias("environment"),
-        pl.lit("slow_query_mongo").alias("type"),
-        pl.col("_query_key").alias("query_details"),
-    ]).to_dicts()
+    return df.select(
+        [
+            _col_or(df, "t.$date").alias("time"),
+            pl.lit("mongodb").alias("source"),
+            _col_or(df, "host").alias("host"),
+            pl.col("_db").alias("db_name"),
+            pl.lit(env).alias("environment"),
+            pl.lit("slow_query_mongo").alias("type"),
+            pl.col("_query_key").alias("query_details"),
+        ]
+    ).to_dicts()
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def extract_from_file(file_path: Path) -> list[dict]:
     """
@@ -417,7 +434,7 @@ def extract_from_file(file_path: Path) -> list[dict]:
         return _process_deadlocks(file_path)
     if category == "slow_query_mongo":
         return _process_mongodb_slow(file_path)
-    return []   # unknown / unsupported type (e.g. datafilesize CSVs)
+    return []  # unknown / unsupported type (e.g. datafilesize CSVs)
 
 
 def extract_from_directory(directory: Path) -> list[dict]:
@@ -426,7 +443,7 @@ def extract_from_directory(directory: Path) -> list[dict]:
     for csv_file in sorted(directory.glob("*.csv")):
         category = _detect_file_category(csv_file.name)
         if category == "unknown":
-            continue   # skip datafilesize etc.
+            continue  # skip datafilesize etc.
         all_rows.extend(extract_from_file(csv_file))
     return all_rows
 
@@ -448,21 +465,22 @@ def detect_file_category(filename: str) -> str:
 # These feed into the raw_query_* type-specific tables.
 # ---------------------------------------------------------------------------
 
-def _safe_float(val: object) -> Optional[float]:
+
+def _safe_float(val: object) -> float | None:
     if val is None or str(val).strip() == "":
         return None
     try:
         return float(str(val).strip().replace(",", ""))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
-def _safe_int(val: object) -> Optional[int]:
+def _safe_int(val: object) -> int | None:
     if val is None or str(val).strip() == "":
         return None
     try:
         return int(float(str(val).strip().replace(",", "")))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -470,21 +488,21 @@ def _safe_int(val: object) -> Optional[int]:
 # Polars expression helpers
 # ---------------------------------------------------------------------------
 
-def _clean_expr(expr: "pl.Expr") -> "pl.Expr":
+
+def _clean_expr(expr: pl.Expr) -> pl.Expr:
     """
     Vectorised equivalent of _clean(): trim whitespace, collapse runs,
     normalise @P\\d+ → @P?  — runs entirely in Polars' Rust/Rayon thread pool.
     """
     return (
-        expr
-        .fill_null("")
+        expr.fill_null("")
         .str.strip_chars()
         .str.replace_all(r"\s+", " ")
         .str.replace_all(r"@P\d+", "@P?")
     )
 
 
-def _col_or(df: "pl.DataFrame", name: str, default: str = "") -> "pl.Expr":
+def _col_or(df: pl.DataFrame, name: str, default: str = "") -> pl.Expr:
     """Return pl.col(name).fill_null(default) when the column exists, else pl.lit(default).
 
     Guards against CSV exports that omit optional columns (e.g. attr.queryShapeHash
@@ -502,7 +520,9 @@ def _detect_typed_table(filename: str) -> str:
         return "blocker"
     if "deadlock" in name:
         return "deadlock"
-    if "mongodbslowqueries" in name or ("mongodb" in name and "slow" in name and "datafile" not in name):
+    if "mongodbslowqueries" in name or (
+        "mongodb" in name and "slow" in name and "datafile" not in name
+    ):
         return "slow_mongo"
     if "mongodbdatafilesize" in name or ("mongodb" in name and "datafile" in name):
         return "datafile_mongo"
@@ -521,41 +541,55 @@ def extract_typed_slow_sql(file_path: Path) -> list[dict]:
         "total_worker_time_s","avg_io","avg_logical_reads","avg_logical_writes",
         "execution_count","query_final"
     """
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
 
     # Best available execution time — used for month_year derivation.
     exec_time_expr = (
         pl.when(_col_or(df, "last_execution_time").str.len_chars().gt(0))
-          .then(_col_or(df, "last_execution_time"))
-          .otherwise(_col_or(df, "creation_time"))
+        .then(_col_or(df, "last_execution_time"))
+        .otherwise(_col_or(df, "creation_time"))
     )
     qf_expr = _clean_expr(_col_or(df, "query_final"))
 
     # All casts run in Polars' Rust thread pool — zero Python GIL.
-    rows = df.select([
-        pl.lit("slow_sql").alias("table_type"),
-        _col_or(df, "host").alias("host"),
-        _col_or(df, "db_name").alias("db_name"),
-        pl.lit(env).alias("environment"),
-        _col_or(df, "creation_time").alias("creation_time"),
-        _col_or(df, "last_execution_time").alias("last_execution_time"),
-        _col_or(df, "max_elapsed_time_s").cast(pl.Float64, strict=False).alias("max_elapsed_time_s"),
-        _col_or(df, "avg_elapsed_time_s").cast(pl.Float64, strict=False).alias("avg_elapsed_time_s"),
-        _col_or(df, "total_elapsed_time_s").cast(pl.Float64, strict=False).alias("total_elapsed_time_s"),
-        _col_or(df, "total_worker_time_s").cast(pl.Float64, strict=False).alias("total_worker_time_s"),
-        _col_or(df, "avg_io").cast(pl.Float64, strict=False).alias("avg_io"),
-        _col_or(df, "avg_logical_reads").cast(pl.Float64, strict=False).alias("avg_logical_reads"),
-        _col_or(df, "avg_logical_writes").cast(pl.Float64, strict=False).alias("avg_logical_writes"),
-        _col_or(df, "execution_count").cast(pl.Int64, strict=False).alias("execution_count"),
-        qf_expr.alias("query_final"),
-        exec_time_expr.alias("_exec_time"),
-    ]).to_dicts()
+    rows = df.select(
+        [
+            pl.lit("slow_sql").alias("table_type"),
+            _col_or(df, "host").alias("host"),
+            _col_or(df, "db_name").alias("db_name"),
+            pl.lit(env).alias("environment"),
+            _col_or(df, "creation_time").alias("creation_time"),
+            _col_or(df, "last_execution_time").alias("last_execution_time"),
+            _col_or(df, "max_elapsed_time_s")
+            .cast(pl.Float64, strict=False)
+            .alias("max_elapsed_time_s"),
+            _col_or(df, "avg_elapsed_time_s")
+            .cast(pl.Float64, strict=False)
+            .alias("avg_elapsed_time_s"),
+            _col_or(df, "total_elapsed_time_s")
+            .cast(pl.Float64, strict=False)
+            .alias("total_elapsed_time_s"),
+            _col_or(df, "total_worker_time_s")
+            .cast(pl.Float64, strict=False)
+            .alias("total_worker_time_s"),
+            _col_or(df, "avg_io").cast(pl.Float64, strict=False).alias("avg_io"),
+            _col_or(df, "avg_logical_reads")
+            .cast(pl.Float64, strict=False)
+            .alias("avg_logical_reads"),
+            _col_or(df, "avg_logical_writes")
+            .cast(pl.Float64, strict=False)
+            .alias("avg_logical_writes"),
+            _col_or(df, "execution_count").cast(pl.Int64, strict=False).alias("execution_count"),
+            qf_expr.alias("query_final"),
+            exec_time_expr.alias("_exec_time"),
+        ]
+    ).to_dicts()
 
     # _hash_parts is a list — cannot be a Polars column; add in one O(N) Python pass.
     for row in rows:
         exec_time = row.pop("_exec_time")
-        row["month_year"]  = _month_from_time(exec_time)
+        row["month_year"] = _month_from_time(exec_time)
         row["_hash_parts"] = [row["host"], row["db_name"], env, row["query_final"]]
     return rows
 
@@ -581,7 +615,7 @@ def extract_typed_blocker(file_path: Path) -> list[dict]:
     migration.  ``victims`` carries the session_id, ``resources`` the wait_type,
     and ``lock_modes`` the SQL command for per-session rows.
     """
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     col_set = {c.strip().lower() for c in df.columns}
 
@@ -589,67 +623,75 @@ def extract_typed_blocker(file_path: Path) -> list[dict]:
 
     if is_per_session:
         qf_expr = _clean_expr(_col_or(df, "query_text"))
-        df = df.with_columns([
-            qf_expr.alias("_query_text"),
-            _col_or(df, "_time").alias("_event_time"),
-            _col_or(df, "database_name").alias("_db_name"),
-            _col_or(df, "session_id").alias("_session_id"),
-        ])
-        rows = df.select([
-            pl.lit("blocker").alias("table_type"),
-            pl.lit(env).alias("environment"),
-            pl.col("_db_name").alias("currentdbname"),
-            pl.col("_session_id").alias("victims"),
-            _col_or(df, "wait_type").alias("resources"),
-            _col_or(df, "command").alias("lock_modes"),
-            _col_or(df, "blocked_sessions_count").cast(pl.Int64, strict=False).alias("count"),
-            pl.col("_event_time").alias("latest"),
-            pl.col("_event_time").alias("earliest"),
-            pl.col("_query_text").alias("all_query"),
-            # carry through for post-processing
-            pl.col("_event_time"),
-            pl.col("_query_text"),
-            pl.col("_session_id"),
-        ]).to_dicts()
+        df = df.with_columns(
+            [
+                qf_expr.alias("_query_text"),
+                _col_or(df, "_time").alias("_event_time"),
+                _col_or(df, "database_name").alias("_db_name"),
+                _col_or(df, "session_id").alias("_session_id"),
+            ]
+        )
+        rows = df.select(
+            [
+                pl.lit("blocker").alias("table_type"),
+                pl.lit(env).alias("environment"),
+                pl.col("_db_name").alias("currentdbname"),
+                pl.col("_session_id").alias("victims"),
+                _col_or(df, "wait_type").alias("resources"),
+                _col_or(df, "command").alias("lock_modes"),
+                _col_or(df, "blocked_sessions_count").cast(pl.Int64, strict=False).alias("count"),
+                pl.col("_event_time").alias("latest"),
+                pl.col("_event_time").alias("earliest"),
+                pl.col("_query_text").alias("all_query"),
+                # carry through for post-processing
+                pl.col("_event_time"),
+                pl.col("_query_text"),
+                pl.col("_session_id"),
+            ]
+        ).to_dicts()
         for row in rows:
-            et  = row.pop("_event_time")
-            qt  = row.pop("_query_text")
+            et = row.pop("_event_time")
+            qt = row.pop("_query_text")
             sid = row.pop("_session_id")
-            row["month_year"]  = _month_from_time(et)
+            row["month_year"] = _month_from_time(et)
             row["_hash_parts"] = [env, row["currentdbname"], qt, et, sid]
         return rows
 
     # Aggregated/legacy format — unchanged behaviour
     qf_expr = _clean_expr(_col_or(df, "all_query"))
-    df = df.with_columns([
-        qf_expr.alias("_all_query"),
-        _col_or(df, "lock_modes").alias("_lock_modes"),
-        _col_or(df, "currentdbname").alias("_currentdbname"),
-        _col_or(df, "earliest").alias("_earliest"),
-    ])
-    rows = df.select([
-        pl.lit("blocker").alias("table_type"),
-        pl.lit(env).alias("environment"),
-        pl.col("_currentdbname").alias("currentdbname"),
-        _col_or(df, "victims").alias("victims"),
-        _col_or(df, "resources").alias("resources"),
-        pl.col("_lock_modes").alias("lock_modes"),
-        _col_or(df, "count").cast(pl.Int64, strict=False).alias("count"),
-        _col_or(df, "latest").alias("latest"),
-        pl.col("_earliest").alias("earliest"),
-        pl.col("_all_query").alias("all_query"),
-        # carry through for post-processing
-        pl.col("_all_query"),
-        pl.col("_lock_modes"),
-        pl.col("_currentdbname"),
-        pl.col("_earliest"),
-    ]).to_dicts()
+    df = df.with_columns(
+        [
+            qf_expr.alias("_all_query"),
+            _col_or(df, "lock_modes").alias("_lock_modes"),
+            _col_or(df, "currentdbname").alias("_currentdbname"),
+            _col_or(df, "earliest").alias("_earliest"),
+        ]
+    )
+    rows = df.select(
+        [
+            pl.lit("blocker").alias("table_type"),
+            pl.lit(env).alias("environment"),
+            pl.col("_currentdbname").alias("currentdbname"),
+            _col_or(df, "victims").alias("victims"),
+            _col_or(df, "resources").alias("resources"),
+            pl.col("_lock_modes").alias("lock_modes"),
+            _col_or(df, "count").cast(pl.Int64, strict=False).alias("count"),
+            _col_or(df, "latest").alias("latest"),
+            pl.col("_earliest").alias("earliest"),
+            pl.col("_all_query").alias("all_query"),
+            # carry through for post-processing
+            pl.col("_all_query"),
+            pl.col("_lock_modes"),
+            pl.col("_currentdbname"),
+            pl.col("_earliest"),
+        ]
+    ).to_dicts()
     for row in rows:
-        aq     = row.pop("_all_query")
-        lm     = row.pop("_lock_modes")
-        cdn    = row.pop("_currentdbname")
+        aq = row.pop("_all_query")
+        lm = row.pop("_lock_modes")
+        cdn = row.pop("_currentdbname")
         earliest = row.pop("_earliest")
-        row["month_year"]  = _month_from_time(earliest) or _month_from_time(row.get("latest", ""))
+        row["month_year"] = _month_from_time(earliest) or _month_from_time(row.get("latest", ""))
         row["_hash_parts"] = [env, cdn, lm, aq]
     return rows
 
@@ -659,10 +701,11 @@ def extract_typed_deadlock(file_path: Path) -> list[dict]:
     deadlocks*.csv — returns per-process rows with all structured columns.
     Supports both raw SPL format and legacy aggregated format.
     """
-    from api.services.deadlock_parser import parse_raw
     import json
 
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    from api.services.deadlock_parser import parse_raw
+
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
     columns: list[str] = df.columns
     rows: list[dict] = []
@@ -677,61 +720,72 @@ def extract_typed_deadlock(file_path: Path) -> list[dict]:
             processes = parse_raw(raw, splunk_time, splunk_host)
             if not processes:
                 sql_text = _get(row, "id")
-                rows.append({
-                    "table_type":       "deadlock",
-                    "host":             splunk_host,
-                    "db_name":          "",
-                    "environment":      env,
-                    "event_time":       splunk_time,
-                    "month_year":       _month_from_time(splunk_time),
-                    "deadlock_id":      None,
-                    "is_victim":        None,
-                    "lock_mode":        None,
-                    "wait_resource":    None,
-                    "wait_time_ms":     None,
-                    "transaction_name": None,
-                    "app_host":         None,
-                    "sql_text":         sql_text,
-                    "raw_xml":          raw[:4000] if raw else None,
-                    "_hash_parts":      [splunk_host, "", env, sql_text, ""],
-                })
+                rows.append(
+                    {
+                        "table_type": "deadlock",
+                        "host": splunk_host,
+                        "db_name": "",
+                        "environment": env,
+                        "event_time": splunk_time,
+                        "month_year": _month_from_time(splunk_time),
+                        "deadlock_id": None,
+                        "is_victim": None,
+                        "lock_mode": None,
+                        "wait_resource": None,
+                        "wait_time_ms": None,
+                        "transaction_name": None,
+                        "app_host": None,
+                        "sql_text": sql_text,
+                        "raw_xml": raw[:4000] if raw else None,
+                        "_hash_parts": [splunk_host, "", env, sql_text, ""],
+                    }
+                )
                 continue
             for proc in processes:
                 meta = json.loads(proc.to_extra_metadata()) if proc.to_extra_metadata() else {}
                 sql_text = proc.sql_text or ""
                 lock_mode = meta.get("lockMode", "")
-                rows.append({
-                    "table_type":       "deadlock",
-                    "host":             proc.splunk_host,
-                    "db_name":          proc.currentdbname,
-                    "environment":      env,
-                    "event_time":       proc.splunk_time,
-                    "month_year":       _month_from_time(proc.splunk_time),
-                    "deadlock_id":      meta.get("deadlock_id"),
-                    "is_victim":        1 if meta.get("is_victim") else 0,
-                    "lock_mode":        lock_mode,
-                    "wait_resource":    meta.get("waitresource"),
-                    "wait_time_ms":     _safe_int(meta.get("waittime")),
-                    "transaction_name": meta.get("transactionname"),
-                    "app_host":         meta.get("apphost"),
-                    "sql_text":         sql_text,
-                    "raw_xml":          raw[:4000] if raw else None,
-                    "_hash_parts":      [
-                        proc.splunk_host,
-                        proc.currentdbname,
-                        env,
-                        sql_text,
-                        lock_mode,
-                    ],
-                })
+                rows.append(
+                    {
+                        "table_type": "deadlock",
+                        "host": proc.splunk_host,
+                        "db_name": proc.currentdbname,
+                        "environment": env,
+                        "event_time": proc.splunk_time,
+                        "month_year": _month_from_time(proc.splunk_time),
+                        "deadlock_id": meta.get("deadlock_id"),
+                        "is_victim": 1 if meta.get("is_victim") else 0,
+                        "lock_mode": lock_mode,
+                        "wait_resource": meta.get("waitresource"),
+                        "wait_time_ms": _safe_int(meta.get("waittime")),
+                        "transaction_name": meta.get("transactionname"),
+                        "app_host": meta.get("apphost"),
+                        "sql_text": sql_text,
+                        "raw_xml": raw[:4000] if raw else None,
+                        "_hash_parts": [
+                            proc.splunk_host,
+                            proc.currentdbname,
+                            env,
+                            sql_text,
+                            lock_mode,
+                        ],
+                    }
+                )
     else:
         # Legacy aggregated format
         for row in df.iter_rows(named=True):
             raw = row.get("_raw") or ""
             splunk_time = _get(row, "earliest", "_time")
             splunk_host = _get(row, "host")
-            query_details = _get(row, "clean_query", "all_query", "query_text",
-                                  "statement", "sql_text", "deadlock_graph")
+            query_details = _get(
+                row,
+                "clean_query",
+                "all_query",
+                "query_text",
+                "statement",
+                "sql_text",
+                "deadlock_graph",
+            )
             lock_mode = _get(row, "lockMode", "lock_modes", "lock_mode")
 
             # Try to enrich from _raw
@@ -740,40 +794,49 @@ def extract_typed_deadlock(file_path: Path) -> list[dict]:
                 processes = parse_raw(raw, splunk_time, splunk_host)
                 if processes:
                     matched = next(
-                        (p for p in processes
-                         if query_details and p.sql_text
-                         and query_details[:60] in p.sql_text),
+                        (
+                            p
+                            for p in processes
+                            if query_details and p.sql_text and query_details[:60] in p.sql_text
+                        ),
                         processes[0],
                     )
-                    extra = json.loads(matched.to_extra_metadata()) if matched.to_extra_metadata() else {}
+                    extra = (
+                        json.loads(matched.to_extra_metadata())
+                        if matched.to_extra_metadata()
+                        else {}
+                    )
                     if not query_details and matched.sql_text:
                         query_details = matched.sql_text
 
-            rows.append({
-                "table_type":       "deadlock",
-                "host":             splunk_host,
-                "db_name":          _get(row, "currentdbname", "database_name", "db_name"),
-                "environment":      env,
-                "event_time":       splunk_time,
-                "month_year":       _month_from_time(splunk_time),
-                "deadlock_id":      extra.get("deadlock_id"),
-                "is_victim":        1 if extra.get("is_victim") or _get(row, "victim") else 0,
-                "lock_mode":        lock_mode,
-                "wait_resource":    extra.get("waitresource"),
-                "wait_time_ms":     _safe_int(extra.get("waittime") or row.get("waittime")),
-                "transaction_name": extra.get("transactionname") or _get(row, "transactionname"),
-                "app_host":         extra.get("apphost") or _get(row, "hostname"),
-                "sql_text":         query_details,
-                "raw_xml":          raw[:4000] if raw else None,
-                "_hash_parts":      [
-                    splunk_host,
-                    _get(row, "currentdbname", "database_name", "db_name"),
-                    env,
-                    query_details,
-                    lock_mode,
-                    splunk_time,   # included so _derive_month_year_from_parts can set month_year
-                ],
-            })
+            rows.append(
+                {
+                    "table_type": "deadlock",
+                    "host": splunk_host,
+                    "db_name": _get(row, "currentdbname", "database_name", "db_name"),
+                    "environment": env,
+                    "event_time": splunk_time,
+                    "month_year": _month_from_time(splunk_time),
+                    "deadlock_id": extra.get("deadlock_id"),
+                    "is_victim": 1 if extra.get("is_victim") or _get(row, "victim") else 0,
+                    "lock_mode": lock_mode,
+                    "wait_resource": extra.get("waitresource"),
+                    "wait_time_ms": _safe_int(extra.get("waittime") or row.get("waittime")),
+                    "transaction_name": extra.get("transactionname")
+                    or _get(row, "transactionname"),
+                    "app_host": extra.get("apphost") or _get(row, "hostname"),
+                    "sql_text": query_details,
+                    "raw_xml": raw[:4000] if raw else None,
+                    "_hash_parts": [
+                        splunk_host,
+                        _get(row, "currentdbname", "database_name", "db_name"),
+                        env,
+                        query_details,
+                        lock_mode,
+                        splunk_time,  # included so _derive_month_year_from_parts can set month_year
+                    ],
+                }
+            )
 
     return rows
 
@@ -811,60 +874,67 @@ def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
     but all other column reads (queryShapeHash, durationMillis, planSummary,
     remote, type, ns, host) are zero-copy Rust vector ops.
     """
-    df  = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
 
     # --- query key: queryShapeHash → ns:c → ns:type  (pure Rust) -------------
     shape_col = _col_or(df, "attr.queryShapeHash")
-    c_col     = _col_or(df, "c")
-    ns_col    = _col_or(df, "attr.ns")
-    type_col  = _col_or(df, "attr.type")
+    c_col = _col_or(df, "c")
+    ns_col = _col_or(df, "attr.ns")
+    type_col = _col_or(df, "attr.type")
 
     query_key_expr = (
         pl.when(shape_col.str.len_chars().gt(0))
-          .then(shape_col)
-          .otherwise(
-              pl.concat_str([
-                  ns_col,
-                  pl.lit(":"),
-                  pl.when(c_col.str.len_chars().gt(0)).then(c_col).otherwise(type_col),
-              ])
-          )
+        .then(shape_col)
+        .otherwise(
+            pl.concat_str(
+                [
+                    ns_col,
+                    pl.lit(":"),
+                    pl.when(c_col.str.len_chars().gt(0)).then(c_col).otherwise(type_col),
+                ]
+            )
+        )
     )
 
     # --- command_json: requires Python json.loads; use map_elements -----------
     # All other fields are extracted with zero-GIL Polars ops above.
-    df = df.with_columns([
-        query_key_expr.alias("_query_key"),
-        _col_or(df, "_raw").map_elements(
-            _extract_mongodb_command, return_dtype=pl.Utf8
-        ).alias("_command_json"),
-        ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
-        pl.when(ns_col.str.contains(".", literal=True))
-          .then(ns_col.str.splitn(".", 2).struct.field("field_1"))
-          .otherwise(pl.lit(""))
-          .fill_null("").alias("_collection"),
-    ])
+    df = df.with_columns(
+        [
+            query_key_expr.alias("_query_key"),
+            _col_or(df, "_raw")
+            .map_elements(_extract_mongodb_command, return_dtype=pl.Utf8)
+            .alias("_command_json"),
+            ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
+            pl.when(ns_col.str.contains(".", literal=True))
+            .then(ns_col.str.splitn(".", 2).struct.field("field_1"))
+            .otherwise(pl.lit(""))
+            .fill_null("")
+            .alias("_collection"),
+        ]
+    )
 
-    rows = df.select([
-        pl.lit("slow_mongo").alias("table_type"),
-        _col_or(df, "host").alias("host"),
-        pl.col("_db").alias("db_name"),
-        pl.col("_collection").alias("collection"),
-        pl.lit(env).alias("environment"),
-        _col_or(df, "t.$date").alias("event_time"),
-        _col_or(df, "attr.durationMillis").cast(pl.Int64, strict=False).alias("duration_ms"),
-        _col_or(df, "attr.planSummary").alias("plan_summary"),
-        type_col.alias("op_type"),
-        _col_or(df, "attr.remote").alias("remote_client"),
-        pl.col("_command_json").alias("command_json"),
-        pl.col("_query_key"),
-    ]).to_dicts()
+    rows = df.select(
+        [
+            pl.lit("slow_mongo").alias("table_type"),
+            _col_or(df, "host").alias("host"),
+            pl.col("_db").alias("db_name"),
+            pl.col("_collection").alias("collection"),
+            pl.lit(env).alias("environment"),
+            _col_or(df, "t.$date").alias("event_time"),
+            _col_or(df, "attr.durationMillis").cast(pl.Int64, strict=False).alias("duration_ms"),
+            _col_or(df, "attr.planSummary").alias("plan_summary"),
+            type_col.alias("op_type"),
+            _col_or(df, "attr.remote").alias("remote_client"),
+            pl.col("_command_json").alias("command_json"),
+            pl.col("_query_key"),
+        ]
+    ).to_dicts()
 
     # _hash_parts and month_year are list / derived — add in one O(N) Python pass.
     for row in rows:
         qk = row.pop("_query_key")
-        row["month_year"]  = _month_from_time(row["event_time"])
+        row["month_year"] = _month_from_time(row["event_time"])
         row["_hash_parts"] = [row["host"], row["db_name"], env, qk]
     return rows
 
@@ -881,27 +951,29 @@ def extract_typed_datafile_sql(file_path: Path) -> list[dict]:
     env = _extract_environment(file_path.name)
     rows = []
     for row in df.iter_rows(named=True):
-        host       = _get(row, "host")
-        db_name    = _get(row, "db")
+        host = _get(row, "host")
+        db_name = _get(row, "db")
         file_path_ = _get(row, "Path")
-        updated    = _get(row, "updated")
-        rows.append({
-            "table_type":          "datafile_sql",
-            "environment":         env,
-            "host":                host,
-            "db_name":             db_name,
-            "file_path":           file_path_,
-            "updated_at_source":   updated,
-            "trend":               _get(row, "trend"),
-            "is_up":               _get(row, "is_up"),
-            "range_mb":            _safe_float(row.get("range_mb")),
-            "used_pct":            _safe_float(row.get("used_%")),
-            "used_mb":             _safe_float(row.get("used_mb")),
-            "allocated_mb":        _safe_float(row.get("allocated_mb")),
-            "free":                _get(row, "free"),
-            "target_allocation_mb": _safe_float(row.get("target_allocation_mb")),
-            "_hash_parts":         [host, db_name, env, file_path_, updated],
-        })
+        updated = _get(row, "updated")
+        rows.append(
+            {
+                "table_type": "datafile_sql",
+                "environment": env,
+                "host": host,
+                "db_name": db_name,
+                "file_path": file_path_,
+                "updated_at_source": updated,
+                "trend": _get(row, "trend"),
+                "is_up": _get(row, "is_up"),
+                "range_mb": _safe_float(row.get("range_mb")),
+                "used_pct": _safe_float(row.get("used_%")),
+                "used_mb": _safe_float(row.get("used_mb")),
+                "allocated_mb": _safe_float(row.get("allocated_mb")),
+                "free": _get(row, "free"),
+                "target_allocation_mb": _safe_float(row.get("target_allocation_mb")),
+                "_hash_parts": [host, db_name, env, file_path_, updated],
+            }
+        )
     return rows
 
 
@@ -922,22 +994,24 @@ def extract_typed_datafile_mongo(file_path: Path) -> list[dict]:
     rows = []
     for row in df.iter_rows(named=True):
         host_mount = _get(row, "host_mount")
-        rows.append({
-            "table_type":          "datafile_mongo",
-            "environment":         env,
-            "host_mount":          host_mount,
-            "max_storage_mb":      _safe_float(row.get("max_storage")),
-            "avg_storage_mb":      _safe_float(row.get("avg_storage")),
-            "max_storage_free_mb": _safe_float(row.get("max_storage_free")),
-            "avg_storage_free_mb": _safe_float(row.get("avg_storage_free")),
-            "max_storage_free_pct": _safe_float(row.get("max_storage_free_pct")),
-            "avg_storage_free_pct": _safe_float(row.get("avg_storage_free_pct")),
-            "max_storage_used_mb": _safe_float(row.get("max_storage_used")),
-            "avg_storage_used_mb": _safe_float(row.get("avg_storage_used")),
-            "max_used_percent":    _safe_float(row.get("max_used_percent")),
-            "avg_used_percent":    _safe_float(row.get("avg_used_percent")),
-            "_hash_parts":         [env, host_mount],
-        })
+        rows.append(
+            {
+                "table_type": "datafile_mongo",
+                "environment": env,
+                "host_mount": host_mount,
+                "max_storage_mb": _safe_float(row.get("max_storage")),
+                "avg_storage_mb": _safe_float(row.get("avg_storage")),
+                "max_storage_free_mb": _safe_float(row.get("max_storage_free")),
+                "avg_storage_free_mb": _safe_float(row.get("avg_storage_free")),
+                "max_storage_free_pct": _safe_float(row.get("max_storage_free_pct")),
+                "avg_storage_free_pct": _safe_float(row.get("avg_storage_free_pct")),
+                "max_storage_used_mb": _safe_float(row.get("max_storage_used")),
+                "avg_storage_used_mb": _safe_float(row.get("avg_storage_used")),
+                "max_used_percent": _safe_float(row.get("max_used_percent")),
+                "avg_used_percent": _safe_float(row.get("avg_used_percent")),
+                "_hash_parts": [env, host_mount],
+            }
+        )
     return rows
 
 
@@ -961,4 +1035,3 @@ def extract_typed_from_file(file_path: Path) -> list[dict]:
     if table_type == "datafile_mongo":
         return extract_typed_datafile_mongo(file_path)
     return []
-

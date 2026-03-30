@@ -17,11 +17,12 @@ The raw_query table is cleared before each test class so tests are isolated.
 Run:
     uv run pytest tests/test_ingestor.py -v
 """
+
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -30,10 +31,10 @@ from sqlalchemy import text
 from api.database import open_session
 from api.services.ingestor import _normalize_sync, ingest_rows
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _raw_row(
     *,
@@ -48,13 +49,13 @@ def _raw_row(
 ) -> dict[str, Any]:
     """Return a minimal pre-extraction row dict (as extractor.py would produce)."""
     return {
-        "host":            host,
-        "db_name":         db_name,
-        "source":          source,
-        "environment":     environment,
-        "type":            type_,
-        "time":            time,
-        "query_details":   query_details,
+        "host": host,
+        "db_name": db_name,
+        "source": source,
+        "environment": environment,
+        "type": type_,
+        "time": time,
+        "query_details": query_details,
         "occurrence_count": occurrence_count,
     }
 
@@ -80,6 +81,7 @@ async def _clear_raw_query() -> None:
 # Per-class isolation: wipe raw_query before each class runs
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True, scope="class")
 def _isolate_db(_db_tables):
     """Clear raw_query once before each test class."""
@@ -89,6 +91,7 @@ def _isolate_db(_db_tables):
 # ---------------------------------------------------------------------------
 # 1. inserted — new rows
 # ---------------------------------------------------------------------------
+
 
 class TestInserted:
     async def test_new_rows_are_inserted(self):
@@ -122,7 +125,7 @@ class TestInserted:
         assert stored["occurrence_count"] == 5
 
     async def test_inserted_row_has_first_seen_set(self):
-        before = datetime.now(tz=timezone.utc)
+        before = datetime.now(tz=UTC)
         row = _raw_row(host="HOST_FS")
         await ingest_rows([row])
 
@@ -134,7 +137,7 @@ class TestInserted:
         if isinstance(first_seen, str):
             first_seen = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
         if first_seen.tzinfo is None:
-            first_seen = first_seen.replace(tzinfo=timezone.utc)
+            first_seen = first_seen.replace(tzinfo=UTC)
         assert first_seen >= before
 
 
@@ -142,10 +145,11 @@ class TestInserted:
 # 2. updated — existing rows
 # ---------------------------------------------------------------------------
 
+
 class TestUpdated:
     async def test_second_upload_of_same_rows_is_updated_not_inserted(self):
         row = _raw_row(host="HOST_UPD")
-        await ingest_rows([row])          # first — inserts
+        await ingest_rows([row])  # first — inserts
 
         result2 = await ingest_rows([row])  # second — updates
         assert result2.inserted == 0
@@ -175,6 +179,7 @@ class TestUpdated:
 
         # Small sleep to ensure timestamps differ
         import time as _time
+
         _time.sleep(0.05)
 
         await ingest_rows([row])
@@ -202,6 +207,7 @@ class TestUpdated:
 # 3. skipped — DB exception path
 # ---------------------------------------------------------------------------
 
+
 class TestSkipped:
     async def test_skipped_count_set_on_db_error(self):
         rows = [_raw_row(host="HOST_SKIP_A"), _raw_row(host="HOST_SKIP_B")]
@@ -215,6 +221,7 @@ class TestSkipped:
             yield  # type: ignore[misc] — unreachable but required by asynccontextmanager
 
         import api.database as _db_mod
+
         original = _db_mod.open_session
         _db_mod.open_session = _boom  # type: ignore[assignment]
         try:
@@ -237,6 +244,7 @@ class TestSkipped:
             yield  # type: ignore[misc]
 
         import api.database as _db_mod
+
         original = _db_mod.open_session
         _db_mod.open_session = _bad  # type: ignore[assignment]
         try:
@@ -251,16 +259,17 @@ class TestSkipped:
 # 4. mixed upload — some new, some existing
 # ---------------------------------------------------------------------------
 
+
 class TestMixed:
     async def test_mixed_insert_and_update(self):
         existing_rows = [_raw_row(host=f"HOST_MIX_{i}") for i in range(3)]
-        await ingest_rows(existing_rows)   # insert 3
+        await ingest_rows(existing_rows)  # insert 3
 
         new_rows = [_raw_row(host=f"HOST_MIX_NEW_{i}") for i in range(2)]
         result = await ingest_rows(existing_rows + new_rows)
 
-        assert result.inserted == 2   # only the new ones
-        assert result.updated == 3    # the pre-existing ones
+        assert result.inserted == 2  # only the new ones
+        assert result.updated == 3  # the pre-existing ones
         assert result.skipped == 0
 
     async def test_total_equals_sum_of_all_counts(self):
@@ -273,6 +282,7 @@ class TestMixed:
 # 5. edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestEdgeCases:
     async def test_empty_input_returns_all_zeros(self):
         result = await ingest_rows([])
@@ -284,7 +294,7 @@ class TestEdgeCases:
     async def test_intra_csv_duplicates_collapsed_before_insert(self):
         """Two identical rows in one upload must produce a single DB row."""
         row = _raw_row(host="HOST_INTRA_DUP", query_details="SELECT dup", occurrence_count=4)
-        result = await ingest_rows([row, row])   # same row twice
+        result = await ingest_rows([row, row])  # same row twice
 
         # DuckDB normalisation groups duplicates → one hash
         assert result.inserted == 1
@@ -293,20 +303,23 @@ class TestEdgeCases:
         normalized = _normalize_sync([row])
         stored = await _get_raw_query_row(normalized[0]["query_hash"])
         assert stored is not None
-        assert stored["occurrence_count"] == 8   # 4 + 4 summed by DuckDB
+        assert stored["occurrence_count"] == 8  # 4 + 4 summed by DuckDB
 
     async def test_unknown_enum_values_clamped(self):
         """Rows with invalid source/type/environment must still be inserted."""
-        row = _raw_row(host="HOST_CLAMP", source="oracle", type_="unknown_type", environment="staging")
+        row = _raw_row(
+            host="HOST_CLAMP", source="oracle", type_="unknown_type", environment="staging"
+        )
         result = await ingest_rows([row])
         assert result.inserted == 1
 
         normalized = _normalize_sync([row])
         stored = await _get_raw_query_row(normalized[0]["query_hash"])
         assert stored is not None
-        assert stored["source"] == "sql"           # clamped
-        assert stored["type"] == "unknown"         # clamped
+        assert stored["source"] == "sql"  # clamped
+        assert stored["type"] == "unknown"  # clamped
         assert stored["environment"] == "unknown"  # clamped
+
 
 # ---------------------------------------------------------------------------
 # 6. hash formula stability (NULLIF fix)
@@ -321,6 +334,7 @@ class TestEdgeCases:
 #    field is absent or ''.
 # ---------------------------------------------------------------------------
 
+
 class TestHashFormula:
     """Hash must be stable: absent extra_metadata == empty-string extra_metadata."""
 
@@ -331,7 +345,7 @@ class TestHashFormula:
         pass
 
     def test_absent_and_empty_extra_metadata_produce_same_hash(self):
-        row_no_meta    = _raw_row(host="HASH_STABLE_01")
+        row_no_meta = _raw_row(host="HASH_STABLE_01")
         row_empty_meta = {**_raw_row(host="HASH_STABLE_01"), "extra_metadata": ""}
 
         n1 = _normalize_sync([row_no_meta])
@@ -342,8 +356,8 @@ class TestHashFormula:
         )
 
     def test_whitespace_only_extra_metadata_treated_as_empty(self):
-        row_no_meta      = _raw_row(host="HASH_STABLE_02")
-        row_spaces_meta  = {**_raw_row(host="HASH_STABLE_02"), "extra_metadata": "   "}
+        row_no_meta = _raw_row(host="HASH_STABLE_02")
+        row_spaces_meta = {**_raw_row(host="HASH_STABLE_02"), "extra_metadata": "   "}
 
         n1 = _normalize_sync([row_no_meta])
         n2 = _normalize_sync([row_spaces_meta])
@@ -353,8 +367,8 @@ class TestHashFormula:
         )
 
     def test_nonempty_extra_metadata_gives_different_hash(self):
-        row_no_meta     = _raw_row(host="HASH_DIFF_01")
-        row_with_meta   = {**_raw_row(host="HASH_DIFF_01"), "extra_metadata": "pid=123"}
+        row_no_meta = _raw_row(host="HASH_DIFF_01")
+        row_with_meta = {**_raw_row(host="HASH_DIFF_01"), "extra_metadata": "pid=123"}
 
         n1 = _normalize_sync([row_no_meta])
         n2 = _normalize_sync([row_with_meta])

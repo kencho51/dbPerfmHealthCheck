@@ -16,6 +16,7 @@ No DB calls — extractors are pure transformation functions.
 Run:
     uv run pytest tests/test_typed_extractor.py -v
 """
+
 from __future__ import annotations
 
 import csv
@@ -30,10 +31,10 @@ from api.services.extractor import (
     extract_typed_slow_sql,
 )
 
-
 # ---------------------------------------------------------------------------
 # CSV helpers
 # ---------------------------------------------------------------------------
+
 
 def _write_csv(path: Path, rows: list[dict]) -> Path:
     """Write a list-of-dicts to a CSV file. Returns the path."""
@@ -51,6 +52,7 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
 # Previously extract_typed_blocker only understood the aggregated format, so
 # all per-session files produced empty / identical hashes.
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTypedBlockerPerSession:
     """Per-session CSV: _time, host, database_name, session_id, wait_type,
@@ -82,7 +84,7 @@ class TestExtractTypedBlockerPerSession:
             "total_blocked_wait_time_ms": "0",
         },
         {
-            "_time": "2026-02-13T06:42:14.000+0800",   # different month doesn't appear here, same Feb
+            "_time": "2026-02-13T06:42:14.000+0800",  # different month doesn't appear here, same Feb
             "host": "QFMWDB1HV11",
             "database_name": "qfm_inbound_db",
             "session_id": "99",
@@ -157,7 +159,7 @@ class TestExtractTypedBlockerAggregated:
             "resources": "PAGE:1:100",
             "lock_modes": "IX S",
             "count": "5",
-            "latest":   "2026-02-15T10:00:00",
+            "latest": "2026-02-15T10:00:00",
             "earliest": "2026-02-15T09:58:00",
             "all_query": "SELECT SUM(amount) FROM dbo.bet",
         },
@@ -167,7 +169,7 @@ class TestExtractTypedBlockerAggregated:
             "resources": "KEY:1:200",
             "lock_modes": "X",
             "count": "2",
-            "latest":   "2026-02-20T14:30:00",
+            "latest": "2026-02-20T14:30:00",
             "earliest": "2026-02-20T14:28:00",
             "all_query": "UPDATE dbo.account SET balance = @P0 WHERE id = @P1",
         },
@@ -199,6 +201,7 @@ class TestExtractTypedBlockerAggregated:
 # ---------------------------------------------------------------------------
 # TestExtractTypedSlowSql
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTypedSlowSql:
     _ROWS = [
@@ -404,6 +407,7 @@ class TestExtractTypedDeadlockLegacy:
 # TestExtractTypedSlowMongo
 # ---------------------------------------------------------------------------
 
+
 class TestExtractTypedSlowMongo:
     _ROWS = [
         {
@@ -481,6 +485,7 @@ class TestExtractTypedSlowMongo:
 # (regression: blocker per-session was sharing the same hash for all rows)
 # ---------------------------------------------------------------------------
 
+
 class TestHashUniqueness:
     def test_blocker_per_session_rows_all_unique(self, tmp_path: Path):
         rows_data = [
@@ -492,7 +497,7 @@ class TestHashUniqueness:
                 "wait_type": "PAGELATCH_EX",
                 "command": "SELECT",
                 "head_blocker": "1",
-                "query_text": "SELECT 1",   # intentionally identical SQL
+                "query_text": "SELECT 1",  # intentionally identical SQL
                 "blocked_sessions_count": "1",
                 "total_blocked_wait_time_ms": "100",
             }
@@ -501,7 +506,9 @@ class TestHashUniqueness:
         csv_file = _write_csv(tmp_path / "blockersProdFeb26.csv", rows_data)
         rows = extract_typed_blocker(csv_file)
         hashes = [tuple(r["_hash_parts"]) for r in rows]
-        assert len(hashes) == len(set(hashes)), "same SQL on different sessions/times must not collide"
+        assert len(hashes) == len(set(hashes)), (
+            "same SQL on different sessions/times must not collide"
+        )
 
     def test_slow_sql_same_query_different_hosts_unique(self, tmp_path: Path):
         rows_data = [
@@ -510,10 +517,15 @@ class TestHashUniqueness:
                 "last_execution_time": "2026-02-28T08:00:00",
                 "host": f"WINDB0{i}",
                 "db_name": "wagering",
-                "max_elapsed_time_s": "10", "avg_elapsed_time_s": "5",
-                "total_elapsed_time_s": "50", "total_worker_time_s": "40",
-                "avg_io": "100", "avg_logical_reads": "90", "avg_logical_writes": "10",
-                "execution_count": "5", "query_final": "SELECT 1",
+                "max_elapsed_time_s": "10",
+                "avg_elapsed_time_s": "5",
+                "total_elapsed_time_s": "50",
+                "total_worker_time_s": "40",
+                "avg_io": "100",
+                "avg_logical_reads": "90",
+                "avg_logical_writes": "10",
+                "execution_count": "5",
+                "query_final": "SELECT 1",
             }
             for i in range(1, 4)
         ]

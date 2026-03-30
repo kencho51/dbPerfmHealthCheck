@@ -26,6 +26,7 @@ Commands
   migrate-down  Reverse the last schema change (alembic downgrade -1)
   truncate      Delete all rows, keep schema (prompts for confirmation)
 """
+
 from __future__ import annotations
 
 import os
@@ -38,8 +39,8 @@ from pathlib import Path
 # Path resolution - must be run from project root
 # ---------------------------------------------------------------------------
 
-_HERE = Path(__file__).resolve().parent   # migration/
-_ROOT = _HERE.parent                      # project root
+_HERE = Path(__file__).resolve().parent  # migration/
+_ROOT = _HERE.parent  # project root
 sys.path.insert(0, str(_ROOT))
 
 from api.database import SQLITE_PATH, SQLITE_URL  # noqa: E402
@@ -49,17 +50,32 @@ _ALEMBIC_URL = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
 
 # Tables listed in FK-safe drop/truncate order
 _DATA_TABLES = ["curated_query", "raw_query", "pattern_label", "spl_query", "user"]
-_ALL_TABLES  = _DATA_TABLES + ["alembic_version"]
+_ALL_TABLES = _DATA_TABLES + ["alembic_version"]
 
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def _ok(msg: str)   -> None: print(f"  [OK]      {msg}")
-def _err(msg: str)  -> None: print(f"  [ERROR]   {msg}")
-def _info(msg: str) -> None: print(f"  [INFO]    {msg}")
-def _warn(msg: str) -> None: print(f"  [WARN]    {msg}")
-def _dry(msg: str)  -> None: print(f"  [DRY RUN] {msg}")
+
+def _ok(msg: str) -> None:
+    print(f"  [OK]      {msg}")
+
+
+def _err(msg: str) -> None:
+    print(f"  [ERROR]   {msg}")
+
+
+def _info(msg: str) -> None:
+    print(f"  [INFO]    {msg}")
+
+
+def _warn(msg: str) -> None:
+    print(f"  [WARN]    {msg}")
+
+
+def _dry(msg: str) -> None:
+    print(f"  [DRY RUN] {msg}")
+
 
 # ---------------------------------------------------------------------------
 # Dry-run flag - set at entry-point, read by all commands
@@ -80,9 +96,11 @@ def _dry_banner(command: str) -> None:
     print("  " + "-" * 58)
     print()
 
+
 # ---------------------------------------------------------------------------
 # SQLite helpers
 # ---------------------------------------------------------------------------
+
 
 def _connect() -> sqlite3.Connection:
     """Return a synchronous SQLite connection to the current DB."""
@@ -94,15 +112,13 @@ def _connect() -> sqlite3.Connection:
 
 
 def _existing_tables(con: sqlite3.Connection) -> list[str]:
-    rows = con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()
+    rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
     return [r[0] for r in rows]
 
 
 def _row_count(con: sqlite3.Connection, table: str) -> int:
     try:
-        return con.execute(f"SELECT COUNT(*) FROM \"{table}\"").fetchone()[0]  # noqa: S608
+        return con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]  # noqa: S608
     except sqlite3.OperationalError:
         return -1
 
@@ -119,6 +135,7 @@ def _alembic_version(con: sqlite3.Connection) -> str:
 # Alembic runner
 # ---------------------------------------------------------------------------
 
+
 def _alembic(args: list[str]) -> int:
     """Run an alembic sub-command with the correct DB URL."""
     env = os.environ.copy()
@@ -132,6 +149,7 @@ def _alembic(args: list[str]) -> int:
 # Confirmation prompt
 # ---------------------------------------------------------------------------
 
+
 def _confirm(prompt: str) -> bool:
     answer = input(f"\n  {prompt} [yes/N] ").strip().lower()
     return answer == "yes"
@@ -140,6 +158,7 @@ def _confirm(prompt: str) -> bool:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 def cmd_status() -> None:
     """Read-only - dry-run flag has no effect."""
@@ -152,10 +171,10 @@ def cmd_status() -> None:
 
     con = _connect()
     tables = _existing_tables(con)
-    rev    = _alembic_version(con)
+    rev = _alembic_version(con)
 
     print(f"  {'Table':<25} {'Rows':>8}")
-    print(f"  {'-'*25} {'-'*8}")
+    print(f"  {'-' * 25} {'-' * 8}")
     for t in _ALL_TABLES:
         if t in tables:
             n = _row_count(con, t)
@@ -203,8 +222,7 @@ def cmd_drop() -> None:
         existing = _existing_tables(con)
         con.close()
         tables_to_drop = [
-            t for t in list(reversed(_DATA_TABLES)) + ["alembic_version"]
-            if t in existing
+            t for t in list(reversed(_DATA_TABLES)) + ["alembic_version"] if t in existing
         ]
         if tables_to_drop:
             for t in tables_to_drop:
@@ -374,13 +392,13 @@ def cmd_truncate() -> None:
 # ---------------------------------------------------------------------------
 
 _COMMANDS: dict[str, tuple[str, object]] = {  # type: ignore[type-arg]
-    "status":       ("Show DB path, tables, row counts, Alembic revision",  cmd_status),
-    "create":       ("Apply migrations - create the full schema",            cmd_create),
-    "drop":         ("Drop all tables (WARNING: destroys data)",             cmd_drop),
-    "reset":        ("drop + create - full wipe and rebuild (WARNING)",      cmd_reset),
-    "migrate-up":   ("Apply next incremental schema change",                 cmd_migrate_up),
-    "migrate-down": ("Reverse the last schema change (WARNING)",             cmd_migrate_down),
-    "truncate":     ("Delete all rows, keep schema (WARNING)",               cmd_truncate),
+    "status": ("Show DB path, tables, row counts, Alembic revision", cmd_status),
+    "create": ("Apply migrations - create the full schema", cmd_create),
+    "drop": ("Drop all tables (WARNING: destroys data)", cmd_drop),
+    "reset": ("drop + create - full wipe and rebuild (WARNING)", cmd_reset),
+    "migrate-up": ("Apply next incremental schema change", cmd_migrate_up),
+    "migrate-down": ("Reverse the last schema change (WARNING)", cmd_migrate_down),
+    "truncate": ("Delete all rows, keep schema (WARNING)", cmd_truncate),
 }
 
 
@@ -388,7 +406,7 @@ def _usage() -> None:
     print("\nUsage:  uv run python migration/manage.py <command> [--apply]\n")
     print("  Default mode is dry-run (preview only). Add --apply to apply changes.\n")
     print(f"  {'Command':<15} Description")
-    print(f"  {'-'*15} {'-'*50}")
+    print(f"  {'-' * 15} {'-' * 50}")
     for cmd, (desc, _) in _COMMANDS.items():
         print(f"  {cmd:<15} {desc}")
     print()

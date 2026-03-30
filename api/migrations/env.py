@@ -7,15 +7,15 @@ Key changes from the generated default:
   - Uses the synchronous SQLite driver for the Alembic CLI; the app uses
     aiosqlite at runtime (see api/database.py).
 """
+
 from __future__ import annotations
 
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
-
-from alembic import context
 
 # ---------------------------------------------------------------------------
 # Import models so SQLModel.metadata is populated for autogenerate
@@ -91,4 +91,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

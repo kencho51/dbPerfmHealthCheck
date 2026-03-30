@@ -14,6 +14,7 @@ Run:
 Install Playwright browsers (first time only):
     uv run playwright install chromium
 """
+
 from __future__ import annotations
 
 import re
@@ -28,10 +29,12 @@ API_URL = "http://localhost:8000"
 # Test credentials ??loaded from api/.env
 # ---------------------------------------------------------------------------
 
+
 def _load_env_var(key: str, default: str = "") -> str:
     """Parse a single key from api/.env without requiring dotenv at import time."""
     import os
     from pathlib import Path
+
     env_file = Path(__file__).resolve().parents[1] / "api" / ".env"
     try:
         for line in env_file.read_text().splitlines():
@@ -45,6 +48,7 @@ def _load_env_var(key: str, default: str = "") -> str:
         pass
     return os.getenv(key, default)
 
+
 TEST_ADMIN_USER = _load_env_var("TEST_ADMIN_USERNAME", "testAdmin")
 TEST_ADMIN_PASS = _load_env_var("TEST_ADMIN_PASSWORD", "testAdmin")
 
@@ -52,6 +56,7 @@ TEST_ADMIN_PASS = _load_env_var("TEST_ADMIN_PASSWORD", "testAdmin")
 # ---------------------------------------------------------------------------
 # Skip guard ??skip all tests if the servers aren't running
 # ---------------------------------------------------------------------------
+
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
     try:
@@ -76,12 +81,15 @@ pytestmark = pytest.mark.skipif(
 
 try:
     from playwright.sync_api import Page, expect, sync_playwright
+
     _playwright_available = True
 except ImportError:
     _playwright_available = False
 
 if not _playwright_available:
-    pytestmark = pytest.mark.skip(reason="playwright not installed ??run: uv run playwright install")
+    pytestmark = pytest.mark.skip(
+        reason="playwright not installed ??run: uv run playwright install"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +136,7 @@ def _is_our_api() -> bool:
     """Return True only when localhost:8000 is serving our FastAPI app (has /health)."""
     import json
     import urllib.request
+
     try:
         with urllib.request.urlopen(f"{API_URL}/health", timeout=2) as resp:
             data = json.loads(resp.read())
@@ -176,11 +185,13 @@ def _ensure_test_user():
         return
 
     # 2. Try open registration (only works when no users exist yet).
-    payload = json.dumps({
-        "username": TEST_ADMIN_USER,
-        "email": f"{TEST_ADMIN_USER}@test.com",
-        "password": TEST_ADMIN_PASS,
-    }).encode()
+    payload = json.dumps(
+        {
+            "username": TEST_ADMIN_USER,
+            "email": f"{TEST_ADMIN_USER}@test.com",
+            "password": TEST_ADMIN_PASS,
+        }
+    ).encode()
     try:
         req = urllib.request.Request(
             f"{API_URL}/api/auth/register",
@@ -217,13 +228,16 @@ def _ensure_test_user():
 # Playwright fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as pw:
         try:
             b = pw.chromium.launch(headless=True)
         except Exception as exc:
-            pytest.skip(f"Chromium binary not installed ??run: uv run playwright install chromium ({exc})")
+            pytest.skip(
+                f"Chromium binary not installed ??run: uv run playwright install chromium ({exc})"
+            )
         yield b
         b.close()
 
@@ -240,18 +254,19 @@ def page(browser):
 # Login page
 # ---------------------------------------------------------------------------
 
+
 class TestLoginPage:
-    def test_login_page_loads(self, page: "Page"):
+    def test_login_page_loads(self, page: Page):
         page.goto("/login")
         expect(page).to_have_title(re.compile(r".+"))
 
-    def test_login_form_present(self, page: "Page"):
+    def test_login_form_present(self, page: Page):
         page.goto("/login")
         expect(page.get_by_label("Username", exact=False)).to_be_visible()
         expect(page.get_by_label("Password", exact=False)).to_be_visible()
         expect(page.get_by_role("button", name="Sign in", exact=False)).to_be_visible()
 
-    def test_invalid_login_shows_error(self, page: "Page"):
+    def test_invalid_login_shows_error(self, page: Page):
         page.goto("/login")
         page.get_by_label("Username", exact=False).fill("nobody")
         page.get_by_label("Password", exact=False).fill("wrongpass")
@@ -261,9 +276,10 @@ class TestLoginPage:
         body = page.content()
         assert any(word in body.lower() for word in ("invalid", "error", "incorrect", "failed"))
 
-    def test_login_page_performance(self, page: "Page"):
+    def test_login_page_performance(self, page: Page):
         """Login page must load within 3 seconds."""
         import time
+
         t0 = time.perf_counter()
         page.goto("/login", wait_until="networkidle")
         elapsed = time.perf_counter() - t0
@@ -274,10 +290,13 @@ class TestLoginPage:
 # Successful login flow
 # ---------------------------------------------------------------------------
 
+
 class TestAuthFlow:
-    def test_valid_login_redirects(self, page: "Page"):
+    def test_valid_login_redirects(self, page: Page):
         if not _TESTADMIN_AVAILABLE:
-            pytest.skip("testadmin not available on live server ??run: uv run python scripts/ensure_test_user.py")
+            pytest.skip(
+                "testadmin not available on live server ??run: uv run python scripts/ensure_test_user.py"
+            )
         page.goto("/login")
         page.get_by_label("Username", exact=False).fill(TEST_ADMIN_USER)
         page.get_by_label("Password", exact=False).fill(TEST_ADMIN_PASS)
@@ -291,12 +310,15 @@ class TestAuthFlow:
 # Dashboard / main views (authenticated)
 # ---------------------------------------------------------------------------
 
+
 class TestDashboard:
     @pytest.fixture(autouse=True)
-    def _login(self, page: "Page"):
+    def _login(self, page: Page):
         """Inject auth token directly via API ??bypasses form to avoid timing fragility."""
         if not _TESTADMIN_AVAILABLE:
-            pytest.skip("testadmin not available on live server ??run: uv run python scripts/ensure_test_user.py")
+            pytest.skip(
+                "testadmin not available on live server ??run: uv run python scripts/ensure_test_user.py"
+            )
             return
 
         token = _try_login_api(TEST_ADMIN_USER, TEST_ADMIN_PASS)
@@ -318,12 +340,12 @@ class TestDashboard:
         page.goto("/dashboard")
         page.wait_for_load_state("load")
 
-    def test_dashboard_loads(self, page: "Page"):
+    def test_dashboard_loads(self, page: Page):
         page.goto("/")
         page.wait_for_load_state("load")
         assert page.title() != ""
 
-    def test_no_console_errors(self, page: "Page"):
+    def test_no_console_errors(self, page: Page):
         errors: list[str] = []
         page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
         page.goto("/")
@@ -334,14 +356,15 @@ class TestDashboard:
         # "TypeError: Failed to fetch" is a *network* error (backend unreachable),
         # not a JavaScript coding defect — exclude it from the critical list.
         critical = [
-            e for e in errors
-            if ("TypeError" in e or "ReferenceError" in e)
-            and "Failed to fetch" not in e
+            e
+            for e in errors
+            if ("TypeError" in e or "ReferenceError" in e) and "Failed to fetch" not in e
         ]
         assert critical == [], f"Console JS errors: {critical}"
 
-    def test_page_load_under_3s(self, page: "Page"):
+    def test_page_load_under_3s(self, page: Page):
         import time
+
         # Navigate directly to /dashboard (where _login already placed us).
         # Navigating to "/" can hang if the proxy redirect loop is slow.
         t0 = time.perf_counter()

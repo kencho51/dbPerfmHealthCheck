@@ -3,21 +3,23 @@ Authentication router.
 
 Endpoints
 ---------
-POST  /api/auth/register          — create a new user (admin only once 1+ users exist, or open for first user)
+POST  /api/auth/register          — create a new user (admin only once 1+ users
+                                    exist, or open for first user)
 POST  /api/auth/login             — get a JWT access token
 GET   /api/auth/me                — current user info (requires token)
 GET   /api/auth/users             — list all users (admin only)
 PATCH /api/auth/users/{user_id}   — update user role / active status (admin only)
 DELETE /api/auth/users/{user_id}  — delete a user (admin only)
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -29,7 +31,6 @@ from api.services.auth_service import (
     hash_password,
     verify_password,
 )
-from pydantic import BaseModel
 
 router = APIRouter()
 _bearer = HTTPBearer()
@@ -38,6 +39,7 @@ _bearer = HTTPBearer()
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
+
 
 class RegisterRequest(BaseModel):
     username: str
@@ -64,7 +66,7 @@ class UserPublic(BaseModel):
     role: UserRole
     is_active: bool
     created_at: datetime
-    last_login: Optional[datetime]
+    last_login: datetime | None
 
 
 class LoginResponse(BaseModel):
@@ -74,19 +76,20 @@ class LoginResponse(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    role: Optional[UserRole] = None
-    is_active: Optional[bool] = None
+    role: UserRole | None = None
+    is_active: bool | None = None
 
 
 class UpdateProfileRequest(BaseModel):
-    email: Optional[str] = None
-    current_password: Optional[str] = None
-    new_password: Optional[str] = None
+    email: str | None = None
+    current_password: str | None = None
+    new_password: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
+
 
 async def _current_user(
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
@@ -96,12 +99,14 @@ async def _current_user(
     try:
         payload = decode_access_token(creds.credentials)
         user_id: int = int(payload["sub"])
-    except (JWTError, KeyError, ValueError):
+    except JWTError, KeyError, ValueError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     user = await session.get(User, user_id)
     if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive"
+        )
     return user
 
 
@@ -127,6 +132,7 @@ def _to_public(u: User) -> UserPublic:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post("/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
 async def register(
     body: RegisterRequest,
@@ -144,7 +150,8 @@ async def register(
 
     if not is_first_user:
         # Require admin auth for subsequent registrations
-        # (We can't use Depends here because we need conditional auth, so we check the header manually)
+        # (We can't use Depends here because we need conditional auth,
+        # so we check the header manually)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Registration is closed. Ask an admin to create your account.",
@@ -153,11 +160,15 @@ async def register(
     # Check username / email uniqueness
     result = await session.exec(select(User).where(User.username == body.username))
     if result.first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already taken")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Username already taken"
+        )
 
     result2 = await session.exec(select(User).where(User.email == body.email))
     if result2.first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
+        )
 
     user = User(
         username=body.username,
@@ -181,11 +192,15 @@ async def admin_create_user(
     """Admin-only endpoint to create additional users with a specified role."""
     result = await session.exec(select(User).where(User.username == body.username))
     if result.first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already taken")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Username already taken"
+        )
 
     result2 = await session.exec(select(User).where(User.email == body.email))
     if result2.first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
+        )
 
     user = User(
         username=body.username,
@@ -214,7 +229,7 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account deactivated")
 
     # Update last_login
-    user.last_login = datetime.now(tz=timezone.utc)
+    user.last_login = datetime.now(tz=UTC)
     session.add(user)
     await session.commit()
     await session.refresh(user)
@@ -318,7 +333,9 @@ async def delete_user(
 ):
     """Delete a user. Admin only. Cannot delete yourself."""
     if admin.id == user_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete your own account")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete your own account"
+        )
 
     user = await session.get(User, user_id)
     if not user:

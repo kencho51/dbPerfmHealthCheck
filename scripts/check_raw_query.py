@@ -41,9 +41,7 @@ print("=== blocker: raw_query vs raw_query_blocker for 2025-11 ===")
 rq = con.execute(
     "SELECT COUNT(*) FROM raw_query WHERE type='blocker' AND month_year='2025-11'"
 ).fetchone()[0]
-rqb = con.execute(
-    "SELECT COUNT(*) FROM raw_query_blocker WHERE month_year='2025-11'"
-).fetchone()[0]
+rqb = con.execute("SELECT COUNT(*) FROM raw_query_blocker WHERE month_year='2025-11'").fetchone()[0]
 print(f"  raw_query     blocker 2025-11: {rq}")
 print(f"  raw_query_blocker 2025-11:     {rqb}")
 
@@ -52,9 +50,9 @@ print("=== deadlock: raw_query vs raw_query_deadlock for 2025-11 ===")
 rq = con.execute(
     "SELECT COUNT(*) FROM raw_query WHERE type='deadlock' AND month_year='2025-11'"
 ).fetchone()[0]
-rqd = con.execute(
-    "SELECT COUNT(*) FROM raw_query_deadlock WHERE month_year='2025-11'"
-).fetchone()[0]
+rqd = con.execute("SELECT COUNT(*) FROM raw_query_deadlock WHERE month_year='2025-11'").fetchone()[
+    0
+]
 print(f"  raw_query     deadlock 2025-11: {rq}")
 print(f"  raw_query_deadlock 2025-11:     {rqd}")
 
