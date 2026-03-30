@@ -5,9 +5,8 @@ Query endpoints:
     GET  /api/queries/distinct    -- distinct host and db_name values
     GET  /api/queries/{id}        -- single row by primary key
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import col, func, select
@@ -33,18 +32,19 @@ _PAGE_MAX = 200
 # Shared filter builder (reused by list + count endpoints)
 # ---------------------------------------------------------------------------
 
+
 def _apply_filters(
     stmt,
     *,
-    environment: Optional[EnvironmentType],
-    type: Optional[QueryType],
-    source: Optional[SourceType],
-    host: Optional[str],
-    db_name: Optional[str],
-    month_year: Optional[list[str]],
-    is_curated: Optional[bool],
-    search: Optional[str],
-    system: Optional[str] = None,
+    environment: EnvironmentType | None,
+    type: QueryType | None,
+    source: SourceType | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: list[str] | None,
+    is_curated: bool | None,
+    search: str | None,
+    system: str | None = None,
 ):
     if environment is not None:
         stmt = stmt.where(RawQuery.environment == environment)
@@ -74,17 +74,18 @@ def _apply_filters(
 # GET /api/queries
 # ---------------------------------------------------------------------------
 
+
 @router.get("", response_model=list[RawQueryRead], summary="List raw query rows")
 async def list_queries(
     # Filters
-    environment: Optional[EnvironmentType] = None,
-    type: Optional[QueryType] = None,
-    source: Optional[SourceType] = None,
-    host: Optional[str] = Query(default=None),
-    db_name: Optional[str] = Query(default=None),
-    month_year: Optional[list[str]] = Query(default=None),
-    is_curated: Optional[bool] = None,
-    search: Optional[str] = Query(default=None, description="Substring search in query_details"),
+    environment: EnvironmentType | None = None,
+    type: QueryType | None = None,
+    source: SourceType | None = None,
+    host: str | None = Query(default=None),
+    db_name: str | None = Query(default=None),
+    month_year: list[str] | None = Query(default=None),
+    is_curated: bool | None = None,
+    search: str | None = Query(default=None, description="Substring search in query_details"),
     # Sorting
     sort_by: str = Query(default="id", pattern="^(id|last_seen|occurrence_count)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -96,8 +97,14 @@ async def list_queries(
     session: AsyncSession = Depends(get_session),
 ) -> list[RawQueryRead]:
     filter_kwargs = dict(
-        environment=environment, type=type, source=source, host=host,
-        db_name=db_name, month_year=month_year, is_curated=is_curated, search=search,
+        environment=environment,
+        type=type,
+        source=source,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        is_curated=is_curated,
+        search=search,
     )
 
     # Total count (for X-Total-Count header)
@@ -108,10 +115,18 @@ async def list_queries(
         response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
 
     # Paginated data
-    _SORT_COLS = {"id": RawQuery.id, "last_seen": RawQuery.last_seen, "occurrence_count": RawQuery.occurrence_count}
+    _SORT_COLS = {
+        "id": RawQuery.id,
+        "last_seen": RawQuery.last_seen,
+        "occurrence_count": RawQuery.occurrence_count,
+    }
     _col_expr = col(_SORT_COLS.get(sort_by, RawQuery.id))
     stmt = _apply_filters(select(RawQuery), **filter_kwargs)
-    stmt = stmt.order_by(_col_expr.desc() if sort_dir == "desc" else _col_expr.asc()).offset(offset).limit(limit)
+    stmt = (
+        stmt.order_by(_col_expr.desc() if sort_dir == "desc" else _col_expr.asc())
+        .offset(offset)
+        .limit(limit)
+    )
     rows = list((await session.exec(stmt)).all())
 
     if not rows:
@@ -119,9 +134,9 @@ async def list_queries(
 
     # Batch-fetch curated entries to inject curated_id
     raw_ids = [r.id for r in rows]
-    curated_rows = (await session.exec(
-        select(CuratedQuery).where(col(CuratedQuery.raw_query_id).in_(raw_ids))
-    )).all()
+    curated_rows = (
+        await session.exec(select(CuratedQuery).where(col(CuratedQuery.raw_query_id).in_(raw_ids)))
+    ).all()
     curated_map = {cq.raw_query_id: cq.id for cq in curated_rows}
 
     result = []
@@ -136,12 +151,27 @@ async def list_queries(
 # GET /api/queries/distinct  -- dropdown option lists for Host & Database
 # ---------------------------------------------------------------------------
 
+
 @router.get("/distinct", summary="Distinct host and db_name values")
 async def distinct_values(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    hosts = (await session.exec(select(RawQuery.host).distinct().where(col(RawQuery.host).isnot(None)).order_by(RawQuery.host))).all()
-    db_names = (await session.exec(select(RawQuery.db_name).distinct().where(col(RawQuery.db_name).isnot(None)).order_by(RawQuery.db_name))).all()
+    hosts = (
+        await session.exec(
+            select(RawQuery.host)
+            .distinct()
+            .where(col(RawQuery.host).isnot(None))
+            .order_by(RawQuery.host)
+        )
+    ).all()
+    db_names = (
+        await session.exec(
+            select(RawQuery.db_name)
+            .distinct()
+            .where(col(RawQuery.db_name).isnot(None))
+            .order_by(RawQuery.db_name)
+        )
+    ).all()
     return {"hosts": list(hosts), "db_names": list(db_names)}
 
 
@@ -149,23 +179,30 @@ async def distinct_values(
 # GET /api/queries/count  -- dedicated count endpoint
 # ---------------------------------------------------------------------------
 
+
 @router.get("/count", summary="Count matching raw query rows")
 async def count_queries(
-    environment: Optional[EnvironmentType] = None,
-    type: Optional[QueryType] = None,
-    source: Optional[SourceType] = None,
-    host: Optional[str] = Query(default=None),
-    db_name: Optional[str] = Query(default=None),
-    month_year: Optional[list[str]] = Query(default=None),
-    is_curated: Optional[bool] = None,
-    search: Optional[str] = Query(default=None),
-    system: Optional[str] = Query(default=None),
+    environment: EnvironmentType | None = None,
+    type: QueryType | None = None,
+    source: SourceType | None = None,
+    host: str | None = Query(default=None),
+    db_name: str | None = Query(default=None),
+    month_year: list[str] | None = Query(default=None),
+    is_curated: bool | None = None,
+    search: str | None = Query(default=None),
+    system: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = _apply_filters(
         select(func.count(RawQuery.id)),
-        environment=environment, type=type, source=source, host=host,
-        db_name=db_name, month_year=month_year, is_curated=is_curated, search=search,
+        environment=environment,
+        type=type,
+        source=source,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        is_curated=is_curated,
+        search=search,
         system=system,
     )
     total = (await session.exec(stmt)).one()
@@ -175,6 +212,7 @@ async def count_queries(
 # ---------------------------------------------------------------------------
 # GET /api/queries/{id}
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{query_id}", response_model=RawQueryRead, summary="Get a single raw query")
 async def get_query(
@@ -187,8 +225,8 @@ async def get_query(
 
     read = RawQueryRead.model_validate(rq)
     # Inject curated_id
-    cq = (await session.exec(
-        select(CuratedQuery).where(CuratedQuery.raw_query_id == query_id)
-    )).first()
+    cq = (
+        await session.exec(select(CuratedQuery).where(CuratedQuery.raw_query_id == query_id))
+    ).first()
     read.curated_id = cq.id if cq else None
     return read

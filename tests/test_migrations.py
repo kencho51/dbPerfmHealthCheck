@@ -14,6 +14,7 @@ WHY NOT IN CI:
 Run locally:
     uv run pytest tests/test_migrations.py -v
 """
+
 from __future__ import annotations
 
 import os
@@ -49,12 +50,12 @@ def tmp_db(tmp_path: Path) -> Path:
 # Upgrade to head
 # ---------------------------------------------------------------------------
 
+
 class TestAlembicUpgradeHead:
     def test_upgrade_head_succeeds(self, tmp_db: Path):
         result = _run_alembic("upgrade", "head", db_path=tmp_db)
         assert result.returncode == 0, (
-            f"alembic upgrade head failed\n"
-            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            f"alembic upgrade head failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_db_file_created(self, tmp_db: Path):
@@ -65,9 +66,7 @@ class TestAlembicUpgradeHead:
         _run_alembic("upgrade", "head", db_path=tmp_db)
         conn = sqlite3.connect(str(tmp_db))
         try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             tables = {row[0] for row in cursor.fetchall()}
         finally:
             conn.close()
@@ -85,9 +84,7 @@ class TestAlembicUpgradeHead:
             "alembic_version",
         }
         missing = expected - tables
-        assert not missing, (
-            f"Missing tables after 'alembic upgrade head': {sorted(missing)}"
-        )
+        assert not missing, f"Missing tables after 'alembic upgrade head': {sorted(missing)}"
 
     def test_alembic_version_recorded(self, tmp_db: Path):
         _run_alembic("upgrade", "head", db_path=tmp_db)
@@ -97,9 +94,7 @@ class TestAlembicUpgradeHead:
             versions = [row[0] for row in cursor.fetchall()]
         finally:
             conn.close()
-        assert len(versions) == 1, (
-            f"Expected exactly 1 alembic version row, got: {versions}"
-        )
+        assert len(versions) == 1, f"Expected exactly 1 alembic version row, got: {versions}"
         assert versions[0], "Alembic version_num must not be empty"
 
     def test_upgrade_head_is_idempotent(self, tmp_db: Path):
@@ -118,8 +113,15 @@ class TestAlembicUpgradeHead:
             col_names = {row[1] for row in cursor.fetchall()}
         finally:
             conn.close()
-        for col in ("id", "query_hash", "extra_metadata", "month_year",
-                    "occurrence_count", "first_seen", "last_seen"):
+        for col in (
+            "id",
+            "query_hash",
+            "extra_metadata",
+            "month_year",
+            "occurrence_count",
+            "first_seen",
+            "last_seen",
+        ):
             assert col in col_names, f"Column '{col}' missing from raw_query"
 
     def test_typed_tables_have_raw_query_id_fk(self, tmp_db: Path):
@@ -127,13 +129,15 @@ class TestAlembicUpgradeHead:
         _run_alembic("upgrade", "head", db_path=tmp_db)
         conn = sqlite3.connect(str(tmp_db))
         try:
-            for table in ("raw_query_slow_sql", "raw_query_blocker",
-                          "raw_query_deadlock", "raw_query_slow_mongo"):
+            for table in (
+                "raw_query_slow_sql",
+                "raw_query_blocker",
+                "raw_query_deadlock",
+                "raw_query_slow_mongo",
+            ):
                 cursor = conn.execute(f"PRAGMA table_info({table})")
                 col_names = {row[1] for row in cursor.fetchall()}
-                assert "raw_query_id" in col_names, (
-                    f"raw_query_id column missing from {table}"
-                )
+                assert "raw_query_id" in col_names, f"raw_query_id column missing from {table}"
         finally:
             conn.close()
 
@@ -142,13 +146,13 @@ class TestAlembicUpgradeHead:
 # Downgrade
 # ---------------------------------------------------------------------------
 
+
 class TestAlembicDowngrade:
     def test_downgrade_one_step_succeeds(self, tmp_db: Path):
         _run_alembic("upgrade", "head", db_path=tmp_db)
         result = _run_alembic("downgrade", "-1", db_path=tmp_db)
         assert result.returncode == 0, (
-            f"alembic downgrade -1 failed\n"
-            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            f"alembic downgrade -1 failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_upgrade_after_downgrade_succeeds(self, tmp_db: Path):
@@ -156,8 +160,7 @@ class TestAlembicDowngrade:
         _run_alembic("downgrade", "-1", db_path=tmp_db)
         result = _run_alembic("upgrade", "head", db_path=tmp_db)
         assert result.returncode == 0, (
-            f"Re-upgrade after downgrade failed\n"
-            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            f"Re-upgrade after downgrade failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_downgrade_to_base_succeeds(self, tmp_db: Path):
@@ -165,8 +168,7 @@ class TestAlembicDowngrade:
         _run_alembic("upgrade", "head", db_path=tmp_db)
         result = _run_alembic("downgrade", "base", db_path=tmp_db)
         assert result.returncode == 0, (
-            f"alembic downgrade base failed\n"
-            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            f"alembic downgrade base failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_full_cycle_up_down_up(self, tmp_db: Path):

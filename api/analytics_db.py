@@ -18,6 +18,7 @@ Thread-safety
 - The shared sync engine uses a single connection via QueuePool; WAL pragmas
   allow non-blocking reads even if an async write is in progress.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -47,6 +48,7 @@ def _get_sync_engine() -> sa.engine.Engine:
         if _sync_engine is not None:
             return _sync_engine
         from api.database import SQLITE_URL
+
         sync_url = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
         engine = sa.create_engine(
             sync_url,
@@ -70,7 +72,7 @@ def _get_sync_engine() -> sa.engine.Engine:
 # Per-table lock: only one thread loads a given table at a time; others wait
 # and then read the freshly-cached result instead of hitting SQLite again.
 # ---------------------------------------------------------------------------
-_CACHE_TTL: float = 60.0          # seconds before a stale table is re-fetched
+_CACHE_TTL: float = 60.0  # seconds before a stale table is re-fetched
 _df_cache: dict[str, tuple[float, pl.DataFrame]] = {}
 _table_locks: dict[str, threading.Lock] = {t: threading.Lock() for t in _KNOWN_TABLES}
 
@@ -117,10 +119,14 @@ def _load_table(table: str) -> pl.DataFrame:
                 # Utf8 from the start without affecting other columns.
                 {col: [row[i] for row in rows] for i, col in enumerate(columns)},
                 schema_overrides={
-                    **( {"extra_metadata": pl.Utf8} if "extra_metadata" in columns else {} ),
-                    **( {"csv_row_count": pl.Int64, "inserted": pl.Int64, "updated": pl.Int64}
-                        if table == "upload_log" else {} ),
-                } or None,
+                    **({"extra_metadata": pl.Utf8} if "extra_metadata" in columns else {}),
+                    **(
+                        {"csv_row_count": pl.Int64, "inserted": pl.Int64, "updated": pl.Int64}
+                        if table == "upload_log"
+                        else {}
+                    ),
+                }
+                or None,
             )
         )
         # Belt-and-suspenders: cast any column that slipped through as Null.
@@ -173,5 +179,5 @@ def build_where(
     if not active:
         return "", []
     fragment = " AND ".join(f"{col} = ?" for col, _ in active)
-    params   = [val for _, val in active]
+    params = [val for _, val in active]
     return f"{prefix} {fragment}", params

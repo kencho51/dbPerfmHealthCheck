@@ -5,26 +5,29 @@ Usage:  uv run python scripts/run_migration.py
 All output is written to scripts/run_migration.log so it can be read back
 regardless of terminal capture issues.
 """
-import sys
-import sqlite3
+
 import io
+import sqlite3
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent   # project root
-LOG  = Path(__file__).parent / "run_migration.log"
+ROOT = Path(__file__).parent.parent  # project root
+LOG = Path(__file__).parent / "run_migration.log"
 
 lines: list[str] = []
+
 
 def log(msg: str = "") -> None:
     lines.append(msg)
 
+
 # ── Run Alembic ──────────────────────────────────────────────────────────────
 try:
-    from alembic.config import Config
     from alembic import command
+    from alembic.config import Config
 
     INI = ROOT / "alembic.ini"
-    DB  = ROOT / "db" / "master.db"
+    DB = ROOT / "db" / "master.db"
 
     log(f"[migration] alembic.ini : {INI}")
     log(f"[migration] database    : {DB}")
@@ -52,7 +55,8 @@ except Exception as exc:
 try:
     con = sqlite3.connect(str(DB))
     tables = sorted(
-        r[0] for r in con.execute(
+        r[0]
+        for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
     )

@@ -7,12 +7,12 @@ detection from filename, and guarantee of no DB writes.
 Run:
     uv run pytest tests/test_api_validate.py -v
 """
+
 from __future__ import annotations
 
 import io
 
 from httpx import AsyncClient
-
 
 # ---------------------------------------------------------------------------
 # Minimal CSV payloads
@@ -34,7 +34,7 @@ _BLOCKER_CSV = (
 )
 _BLOCKER_FILENAME = "blockersProd.csv"
 
-_EMPTY_ROWS_CSV = "host,db_name,query_final\n"   # header only, no data rows
+_EMPTY_ROWS_CSV = "host,db_name,query_final\n"  # header only, no data rows
 
 _UNKNOWN_FORMAT_CSV = "col_a,col_b,col_c\nval1,val2,val3\n"
 
@@ -46,6 +46,7 @@ def _multipart(content: str, filename: str) -> dict:
 # ---------------------------------------------------------------------------
 # POST /api/validate
 # ---------------------------------------------------------------------------
+
 
 class TestValidate:
     async def test_valid_slow_query_returns_200(self, client: AsyncClient):
@@ -62,8 +63,16 @@ class TestValidate:
         )
         assert r.status_code == 200
         data = r.json()
-        for field in ("is_valid", "file_type", "environment", "row_count",
-                      "warnings", "errors", "null_rates", "sample_rows"):
+        for field in (
+            "is_valid",
+            "file_type",
+            "environment",
+            "row_count",
+            "warnings",
+            "errors",
+            "null_rates",
+            "sample_rows",
+        ):
             assert field in data, f"Missing field: {field}"
 
     async def test_valid_csv_is_valid(self, client: AsyncClient):
@@ -118,7 +127,11 @@ class TestValidate:
         """Validate must not persist any rows to the database."""
         r_before = await client.get("/api/queries/count", headers=auth_headers)
         count_before = r_before.json()
-        count_before = count_before.get("count", count_before) if isinstance(count_before, dict) else count_before
+        count_before = (
+            count_before.get("count", count_before)
+            if isinstance(count_before, dict)
+            else count_before
+        )
 
         await client.post(
             "/api/validate",
@@ -127,7 +140,9 @@ class TestValidate:
 
         r_after = await client.get("/api/queries/count", headers=auth_headers)
         count_after = r_after.json()
-        count_after = count_after.get("count", count_after) if isinstance(count_after, dict) else count_after
+        count_after = (
+            count_after.get("count", count_after) if isinstance(count_after, dict) else count_after
+        )
 
         assert count_after == count_before
 

@@ -8,6 +8,7 @@ so no Neon credentials are needed. The CSV extraction and validation
 Run:
     uv run pytest tests/test_upload.py -v
 """
+
 from __future__ import annotations
 
 import textwrap
@@ -19,10 +20,10 @@ from httpx import AsyncClient
 
 from api.services.ingestor import IngestResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _csv_bytes(content: str) -> BytesIO:
     return BytesIO(textwrap.dedent(content).strip().encode())
@@ -39,6 +40,7 @@ def _upload(client, filename: str, content: str):
 # ---------------------------------------------------------------------------
 # Mocked ingest_rows — avoids Neon calls
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def mock_ingest():
@@ -64,7 +66,7 @@ def mock_ingest():
         pass
 
     with (
-        patch("api.routers.upload.ingest_rows",       side_effect=_fake_ingest),
+        patch("api.routers.upload.ingest_rows", side_effect=_fake_ingest),
         patch("api.routers.upload.ingest_typed_rows", side_effect=_fake_typed_ingest),
         patch("api.routers.upload._link_typed_to_raw", side_effect=_fake_link),
     ):
@@ -74,6 +76,7 @@ def mock_ingest():
 # ---------------------------------------------------------------------------
 # Valid CSV uploads
 # ---------------------------------------------------------------------------
+
 
 class TestValidUpload:
     _SLOW_QUERY_CSV = """
@@ -125,6 +128,7 @@ class TestValidUpload:
 # Invalid / empty  uploads
 # ---------------------------------------------------------------------------
 
+
 class TestInvalidUpload:
     async def test_empty_csv_rejected(self, client: AsyncClient, auth_headers: dict):
         r = await _upload(client, "maxElapsedQueriesProdJan26.csv", "")
@@ -137,4 +141,3 @@ class TestInvalidUpload:
     async def test_missing_required_columns_422(self, client: AsyncClient, auth_headers: dict):
         r = await _upload(client, "maxElapsedQueriesProdJan26.csv", "irrelevant_col\nfoo\n")
         assert r.status_code == 422
-

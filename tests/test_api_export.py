@@ -7,23 +7,24 @@ and filter parameters. Seeds RawQuery rows directly to guarantee known data.
 Run:
     uv run pytest tests/test_api_export.py -v
 """
+
 from __future__ import annotations
 
 import csv
 import hashlib
 import io
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from httpx import AsyncClient
 
 from api.database import open_session
 from api.models import RawQuery
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _seed_export_query(**overrides) -> RawQuery:
     unique = str(uuid.uuid4())
@@ -38,10 +39,10 @@ async def _seed_export_query(**overrides) -> RawQuery:
         query_details=f"SELECT 1 FROM export_table /* {unique} */",
         month_year="2026-02",
         occurrence_count=1,
-        first_seen=datetime.now(tz=timezone.utc),
-        last_seen=datetime.now(tz=timezone.utc),
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        first_seen=datetime.now(tz=UTC),
+        last_seen=datetime.now(tz=UTC),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
     )
     defaults.update(overrides)
     row = RawQuery(**defaults)
@@ -49,15 +50,15 @@ async def _seed_export_query(**overrides) -> RawQuery:
         session.add(row)
         await session.commit()
         from sqlmodel import select
-        result = await session.exec(
-            select(RawQuery).where(RawQuery.query_hash == row.query_hash)
-        )
+
+        result = await session.exec(select(RawQuery).where(RawQuery.query_hash == row.query_hash))
         return result.one()
 
 
 # ---------------------------------------------------------------------------
 # GET /api/export
 # ---------------------------------------------------------------------------
+
 
 class TestExport:
     async def test_returns_200(self, client: AsyncClient, auth_headers: dict):
@@ -76,9 +77,18 @@ class TestExport:
         reader = csv.reader(io.StringIO(r.text))
         headers = next(reader)
         expected_cols = (
-            "id", "query_hash", "source", "host", "db_name",
-            "environment", "type", "month_year", "occurrence_count",
-            "query_details", "curated_id", "label_id",
+            "id",
+            "query_hash",
+            "source",
+            "host",
+            "db_name",
+            "environment",
+            "type",
+            "month_year",
+            "occurrence_count",
+            "query_details",
+            "curated_id",
+            "label_id",
         )
         for col in expected_cols:
             assert col in headers, f"Expected column '{col}' missing from CSV header"

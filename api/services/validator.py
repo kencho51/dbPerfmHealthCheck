@@ -11,6 +11,7 @@ Returns a `ValidationResult` dataclass consumed by:
   - `api/routers/validate.py`   (POST /api/validate)
   - `scripts/validate_csv.py`   (standalone CLI)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import polars as pl
 
-from api.services.extractor import detect_file_category, _extract_environment
+from api.services.extractor import _extract_environment, detect_file_category
 
 SAMPLE_SIZE = 50
 
@@ -32,9 +33,9 @@ SAMPLE_SIZE = 50
 #   Legacy format (old): _time, host, currentdbname, all_query/clean_query, _raw
 # The common required column in BOTH is _raw + host.
 _CRITICAL_FIELDS: dict[str, list[str]] = {
-    "slow_query_sql":   ["host", "db_name", "query_final"],
-    "blocker":          ["host", "database_name", "query_text"],
-    "deadlock":         [],   # flexible check in section 3b — formats vary
+    "slow_query_sql": ["host", "db_name", "query_final"],
+    "blocker": ["host", "database_name", "query_text"],
+    "deadlock": [],  # flexible check in section 3b — formats vary
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -42,26 +43,27 @@ _CRITICAL_FIELDS: dict[str, list[str]] = {
 # Result type
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ValidationResult:
-    is_valid:    bool
-    file_type:   str          # e.g. "slow_query_sql"
-    environment: str          # "prod" | "sat" | "unknown"
-    row_count:   int
-    warnings:    list[str] = field(default_factory=list)
-    errors:      list[str] = field(default_factory=list)
-    null_rates:  dict[str, float] = field(default_factory=dict)
-    sample_rows: list[dict]  = field(default_factory=list)
+    is_valid: bool
+    file_type: str  # e.g. "slow_query_sql"
+    environment: str  # "prod" | "sat" | "unknown"
+    row_count: int
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    null_rates: dict[str, float] = field(default_factory=dict)
+    sample_rows: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
-            "is_valid":    self.is_valid,
-            "file_type":   self.file_type,
+            "is_valid": self.is_valid,
+            "file_type": self.file_type,
             "environment": self.environment,
-            "row_count":   self.row_count,
-            "warnings":    self.warnings,
-            "errors":      self.errors,
-            "null_rates":  self.null_rates,
+            "row_count": self.row_count,
+            "warnings": self.warnings,
+            "errors": self.errors,
+            "null_rates": self.null_rates,
             "sample_rows": self.sample_rows,
         }
 
@@ -70,15 +72,16 @@ class ValidationResult:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+
 def validate_csv(path: Path) -> ValidationResult:
     """
     Validate a single CSV file.  Does NOT write to the database.
     """
     filename = path.name
-    file_type   = detect_file_category(filename)
+    file_type = detect_file_category(filename)
     environment = _extract_environment(filename)
 
-    errors:   list[str] = []
+    errors: list[str] = []
     warnings: list[str] = []
 
     # -- 1. Unknown file type ----------------------------------------------------
@@ -126,7 +129,14 @@ def validate_csv(path: Path) -> ValidationResult:
     # -- 3b. Deadlock format detection note (informational) ----------------------
     if file_type == "deadlock" and not errors:
         col_set = set(df.columns)
-        _QUERY_TEXT_COLS = {"_raw", "all_query", "clean_query", "query_text", "statement", "sql_text"}
+        _QUERY_TEXT_COLS = {
+            "_raw",
+            "all_query",
+            "clean_query",
+            "query_text",
+            "statement",
+            "sql_text",
+        }
         if not (_QUERY_TEXT_COLS & col_set):
             errors.append(
                 "Deadlock CSV must contain at least one query-text column: "

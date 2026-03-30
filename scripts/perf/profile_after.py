@@ -2,6 +2,7 @@
 End-to-end performance benchmark for the MongoDB slow query CSV pipeline.
 Measures: extraction, normalization, upsert, and link-typed-to-raw timing.
 """
+
 import sqlite3
 import time
 from pathlib import Path
@@ -19,17 +20,17 @@ def measure_extractions():
     t0 = time.perf_counter()
     rows = extract_from_file(f)
     t1 = time.perf_counter()
-    print(f"  extract_from_file       : {t1-t0:.3f}s  ({len(rows)} rows)")
+    print(f"  extract_from_file       : {t1 - t0:.3f}s  ({len(rows)} rows)")
 
     t2 = time.perf_counter()
     typed_rows = extract_typed_from_file(f)
     t3 = time.perf_counter()
-    print(f"  extract_typed_from_file : {t3-t2:.3f}s  ({len(typed_rows)} typed rows)")
+    print(f"  extract_typed_from_file : {t3 - t2:.3f}s  ({len(typed_rows)} typed rows)")
 
     t4 = time.perf_counter()
     normalized = _normalize_sync(rows)
     t5 = time.perf_counter()
-    print(f"  _normalize_sync (DuckDB): {t5-t4:.3f}s  ({len(normalized)} unique rows)")
+    print(f"  _normalize_sync (DuckDB): {t5 - t4:.3f}s  ({len(normalized)} unique rows)")
 
     return rows, typed_rows, normalized
 
@@ -66,12 +67,13 @@ def measure_link_query():
     """)
     conn.rollback()
     t1 = time.perf_counter()
-    print(f"  _link_typed_to_raw (WITH composite idx): {t1-t0:.3f}s")
+    print(f"  _link_typed_to_raw (WITH composite idx): {t1 - t0:.3f}s")
     conn.close()
 
 
 if __name__ == "__main__":
     import sys
+
     sys.path.insert(0, str(PROJECT_ROOT))
 
     print("=== Extraction + normalization ===")

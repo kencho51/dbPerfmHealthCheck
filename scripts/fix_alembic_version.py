@@ -1,4 +1,5 @@
 """One-time script: stamp alembic_version to the correct revision."""
+
 import sqlite3
 from pathlib import Path
 

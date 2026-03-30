@@ -14,6 +14,7 @@ CSV columns (in order):
     query_details,
     curated_id, label_id, label_name, label_severity, notes
 """
+
 from __future__ import annotations
 
 import csv
@@ -21,8 +22,7 @@ import enum
 import io
 import warnings
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -40,27 +40,41 @@ warnings.filterwarnings(
 
 router = APIRouter()
 
-_CHUNK = 500   # rows per DB fetch; keeps memory constant
+_CHUNK = 500  # rows per DB fetch; keeps memory constant
 
 _CSV_FIELDS = [
-    "id", "query_hash", "time", "source", "host", "db_name",
-    "environment", "type", "month_year", "occurrence_count",
-    "first_seen", "last_seen", "query_details",
-    "curated_id", "label_id", "label_name", "label_severity", "notes",
+    "id",
+    "query_hash",
+    "time",
+    "source",
+    "host",
+    "db_name",
+    "environment",
+    "type",
+    "month_year",
+    "occurrence_count",
+    "first_seen",
+    "last_seen",
+    "query_details",
+    "curated_id",
+    "label_id",
+    "label_name",
+    "label_severity",
+    "notes",
 ]
 
 
 def _apply_filters(
     stmt,
     *,
-    environment: Optional[EnvironmentType],
-    type:        Optional[QueryType],
-    source:      Optional[SourceType],
-    host:        Optional[str],
-    db_name:     Optional[str],
-    month_year:  Optional[list[str]],
-    is_curated:  Optional[bool],
-    search:      Optional[str],
+    environment: EnvironmentType | None,
+    type: QueryType | None,
+    source: SourceType | None,
+    host: str | None,
+    db_name: str | None,
+    month_year: list[str] | None,
+    is_curated: bool | None,
+    search: str | None,
 ):
     if environment is not None:
         stmt = stmt.where(RawQuery.environment == environment)
@@ -99,7 +113,7 @@ def _fmt(v: object) -> str:
 async def _csv_generator(
     session: AsyncSession,
     filter_kwargs: dict,
-) -> "AsyncGenerator[str, None]":
+) -> AsyncGenerator[str]:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\r\n")
 
@@ -127,11 +141,11 @@ async def _csv_generator(
                 RawQuery.first_seen,
                 RawQuery.last_seen,
                 RawQuery.query_details,
-                CuratedQuery.id.label("curated_id"),           # type: ignore[union-attr]
-                CuratedQuery.label_id.label("label_id"),       # type: ignore[union-attr]
-                PatternLabel.name.label("label_name"),         # type: ignore[union-attr]
-                PatternLabel.severity.label("label_severity"), # type: ignore[union-attr]
-                CuratedQuery.notes.label("notes"),             # type: ignore[union-attr]
+                CuratedQuery.id.label("curated_id"),  # type: ignore[union-attr]
+                CuratedQuery.label_id.label("label_id"),  # type: ignore[union-attr]
+                PatternLabel.name.label("label_name"),  # type: ignore[union-attr]
+                PatternLabel.severity.label("label_severity"),  # type: ignore[union-attr]
+                CuratedQuery.notes.label("notes"),  # type: ignore[union-attr]
             )
             .join(CuratedQuery, RawQuery.id == CuratedQuery.raw_query_id, isouter=True)
             .join(PatternLabel, CuratedQuery.label_id == PatternLabel.id, isouter=True)
@@ -168,14 +182,14 @@ async def _csv_generator(
     },
 )
 async def export_csv(
-    environment: Optional[EnvironmentType] = None,
-    type:        Optional[QueryType]        = None,
-    source:      Optional[SourceType]       = None,
-    host:        Optional[str]              = Query(default=None),
-    db_name:     Optional[str]              = Query(default=None),
-    month_year:  Optional[list[str]]        = Query(default=None),
-    is_curated:  Optional[bool]             = None,
-    search:      Optional[str]              = Query(default=None),
+    environment: EnvironmentType | None = None,
+    type: QueryType | None = None,
+    source: SourceType | None = None,
+    host: str | None = Query(default=None),
+    db_name: str | None = Query(default=None),
+    month_year: list[str] | None = Query(default=None),
+    is_curated: bool | None = None,
+    search: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """
@@ -187,11 +201,17 @@ async def export_csv(
     Query parameters mirror `GET /api/queries` for consistent filtering.
     """
     filter_kwargs = dict(
-        environment=environment, type=type, source=source, host=host,
-        db_name=db_name, month_year=month_year, is_curated=is_curated, search=search,
+        environment=environment,
+        type=type,
+        source=source,
+        host=host,
+        db_name=db_name,
+        month_year=month_year,
+        is_curated=is_curated,
+        search=search,
     )
 
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
     filename = f"db_perf_export_{ts}.csv"
 
     return StreamingResponse(

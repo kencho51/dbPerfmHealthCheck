@@ -12,6 +12,7 @@ Revision ID: c3d7f2a1b8e4
 Revises: a1f3e9b2c8d5
 Create Date: 2026-03-24
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -33,9 +34,7 @@ _TYPED_TABLES = [
 def upgrade() -> None:
     for table in _TYPED_TABLES:
         with op.batch_alter_table(table) as batch_op:
-            batch_op.add_column(
-                sa.Column("raw_query_id", sa.Integer, nullable=True)
-            )
+            batch_op.add_column(sa.Column("raw_query_id", sa.Integer, nullable=True))
             batch_op.create_index(f"ix_{table}_raw_query_id", ["raw_query_id"])
             batch_op.create_foreign_key(
                 f"fk_{table}_raw_query_id",

@@ -6,9 +6,10 @@ Label endpoints  full CRUD for PatternLabel.
     PATCH  /api/labels/{id}    update name / severity / description
     DELETE /api/labels/{id}    delete (rejected if any curated_query rows reference it)
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import func, select
@@ -30,6 +31,7 @@ router = APIRouter()
 # GET /api/labels
 # ---------------------------------------------------------------------------
 
+
 @router.get("", response_model=list[PatternLabelRead], summary="List all labels")
 async def list_labels(
     session: AsyncSession = Depends(get_session),
@@ -42,7 +44,13 @@ async def list_labels(
 # POST /api/labels
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=PatternLabelRead, status_code=status.HTTP_201_CREATED, summary="Create a new label")
+
+@router.post(
+    "",
+    response_model=PatternLabelRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new label",
+)
 async def create_label(
     body: PatternLabelCreate,
     session: AsyncSession = Depends(get_session),
@@ -58,6 +66,7 @@ async def create_label(
 # PATCH /api/labels/{id}
 # ---------------------------------------------------------------------------
 
+
 @router.patch("/{label_id}", response_model=PatternLabelRead, summary="Update a label")
 async def update_label(
     label_id: int,
@@ -71,7 +80,7 @@ async def update_label(
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(label, k, v)
-    label.updated_at = datetime.now(tz=timezone.utc)
+    label.updated_at = datetime.now(tz=UTC)
 
     session.add(label)
     await session.commit()
@@ -82,6 +91,7 @@ async def update_label(
 # ---------------------------------------------------------------------------
 # DELETE /api/labels/{id}
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{label_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a label")
 async def delete_label(
@@ -98,7 +108,10 @@ async def delete_label(
     if ref_count > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete: {ref_count} curated query row(s) still reference this label. Re-assign or unassign them first.",
+            detail=(
+                f"Cannot delete: {ref_count} curated query row(s) still"
+                " reference this label. Re-assign or unassign them first."
+            ),
         )
 
     await session.delete(label)

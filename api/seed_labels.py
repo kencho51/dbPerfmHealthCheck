@@ -5,8 +5,10 @@ Idempotent — skips labels that already exist (matched by name).
 """
 
 import asyncio
+
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
 from api.database import engine
 from api.models import PatternLabel
 
@@ -145,7 +147,8 @@ DEFAULT_LABELS = [
         "severity": "info",
         "source": "sql",
         "description": (
-            "Large DELETE without row batching holds a schema-level or table lock for an extended period. "
+            "Large DELETE without row batching holds a schema-level or"
+            " table lock for an extended period. "
             "Use DELETE TOP (N) in a loop with short transactions."
         ),
     },
