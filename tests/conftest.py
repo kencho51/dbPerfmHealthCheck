@@ -18,6 +18,7 @@ Design decisions
 * Session fixtures that need async work use `asyncio.run()` (sync fixture) so
   pytest-asyncio's per-test event loop is not required for setup.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,10 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # ---------------------------------------------------------------------------
 
 _MEM_DB_NAME = "testmemdb_pytest"
-_TEST_DB_URL = (
-    f"sqlite+aiosqlite:///file:{_MEM_DB_NAME}"
-    "?mode=memory&cache=shared&uri=true"
-)
+_TEST_DB_URL = f"sqlite+aiosqlite:///file:{_MEM_DB_NAME}?mode=memory&cache=shared&uri=true"
 
 # One synchronous holder connection keeps the named in-memory database alive
 # for the entire pytest process — no asyncio binding, no file created.
@@ -111,10 +109,11 @@ def _db_tables():
 @pytest.fixture(scope="session")
 def _admin_user(_db_tables):
     """Insert testadmin into the in-memory DB (no-op if already exists)."""
+    from sqlmodel import select
+
     from api.database import open_session
     from api.models import User, UserRole
     from api.services.auth_service import hash_password
-    from sqlmodel import select
 
     async def _create() -> None:
         async with open_session() as session:
@@ -122,13 +121,15 @@ def _admin_user(_db_tables):
                 await session.exec(select(User).where(User.username == "testadmin"))
             ).first()
             if existing is None:
-                session.add(User(
-                    username="testadmin",
-                    email="admin@test.local",
-                    hashed_password=hash_password("AdminPass123!"),
-                    role=UserRole.admin,
-                    is_active=True,
-                ))
+                session.add(
+                    User(
+                        username="testadmin",
+                        email="admin@test.local",
+                        hashed_password=hash_password("AdminPass123!"),
+                        role=UserRole.admin,
+                        is_active=True,
+                    )
+                )
 
     asyncio.run(_create())
 
@@ -176,4 +177,3 @@ async def client() -> AsyncClient:
 def auth_headers(admin_token: str) -> dict:
     """HTTP headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {admin_token}"}
-

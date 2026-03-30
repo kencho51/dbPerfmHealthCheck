@@ -12,6 +12,7 @@ Endpoints:
     ReDoc       : http://127.0.0.1:8000/redoc
     Health check: http://127.0.0.1:8000/health
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,12 +31,15 @@ logger = logging.getLogger(__name__)
 # Lifespan — runs once on startup / shutdown
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — applying SQLite PRAGMAs & ensuring tables exist …")
     await apply_pragmas()
     await create_db_and_tables()
-    logger.info("DB ready: %s", app.state.db_url if hasattr(app.state, "db_url") else "see SQLITE_PATH env")
+    logger.info(
+        "DB ready: %s", app.state.db_url if hasattr(app.state, "db_url") else "see SQLITE_PATH env"
+    )
     yield
     logger.info("Shutting down …")
 
@@ -43,6 +47,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -90,6 +95,7 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["system"])
     async def health() -> dict:
         from api.database import DB_BACKEND, SQLITE_PATH, SQLITE_URL
+
         return {
             "status": "ok",
             "backend": DB_BACKEND,
@@ -104,54 +110,63 @@ def _register_routers(app: FastAPI) -> None:
     """Attach routers. Unimplemented phases are skipped gracefully."""
     try:
         from api.routers.auth import router as auth_router
+
         app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
     except ImportError:
         logger.debug("auth router not yet available")
 
     try:
         from api.routers.analytics import router as analytics_router
+
         app.include_router(analytics_router, prefix="/api/analytics", tags=["analytics"])
     except ImportError:
         logger.debug("analytics router not yet available")
 
     try:
         from api.routers.queries import router as queries_router
+
         app.include_router(queries_router, prefix="/api/queries", tags=["queries"])
     except ImportError:
         logger.debug("queries router not yet available")
 
     try:
         from api.routers.labels import router as labels_router
+
         app.include_router(labels_router, prefix="/api/labels", tags=["labels"])
     except ImportError:
         logger.debug("labels router not yet available")
 
     try:
         from api.routers.curated import router as curated_router
+
         app.include_router(curated_router, prefix="/api/curated", tags=["curated"])
     except ImportError:
         logger.debug("curated router not yet available")
 
     try:
         from api.routers.upload import router as upload_router
+
         app.include_router(upload_router, prefix="/api", tags=["upload"])
     except ImportError:
         logger.debug("upload router not yet available")
 
     try:
         from api.routers.validate import router as validate_router
+
         app.include_router(validate_router, prefix="/api", tags=["validate"])
     except ImportError:
         logger.debug("validate router not yet available")
 
     try:
         from api.routers.export import router as export_router
+
         app.include_router(export_router, prefix="/api", tags=["export"])
     except ImportError:
         logger.debug("export router not yet available")
 
     try:
         from api.routers.spl import router as spl_router
+
         app.include_router(spl_router, prefix="/api/spl", tags=["spl"])
     except ImportError:
         logger.debug("spl router not yet available")

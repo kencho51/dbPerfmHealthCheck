@@ -1,4 +1,4 @@
-﻿"""
+"""
 Ingestor service — bulk-ingest extracted rows into raw_query.
 
 Architecture
@@ -23,13 +23,14 @@ On conflict:
     last_seen / updated_at  refreshed
     all other fields left unchanged
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -87,12 +88,13 @@ def _derive_month_year(time_str: str | None) -> str | None:
 # Result type
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class IngestResult:
     inserted: int = 0
-    updated:  int = 0
-    skipped:  int = 0
-    errors:   list[str] = field(default_factory=list)
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -103,9 +105,9 @@ class IngestResult:
 # Step 1 — Python normalisation (hash-compatible with the original DuckDB formula)
 # ---------------------------------------------------------------------------
 
-_VALID_SOURCES      = frozenset(("sql", "mongodb"))
+_VALID_SOURCES = frozenset(("sql", "mongodb"))
 _VALID_ENVIRONMENTS = frozenset(("prod", "sat", "unknown"))
-_VALID_TYPES        = frozenset(("slow_query", "slow_query_mongo", "blocker", "deadlock"))
+_VALID_TYPES = frozenset(("slow_query", "slow_query_mongo", "blocker", "deadlock"))
 
 
 def _normalize_sync(rows: list[dict]) -> list[dict]:
@@ -133,54 +135,54 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
     if not rows:
         return []
 
-    now   = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     seen: dict[str, dict] = {}
 
     for r in rows:
         # --- Trimmed-only values stored in the DB (DuckDB: NULLIF(trim(x), '')) ----
-        host_stored = (r.get("host")           or "").strip()
-        db_stored   = (r.get("db_name")        or "").strip()
-        t_stored    = (r.get("time")           or "").strip()
-        qd_stored   = (r.get("query_details")  or "").strip()
-        em_stored   = (r.get("extra_metadata") or "").strip()
-        occ         = int(r.get("occurrence_count") or 1)
+        host_stored = (r.get("host") or "").strip()
+        db_stored = (r.get("db_name") or "").strip()
+        t_stored = (r.get("time") or "").strip()
+        qd_stored = (r.get("query_details") or "").strip()
+        em_stored = (r.get("extra_metadata") or "").strip()
+        occ = int(r.get("occurrence_count") or 1)
 
         # --- Lowercase values for hash  + enum-clamped for stored fields ----------
         # DuckDB hash: lower(trim(source|host|db|env|type)) + trim(time|qd|em)
-        src = (r.get("source")      or "").lower().strip()
+        src = (r.get("source") or "").lower().strip()
         env = (r.get("environment") or "").lower().strip()
-        typ = (r.get("type")        or "").lower().strip()
+        typ = (r.get("type") or "").lower().strip()
 
-        src = src if src in _VALID_SOURCES      else "sql"
+        src = src if src in _VALID_SOURCES else "sql"
         env = env if env in _VALID_ENVIRONMENTS else "unknown"
-        typ = typ if typ in _VALID_TYPES        else "unknown"
+        typ = typ if typ in _VALID_TYPES else "unknown"
 
         # --- Compute MD5 (identical to DuckDB concat_ws + NULLIF logic) ---------
         parts = [src, host_stored.lower(), db_stored.lower(), env, typ, t_stored, qd_stored]
-        if em_stored:               # NULLIF(trim(extra_metadata), '') → skip when empty
+        if em_stored:  # NULLIF(trim(extra_metadata), '') → skip when empty
             parts.append(em_stored)
-        qhash = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+        qhash = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()  # nosec B324 – non-security dedup key, must stay MD5 to match existing stored hashes
 
         # --- Deduplicate (DuckDB GROUP BY ALL + SUM) ----------------------------
         if qhash in seen:
             seen[qhash]["occurrence_count"] += occ
         else:
             seen[qhash] = {
-                "query_hash":       qhash,
-                "time":             t_stored    or None,   # original case, trimmed
-                "source":           src         or None,   # lowercased (enum)
-                "host":             host_stored or None,   # original case, trimmed
-                "db_name":          db_stored   or None,   # original case, trimmed
-                "environment":      env         or None,   # lowercased (enum)
-                "type":             typ         or None,   # lowercased (enum)
-                "query_details":    qd_stored   or None,   # original case, trimmed
-                "extra_metadata":   em_stored   or None,   # original case, trimmed
-                "month_year":       _derive_month_year(t_stored),
+                "query_hash": qhash,
+                "time": t_stored or None,  # original case, trimmed
+                "source": src or None,  # lowercased (enum)
+                "host": host_stored or None,  # original case, trimmed
+                "db_name": db_stored or None,  # original case, trimmed
+                "environment": env or None,  # lowercased (enum)
+                "type": typ or None,  # lowercased (enum)
+                "query_details": qd_stored or None,  # original case, trimmed
+                "extra_metadata": em_stored or None,  # original case, trimmed
+                "month_year": _derive_month_year(t_stored),
                 "occurrence_count": occ,
-                "first_seen":       now,
-                "last_seen":        now,
-                "created_at":       now,
-                "updated_at":       now,
+                "first_seen": now,
+                "last_seen": now,
+                "created_at": now,
+                "updated_at": now,
             }
 
     return list(seen.values())
@@ -189,6 +191,7 @@ def _normalize_sync(rows: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Step 2 — SQLite batch upsert (async)
 # ---------------------------------------------------------------------------
+
 
 async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     """
@@ -205,6 +208,7 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
     to split new vs existing rows for accurate reporting.
     """
     from sqlalchemy import text
+
     from api.database import write_session
 
     try:
@@ -223,7 +227,7 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
                 )
                 existing_hashes: set[str] = {row[0] for row in rows_exist}
                 result.inserted += sum(1 for h in chunk_hashes if h not in existing_hashes)
-                result.updated  += sum(1 for h in chunk_hashes if h in existing_hashes)
+                result.updated += sum(1 for h in chunk_hashes if h in existing_hashes)
 
                 # -- Single bulk upsert (no per-row UPDATE loop) --------------
                 stmt = sqlite_insert(RawQuery).values(chunk)
@@ -233,7 +237,7 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
                         "occurrence_count": (
                             RawQuery.occurrence_count + stmt.excluded.occurrence_count
                         ),
-                        "last_seen":  stmt.excluded.last_seen,
+                        "last_seen": stmt.excluded.last_seen,
                         "updated_at": stmt.excluded.updated_at,
                     },
                 )
@@ -242,6 +246,7 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
         # Invalidate the analytics DataFrame cache so the next dashboard
         # request reads fresh data from SQLite rather than stale cached rows.
         from api.analytics_db import invalidate_cache
+
         invalidate_cache("raw_query")
     except Exception as exc:
         result.errors.append(f"SQLite upsert error: {type(exc).__name__}: {exc}")
@@ -251,6 +256,7 @@ async def _upsert_sqlite(normalized: list[dict], result: IngestResult) -> None:
 # ---------------------------------------------------------------------------
 # Public async entry point
 # ---------------------------------------------------------------------------
+
 
 async def ingest_rows(rows: list[dict]) -> IngestResult:
     """

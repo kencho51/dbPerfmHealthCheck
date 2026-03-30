@@ -8,11 +8,11 @@ If users already exist, this script does nothing (the /register endpoint
 is locked after the first user is created).
 Uses only Python standard library — no extra dependencies required.
 """
+
 import getpass
 import json
 import urllib.error
 import urllib.request
-
 
 API = "http://localhost:8000/api"
 
@@ -50,7 +50,9 @@ def main():
         else:
             print(f"\nERROR {e.code}: {body}")
     except urllib.error.URLError as e:
-        print(f"\nERROR: Could not connect to {API}. Make sure the FastAPI server is running.\n{e.reason}")
+        print(
+            f"\nERROR: Could not connect to {API}. Make sure the FastAPI server is running.\n{e.reason}"
+        )
 
 
 if __name__ == "__main__":

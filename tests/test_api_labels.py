@@ -4,23 +4,28 @@ API tests — label CRUD endpoints (/api/labels).
 Run:
     uv run pytest tests/test_api_labels.py -v
 """
+
 from __future__ import annotations
 
 from httpx import AsyncClient
-
 
 # ---------------------------------------------------------------------------
 # POST /api/labels  (create)
 # ---------------------------------------------------------------------------
 
+
 class TestCreateLabel:
     async def test_create_success(self, client: AsyncClient, auth_headers: dict):
-        r = await client.post("/api/labels", json={
-            "name": "Long Running Query",
-            "severity": "warning",
-            "description": "Query exceeds 60s execution time",
-            "source": "sql",
-        }, headers=auth_headers)
+        r = await client.post(
+            "/api/labels",
+            json={
+                "name": "Long Running Query",
+                "severity": "warning",
+                "description": "Query exceeds 60s execution time",
+                "source": "sql",
+            },
+            headers=auth_headers,
+        )
         assert r.status_code == 201
         data = r.json()
         assert data["name"] == "Long Running Query"
@@ -33,23 +38,31 @@ class TestCreateLabel:
         assert r.status_code == 201
         data = r.json()
         assert data["name"] == "MinimalLabel"
-        assert data["severity"] == "warning"   # default
-        assert data["source"] == "both"        # default
+        assert data["severity"] == "warning"  # default
+        assert data["source"] == "both"  # default
 
     async def test_create_critical_severity(self, client: AsyncClient, auth_headers: dict):
-        r = await client.post("/api/labels", json={
-            "name": "Deadlock Pattern",
-            "severity": "critical",
-            "source": "both",
-        }, headers=auth_headers)
+        r = await client.post(
+            "/api/labels",
+            json={
+                "name": "Deadlock Pattern",
+                "severity": "critical",
+                "source": "both",
+            },
+            headers=auth_headers,
+        )
         assert r.status_code == 201
         assert r.json()["severity"] == "critical"
 
     async def test_create_invalid_severity_422(self, client: AsyncClient, auth_headers: dict):
-        r = await client.post("/api/labels", json={
-            "name": "Bad Label",
-            "severity": "extreme",  # invalid
-        }, headers=auth_headers)
+        r = await client.post(
+            "/api/labels",
+            json={
+                "name": "Bad Label",
+                "severity": "extreme",  # invalid
+            },
+            headers=auth_headers,
+        )
         assert r.status_code == 422
 
     async def test_create_works_without_auth(self, client: AsyncClient):
@@ -61,6 +74,7 @@ class TestCreateLabel:
 # ---------------------------------------------------------------------------
 # GET /api/labels  (list)
 # ---------------------------------------------------------------------------
+
 
 class TestListLabels:
     async def test_returns_list(self, client: AsyncClient, auth_headers: dict):
@@ -92,22 +106,30 @@ class TestListLabels:
 # PATCH /api/labels/{id}  (update)
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateLabel:
     async def _create(self, client, auth_headers) -> dict:
         import uuid
-        r = await client.post("/api/labels", json={"name": f"UpdateTest_{uuid.uuid4().hex[:8]}"}, headers=auth_headers)
+
+        r = await client.post(
+            "/api/labels", json={"name": f"UpdateTest_{uuid.uuid4().hex[:8]}"}, headers=auth_headers
+        )
         assert r.status_code == 201
         return r.json()
 
     async def test_update_name(self, client: AsyncClient, auth_headers: dict):
         label = await self._create(client, auth_headers)
-        r = await client.patch(f"/api/labels/{label['id']}", json={"name": "Updated Name"}, headers=auth_headers)
+        r = await client.patch(
+            f"/api/labels/{label['id']}", json={"name": "Updated Name"}, headers=auth_headers
+        )
         assert r.status_code == 200
         assert r.json()["name"] == "Updated Name"
 
     async def test_update_severity(self, client: AsyncClient, auth_headers: dict):
         label = await self._create(client, auth_headers)
-        r = await client.patch(f"/api/labels/{label['id']}", json={"severity": "critical"}, headers=auth_headers)
+        r = await client.patch(
+            f"/api/labels/{label['id']}", json={"severity": "critical"}, headers=auth_headers
+        )
         assert r.status_code == 200
         assert r.json()["severity"] == "critical"
 
@@ -126,10 +148,14 @@ class TestUpdateLabel:
 # DELETE /api/labels/{id}
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteLabel:
     async def _create(self, client, auth_headers) -> dict:
         import uuid
-        r = await client.post("/api/labels", json={"name": f"DeleteTest_{uuid.uuid4().hex[:8]}"}, headers=auth_headers)
+
+        r = await client.post(
+            "/api/labels", json={"name": f"DeleteTest_{uuid.uuid4().hex[:8]}"}, headers=auth_headers
+        )
         assert r.status_code == 201
         return r.json()
 

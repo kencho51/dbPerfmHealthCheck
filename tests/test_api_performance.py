@@ -13,6 +13,7 @@ machines. The goal is catching catastrophic regressions, not micro-tuning.
 Run:
     uv run pytest tests/test_api_performance.py -v
 """
+
 from __future__ import annotations
 
 import time
@@ -23,10 +24,10 @@ import polars as pl
 import pytest
 from httpx import AsyncClient
 
-
 # ---------------------------------------------------------------------------
 # Timing helper
 # ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def _timed(label: str, max_ms: float):
@@ -34,29 +35,35 @@ async def _timed(label: str, max_ms: float):
     t0 = time.perf_counter()
     yield
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    assert elapsed_ms < max_ms, (
-        f"{label} took {elapsed_ms:.0f} ms — exceeds SLA of {max_ms:.0f} ms"
-    )
+    assert elapsed_ms < max_ms, f"{label} took {elapsed_ms:.0f} ms — exceeds SLA of {max_ms:.0f} ms"
 
 
 # ---------------------------------------------------------------------------
 # Fixture: mock analytics data (analytics routes call Neon directly)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _mock_analytics():
-    df = pl.DataFrame({
-        "id": [1, 2], "query_hash": ["a", "b"],
-        "time": ["2026-01-01", "2026-01-02"],
-        "source": ["sql", "mongodb"], "host": ["H1", "H2"],
-        "db_name": ["db1", "db2"], "environment": ["prod", "sat"],
-        "type": ["slow_query", "blocker"], "query_details": ["Q1", "Q2"],
-        "month_year": ["2026-01", "2026-01"], "occurrence_count": [2, 3],
-        "first_seen": ["2026-01-01 00:00:00"] * 2,
-        "last_seen": ["2026-01-01 00:00:00"] * 2,
-        "created_at": ["2026-01-01 00:00:00"] * 2,
-        "updated_at": ["2026-01-01 00:00:00"] * 2,
-    })
+    df = pl.DataFrame(
+        {
+            "id": [1, 2],
+            "query_hash": ["a", "b"],
+            "time": ["2026-01-01", "2026-01-02"],
+            "source": ["sql", "mongodb"],
+            "host": ["H1", "H2"],
+            "db_name": ["db1", "db2"],
+            "environment": ["prod", "sat"],
+            "type": ["slow_query", "blocker"],
+            "query_details": ["Q1", "Q2"],
+            "month_year": ["2026-01", "2026-01"],
+            "occurrence_count": [2, 3],
+            "first_seen": ["2026-01-01 00:00:00"] * 2,
+            "last_seen": ["2026-01-01 00:00:00"] * 2,
+            "created_at": ["2026-01-01 00:00:00"] * 2,
+            "updated_at": ["2026-01-01 00:00:00"] * 2,
+        }
+    )
     with patch("api.analytics_db._load_table", return_value=df):
         yield
 
@@ -64,6 +71,7 @@ def _mock_analytics():
 # ---------------------------------------------------------------------------
 # Health endpoint
 # ---------------------------------------------------------------------------
+
 
 class TestHealthPerformance:
     async def test_health_under_50ms(self, client: AsyncClient, auth_headers: dict):
@@ -76,13 +84,18 @@ class TestHealthPerformance:
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
+
 class TestAuthPerformance:
     async def test_login_under_1500ms(self, client: AsyncClient):
         # bcrypt work-factor makes login CPU-bound (~700-900 ms); 1500 ms ceiling
         async with _timed("POST /api/auth/login", max_ms=1500):
-            r = await client.post("/api/auth/login", json={
-                "username": "testadmin", "password": "AdminPass123!",
-            })
+            r = await client.post(
+                "/api/auth/login",
+                json={
+                    "username": "testadmin",
+                    "password": "AdminPass123!",
+                },
+            )
         assert r.status_code in (200, 401)  # 401 OK if DB not seeded in this context
 
     async def test_me_under_200ms(self, client: AsyncClient, auth_headers: dict):
@@ -94,6 +107,7 @@ class TestAuthPerformance:
 # ---------------------------------------------------------------------------
 # Query endpoints
 # ---------------------------------------------------------------------------
+
 
 class TestQueriesPerformance:
     async def test_list_under_200ms(self, client: AsyncClient, auth_headers: dict):
@@ -116,6 +130,7 @@ class TestQueriesPerformance:
 # Label endpoints
 # ---------------------------------------------------------------------------
 
+
 class TestLabelsPerformance:
     async def test_list_labels_under_150ms(self, client: AsyncClient, auth_headers: dict):
         async with _timed("GET /api/labels", max_ms=500):
@@ -126,6 +141,7 @@ class TestLabelsPerformance:
 # ---------------------------------------------------------------------------
 # Analytics endpoints (DuckDB in-process — no network)
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyticsPerformance:
     async def test_summary_under_500ms(self, client: AsyncClient, auth_headers: dict):

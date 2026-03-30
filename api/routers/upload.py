@@ -13,22 +13,22 @@ Flow:
 
 Idempotent: uploading the same CSV twice only bumps occurrence_count.
 """
+
 from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, status
 from sqlalchemy import text
 
-from api.database import open_session, write_session
+from api.database import write_session
 from api.services.extractor import extract_from_file, extract_typed_from_file
-from api.services.ingestor import ingest_rows
+from api.services.ingestor import _derive_month_year, ingest_rows
 from api.services.typed_ingestor import ingest_typed_rows
 from api.services.validator import validate_csv
-from api.services.ingestor import _derive_month_year
 
 router = APIRouter()
 
@@ -64,10 +64,10 @@ _CREATE_SOURCE_IDX = """
 
 # Map each table_type to the most selective index DDL for its link query.
 _LINK_AUX_IDX: dict[str, str] = {
-    "slow_sql":   _CREATE_COMPOSITE_IDX,
-    "deadlock":   _CREATE_COMPOSITE_IDX,
+    "slow_sql": _CREATE_COMPOSITE_IDX,
+    "deadlock": _CREATE_COMPOSITE_IDX,
     "slow_mongo": _CREATE_COMPOSITE_IDX,
-    "blocker":    _CREATE_SOURCE_IDX,
+    "blocker": _CREATE_SOURCE_IDX,
 }
 
 _LINK_SQL: dict[str, str] = {
@@ -149,6 +149,7 @@ async def _link_typed_to_raw(table_type: str) -> None:
     in the hot path) so the upload HTTP response is not blocked.
     """
     import logging
+
     sql = _LINK_SQL.get(table_type)
     if not sql:
         return
@@ -195,11 +196,16 @@ async def upload_csv(
         validation = await asyncio.to_thread(validate_csv, tmp_path)
 
         # Override detected name with the original filename for env/type detection
-        from api.services.extractor import _extract_environment, _detect_file_category, _detect_typed_table
-        file_type   = _detect_file_category(filename)
+        from api.services.extractor import (
+            _detect_file_category,
+            _detect_typed_table,
+            _extract_environment,
+        )
+
+        file_type = _detect_file_category(filename)
         environment = _extract_environment(filename)
-        table_type  = _detect_typed_table(filename)
-        validation.file_type   = file_type
+        table_type = _detect_typed_table(filename)
+        validation.file_type = file_type
         validation.environment = environment
 
         if not validation.is_valid:
@@ -207,7 +213,7 @@ async def upload_csv(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "message": "CSV validation failed — no data ingested.",
-                    "errors":  validation.errors,
+                    "errors": validation.errors,
                     "warnings": validation.warnings,
                 },
             )
@@ -233,8 +239,7 @@ async def upload_csv(
             # Ensure _hash_parts reflect corrected environment
             if row.get("_hash_parts"):
                 row["_hash_parts"] = [
-                    environment if p == "unknown" else p
-                    for p in row["_hash_parts"]
+                    environment if p == "unknown" else p for p in row["_hash_parts"]
                 ]
 
         # -- Ingest normalised ---------------------------------------------------
@@ -254,24 +259,28 @@ async def upload_csv(
                 text("DELETE FROM upload_log WHERE filename = :fn"),
                 {"fn": filename},
             )
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 INSERT INTO upload_log
                     (filename, file_type, environment, month_year,
                      csv_row_count, inserted, updated, uploaded_at)
                 VALUES
                     (:filename, :file_type, :environment, :month_year,
                      :csv_row_count, :inserted, :updated, :uploaded_at)
-            """), {
-                "filename":      filename,
-                "file_type":     file_type,
-                "environment":   environment,
-                "month_year":    month_year_log,
-                "csv_row_count": validation.row_count,
-                "inserted":      ingest_result.inserted,
-                "updated":       ingest_result.updated,
-                "uploaded_at":   datetime.now(timezone.utc).isoformat(),
-            })
+            """),
+                {
+                    "filename": filename,
+                    "file_type": file_type,
+                    "environment": environment,
+                    "month_year": month_year_log,
+                    "csv_row_count": validation.row_count,
+                    "inserted": ingest_result.inserted,
+                    "updated": ingest_result.updated,
+                    "uploaded_at": datetime.now(UTC).isoformat(),
+                },
+            )
         from api.analytics_db import invalidate_cache
+
         invalidate_cache("upload_log")
 
         # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
@@ -290,20 +299,20 @@ async def upload_csv(
         tmp_path.unlink(missing_ok=True)
 
     return {
-        "filename":       filename,
-        "file_type":      file_type,
-        "table_type":     table_type,
-        "environment":    environment,
-        "row_count":      validation.row_count,
+        "filename": filename,
+        "file_type": file_type,
+        "table_type": table_type,
+        "environment": environment,
+        "row_count": validation.row_count,
         # raw_query (normalised)
-        "inserted":       ingest_result.inserted,
-        "updated":        ingest_result.updated,
-        "skipped":        ingest_result.skipped,
-        "warnings":       validation.warnings,
-        "errors":         ingest_result.errors,
+        "inserted": ingest_result.inserted,
+        "updated": ingest_result.updated,
+        "skipped": ingest_result.skipped,
+        "warnings": validation.warnings,
+        "errors": ingest_result.errors,
         # raw_query_<type> (full fidelity)
         "typed_inserted": typed_result.inserted,
-        "typed_updated":  typed_result.updated,
-        "typed_skipped":  typed_result.skipped,
-        "typed_errors":   typed_result.errors,
+        "typed_updated": typed_result.updated,
+        "typed_skipped": typed_result.skipped,
+        "typed_errors": typed_result.errors,
     }
