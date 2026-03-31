@@ -8,6 +8,8 @@ Query endpoints:
 
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import col, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -271,7 +273,9 @@ async def get_typed_detail(
         )
     ).first()
 
-    # 2) Fallback — match on query text (same logic as the post-ingest link SQL)
+    # 2) Text fallback — works for OLD-format raw_query rows where
+    #    query_details was stored as the full command JSON (before the
+    #    extractor was optimised to store queryShapeHash / ns:op_type).
     if not typed_row and text_col and rq.query_details:
         text_col_attr = getattr(model_cls, text_col)
         typed_row = (
@@ -280,6 +284,30 @@ async def get_typed_detail(
             )
         ).first()
         # Backfill the FK so future lookups hit the fast path
+        if typed_row and typed_row.raw_query_id is None:
+            typed_row.raw_query_id = query_id
+            session.add(typed_row)
+            await session.commit()
+            await session.refresh(typed_row)
+
+    # 3) Hash-reconstruction fallback — works for NEW-format slow_mongo rows
+    #    where query_details = queryShapeHash or "ns:op_type".
+    #    Both extractors derive the same query_key, and typed_ingestor computes:
+    #      query_hash = MD5(host | db_name | env | query_key)
+    #    Since query_key == query_details for new-format raw_query rows, we can
+    #    reconstruct the typed query_hash and look it up directly.
+    if not typed_row and rq_type == "slow_query_mongo" and rq.query_details:
+        candidate_hash = hashlib.md5(
+            "|".join(
+                str(p or "").strip()
+                for p in [rq.host, rq.db_name, rq.environment, rq.query_details]
+            ).encode("utf-8")
+        ).hexdigest()
+        typed_row = (
+            await session.exec(
+                select(model_cls).where(model_cls.query_hash == candidate_hash)
+            )
+        ).first()
         if typed_row and typed_row.raw_query_id is None:
             typed_row.raw_query_id = query_id
             session.add(typed_row)

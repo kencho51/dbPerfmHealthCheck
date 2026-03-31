@@ -121,7 +121,6 @@ _LINK_SQL: dict[str, str] = {
             WHERE rq.type        = 'slow_query_mongo'
               AND rq.source      = 'mongodb'
               AND rq.environment IS raw_query_slow_mongo.environment
-              AND rq.month_year  IS raw_query_slow_mongo.month_year
               AND rq.host        IS raw_query_slow_mongo.host
               AND rq.db_name     IS raw_query_slow_mongo.db_name
               AND rq.query_details IS raw_query_slow_mongo.command_json
@@ -147,7 +146,14 @@ async def _link_typed_to_raw(table_type: str) -> None:
     Both indexes use IF NOT EXISTS so there is no overhead on repeat uploads.
     This function is intentionally called as a background task (not awaited
     in the hot path) so the upload HTTP response is not blocked.
+
+    For slow_mongo, a second Python-side pass handles NEW-format raw_query rows
+    where query_details = queryShapeHash or ns:op_type.  Both extractors derive
+    the same query_key and typed_ingestor stores
+      query_hash = MD5(host | db_name | env | query_key)
+    so we re-derive that hash from raw_query and match against query_hash.
     """
+    import hashlib
     import logging
 
     sql = _LINK_SQL.get(table_type)
@@ -158,11 +164,59 @@ async def _link_typed_to_raw(table_type: str) -> None:
         async with write_session() as session:
             await session.execute(text(idx_ddl))
             await session.execute(text(sql))
+
+            # ── slow_mongo extra pass: hash-based linking for new-format rows ─
+            if table_type == "slow_mongo":
+                await _link_slow_mongo_by_shape(session)
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).warning(
             "_link_typed_to_raw(%s) failed — will retry on next upload",
             table_type,
             exc_info=True,
+        )
+
+
+async def _link_slow_mongo_by_shape(session) -> None:
+    """Second-pass link for slow_mongo when extractor outputs queryShapeHash
+    or ns:op_type as query_details (not the raw command JSON).
+
+    typed_ingestor._make_hash uses: MD5(host|db_name|env|query_key)
+    where query_key == raw_query.query_details for new-format rows.
+    We reconstruct that hash in Python and match against query_hash.
+    """
+    import hashlib
+
+    # Load unlinked typed rows (small set after first-pass SQL)
+    unlinked_result = await session.execute(
+        text("SELECT id, query_hash FROM raw_query_slow_mongo WHERE raw_query_id IS NULL")
+    )
+    unlinked: dict[str, int] = {row[1]: row[0] for row in unlinked_result}  # hash → typed_id
+    if not unlinked:
+        return
+
+    # Stream new-format raw_query slow_mongo rows
+    rq_result = await session.execute(
+        text(
+            "SELECT id, host, db_name, environment, query_details "
+            "FROM raw_query WHERE type='slow_query_mongo' AND source='mongodb'"
+        )
+    )
+    updates: list[tuple[int, int]] = []  # (raw_query_id, typed_id)
+    for rq_id, host, db_name, env, qd in rq_result:
+        if not qd:
+            continue
+        candidate = hashlib.md5(
+            "|".join(str(p or "").strip() for p in [host, db_name, env, qd]).encode("utf-8")
+        ).hexdigest()
+        if candidate in unlinked:
+            updates.append((rq_id, unlinked[candidate]))
+
+    for rq_id, typed_id in updates:
+        await session.execute(
+            text(
+                "UPDATE raw_query_slow_mongo SET raw_query_id=:rq WHERE id=:t AND raw_query_id IS NULL"
+            ),
+            {"rq": rq_id, "t": typed_id},
         )
 
 
