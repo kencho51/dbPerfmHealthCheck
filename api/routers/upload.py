@@ -153,27 +153,68 @@ async def _link_typed_to_raw(table_type: str) -> None:
       query_hash = MD5(host | db_name | env | query_key)
     so we re-derive that hash from raw_query and match against query_hash.
     """
-    import hashlib
+    import asyncio as _asyncio
     import logging
+    import sqlite3 as _sqlite3
 
     sql = _LINK_SQL.get(table_type)
     if not sql:
         return
     idx_ddl = _LINK_AUX_IDX.get(table_type, _CREATE_COMPOSITE_IDX)
-    try:
-        async with write_session() as session:
-            await session.execute(text(idx_ddl))
-            await session.execute(text(sql))
 
-            # ── slow_mongo extra pass: hash-based linking for new-format rows ─
-            if table_type == "slow_mongo":
-                await _link_slow_mongo_by_shape(session)
+    # Yield so the upload handler's final write_session (upload_log INSERT)
+    # commits and closes its SQLite write transaction before this task starts.
+    await _asyncio.sleep(0.2)
+
+    _log = logging.getLogger(__name__)
+
+    def _run_sync() -> None:
+        """Run the link SQL in a worker thread.
+
+        Uses a plain sqlite3 connection with timeout=600 so it waits patiently
+        for the write lock without blocking the asyncio event loop.  The main
+        upload path (aiosqlite / write_session) stays free to handle new upload
+        requests while this thread executes the heavy correlated UPDATE.
+        """
+        from api.database import SQLITE_PATH as _path  # noqa: PLC0415
+
+        con = _sqlite3.connect(str(_path), timeout=600, check_same_thread=False)
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA synchronous=NORMAL")
+            con.execute(idx_ddl)
+            con.execute(sql)
+            con.commit()
+        except Exception:
+            try:
+                con.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        finally:
+            con.close()
+
+    try:
+        await _asyncio.to_thread(_run_sync)
     except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).warning(
+        _log.warning(
             "_link_typed_to_raw(%s) failed — will retry on next upload",
             table_type,
             exc_info=True,
         )
+        return
+
+    # ── slow_mongo extra pass: hash-based linking for new-format rows ─
+    # Only does small targeted row-by-row updates; write_session is fine here.
+    if table_type == "slow_mongo":
+        try:
+            async with write_session() as session:
+                await _link_slow_mongo_by_shape(session)
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "_link_slow_mongo_by_shape failed — will retry on next upload",
+                exc_info=True,
+            )
 
 
 async def _link_slow_mongo_by_shape(session) -> None:
