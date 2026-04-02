@@ -146,30 +146,86 @@ def _process_slow_query_sql(file_path: Path) -> list[dict]:
 
 
 def _process_blockers(file_path: Path) -> list[dict]:
+    """
+    Extract blocker rows and include session-identifying metadata in
+    ``extra_metadata`` so each victim/session row produces a unique hash.
+
+    Per-session format (``session_id`` + ``query_text`` present):
+        extra_metadata = {"session_id": ..., "wait_type": ..., "command": ...,
+                          "head_blocker": ..., "blocked_sessions_count": ...}
+        → each blocked session is a separate raw_query row.
+
+    Aggregated / legacy format (``currentdbname`` + ``all_query`` present):
+        extra_metadata = {"victims": ..., "resources": ..., "count": ...,
+                          "lock_modes": ...}
+        → rows that differ only in victim-list are kept distinct.
+    """
+    import json as _json
+
     df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
-    # Support both per-session format (database_name, query_text) and
-    # legacy aggregated format (each guarded with _col_or).
-    time_expr = _col_or(df, "_time")
-    db_expr = (
-        _col_or(df, "database_name")
-        if "database_name" in df.columns
-        else _col_or(df, "currentdbname")
-    )
-    query_expr = (
-        _col_or(df, "query_text") if "query_text" in df.columns else _col_or(df, "all_query")
-    )
-    return df.select(
+    col_set = {c.strip().lower() for c in df.columns}
+    is_per_session = "query_text" in col_set and "session_id" in col_set
+
+    if is_per_session:
+        rows = df.select(
+            [
+                _col_or(df, "_time").alias("time"),
+                pl.lit("sql").alias("source"),
+                _col_or(df, "host").alias("host"),
+                _col_or(df, "database_name").alias("db_name"),
+                pl.lit(env).alias("environment"),
+                pl.lit("blocker").alias("type"),
+                _clean_expr(_col_or(df, "query_text")).alias("query_details"),
+                # extra fields included in hash via extra_metadata
+                _col_or(df, "session_id").alias("_session_id"),
+                _col_or(df, "wait_type").alias("_wait_type"),
+                _col_or(df, "command").alias("_command"),
+                _col_or(df, "head_blocker").alias("_head_blocker"),
+                _col_or(df, "blocked_sessions_count").alias("_blocked_count"),
+            ]
+        ).to_dicts()
+        for row in rows:
+            meta = {
+                "session_id": row.pop("_session_id"),
+                "wait_type": row.pop("_wait_type"),
+                "command": row.pop("_command"),
+                "head_blocker": row.pop("_head_blocker"),
+                "blocked_sessions_count": row.pop("_blocked_count"),
+            }
+            meta_clean = {k: v for k, v in meta.items() if v}
+            row["extra_metadata"] = _json.dumps(meta_clean, ensure_ascii=False) if meta_clean else None
+        return rows
+
+    # Aggregated / legacy format
+    # Prefer "database_name" (per-session column name) when "currentdbname" is absent.
+    _db_col = "database_name" if "database_name" in col_set else "currentdbname"
+    rows = df.select(
         [
-            time_expr.alias("time"),
+            _col_or(df, "_time").alias("time"),
             pl.lit("sql").alias("source"),
             _col_or(df, "host").alias("host"),
-            db_expr.alias("db_name"),
+            _col_or(df, _db_col).alias("db_name"),
             pl.lit(env).alias("environment"),
             pl.lit("blocker").alias("type"),
-            _clean_expr(query_expr).alias("query_details"),
+            _clean_expr(_col_or(df, "all_query")).alias("query_details"),
+            # extra fields included in hash via extra_metadata
+            _col_or(df, "victims").alias("_victims"),
+            _col_or(df, "resources").alias("_resources"),
+            _col_or(df, "count").alias("_count"),
+            _col_or(df, "lock_modes").alias("_lock_modes"),
         ]
     ).to_dicts()
+    for row in rows:
+        meta = {
+            "victims": row.pop("_victims"),
+            "resources": row.pop("_resources"),
+            "count": row.pop("_count"),
+            "lock_modes": row.pop("_lock_modes"),
+        }
+        meta_clean = {k: v for k, v in meta.items() if v}
+        row["extra_metadata"] = _json.dumps(meta_clean, ensure_ascii=False) if meta_clean else None
+    return rows
 
 
 def _is_raw_deadlock_format(columns: list[str]) -> bool:

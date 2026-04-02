@@ -6,7 +6,7 @@ import { X, BookmarkPlus, BookmarkX } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type RawQuery, type PatternLabel, type CuratedQuery, type EnvironmentType, type QueryType } from "@/lib/api";
+import { api, type RawQuery, type PatternLabel, type CuratedQuery, type EnvironmentType, type QueryType, type TypedQueryDetail } from "@/lib/api";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -330,6 +330,45 @@ function CurationPanel({
 
 // ---- Main drawer ------------------------------------------------------------
 
+// Fields to hide in typed-detail section (already shown in metadata or internal bookkeeping)
+const _TYPED_SKIP = new Set([
+  "id", "raw_query_id", "query_hash", "occurrence_count",
+  "first_seen", "last_seen", "created_at", "updated_at",
+  "host", "db_name", "environment", "month_year",
+]);
+
+function TypedDetailPanel({ detail }: { detail: TypedQueryDetail }) {
+  if (!detail.data) {
+    return (
+      <p className="text-xs text-slate-400 italic">
+        No typed detail available yet — the linking background task may still be running,
+        or re-upload the source CSV to populate it.
+      </p>
+    );
+  }
+  const entries = Object.entries(detail.data).filter(
+    ([k, v]) => !_TYPED_SKIP.has(k) && v !== null && v !== ""
+  );
+  if (entries.length === 0) {
+    return <p className="text-xs text-slate-400 italic">No additional columns found.</p>;
+  }
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3">
+      {entries.map(([k, v]) => (
+        <MetaRow key={k} label={k.replace(/_/g, " ")}>
+          {typeof v === "number" ? (
+            v.toLocaleString()
+          ) : String(v).length > 120 ? (
+            <span className="font-mono text-[10px] break-all">{String(v)}</span>
+          ) : (
+            String(v)
+          )}
+        </MetaRow>
+      ))}
+    </div>
+  );
+}
+
 export function QueryDetailDrawer({
   query,
   onClose,
@@ -340,6 +379,19 @@ export function QueryDetailDrawer({
   onPatternChange: (updated: RawQuery) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [typedDetail, setTypedDetail] = useState<TypedQueryDetail | null>(null);
+  const [loadingTyped, setLoadingTyped] = useState(false);
+
+  // Fetch typed-detail whenever the selected query changes
+  useEffect(() => {
+    if (!query) { setTypedDetail(null); return; }
+    setLoadingTyped(true);
+    setTypedDetail(null);
+    api.queries.typedDetail(query.id)
+      .then(setTypedDetail)
+      .catch(() => setTypedDetail(null))
+      .finally(() => setLoadingTyped(false));
+  }, [query?.id]);
 
   // Close on Escape
   useEffect(() => {
@@ -383,6 +435,7 @@ export function QueryDetailDrawer({
           <div>
             <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Metadata</h3>
             <div className="rounded-lg border border-slate-100 bg-slate-50 px-3">
+              <MetaRow label="Row ID"><span className="font-mono">{query.id}</span></MetaRow>
               <MetaRow label="Host">{query.host ?? ""}</MetaRow>
               <MetaRow label="Database">{query.db_name ?? ""}</MetaRow>
               <MetaRow label="Month">{query.month_year ?? ""}</MetaRow>
@@ -400,6 +453,20 @@ export function QueryDetailDrawer({
             <pre className="rounded-lg border border-slate-100 bg-slate-950 text-green-400 text-[11px] font-mono p-3 whitespace-pre-wrap break-all leading-relaxed max-h-64 overflow-y-auto">
               {query.query_details ?? ""}
             </pre>
+          </div>
+
+          {/* Raw CSV data from typed table */}
+          <div>
+            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Raw CSV Data</h3>
+            {loadingTyped ? (
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Spinner /> Loading…
+              </div>
+            ) : typedDetail ? (
+              <TypedDetailPanel detail={typedDetail} />
+            ) : (
+              <p className="text-xs text-slate-400 italic">—</p>
+            )}
           </div>
 
           {/* Curation panel */}
