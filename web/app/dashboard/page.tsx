@@ -342,8 +342,8 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle>Total Queries</CardTitle>
-              <CardValue>{fmt(kpi?.totalCsvRows ?? 0)}</CardValue>
-              <p className="text-xs text-slate-400 mt-1">Total rows from all uploaded CSV files (latest upload per file counts once)</p>
+              <CardValue>{fmt(kpi?.coverage.total_rows ?? 0)}</CardValue>
+              <p className="text-xs text-slate-400 mt-1">Distinct query patterns in raw_query matching active filters</p>
             </CardHeader>
           </Card>
           <Card>
