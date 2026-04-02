@@ -155,7 +155,13 @@ export default function DashboardPage() {
     ])
       .then(([monthTypeRows, coverage]) => {
         setMonthType(monthTypeRows);
-        const totalCsvRows = monthTypeRows.reduce(
+        // When a month filter is active, only count CSV rows for that month.
+        // byMonthType() returns all months (MonthlyTrendCard needs the full
+        // timeline), so we filter client-side for the KPI card only.
+        const kpiRows = filters.month_year
+          ? monthTypeRows.filter((r) => r.month_year === filters.month_year)
+          : monthTypeRows;
+        const totalCsvRows = kpiRows.reduce(
           (sum, r) => sum + (r.total_file_rows ?? 0), 0
         );
         setKpi({ totalCsvRows, coverage });

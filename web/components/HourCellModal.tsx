@@ -181,19 +181,19 @@ function TypedDetailSection({
   row:    HourQueryRow;
 }) {
   if (!detail.data) {
-    // MongoDB: raw_query.query_details IS the full command JSON (not truncated).
-    // Render a best-effort fallback panel so users always see the full query.
+    // All 4 fallbacks failed — genuinely no typed row covers this query.
+    // For mongo, query_details is the full command JSON; show it.
     if (detail.type === "slow_query_mongo") {
       return (
         <div className="space-y-3">
           <p className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-            Detailed metrics unavailable (row predates typed ingestion) — showing full query from raw_query.
+            No matching metrics row found — showing raw command JSON.
           </p>
           <FullQueryBlock label="Full command (query_details)" code={row.query_details} />
         </div>
       );
     }
-    // SQL/blocker/deadlock: query_details is truncated in raw_query — be honest.
+    // SQL/blocker/deadlock: query_details may be truncated — be honest.
     return (
       <div className="space-y-2">
         <p className="text-xs text-slate-400 italic">
@@ -203,7 +203,7 @@ function TypedDetailSection({
         {row.query_details && (
           <>
             <p className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-              The text below may be truncated (raw_query stores up to ~4 KB). Full text requires a re-upload.
+              The text below may be truncated. Full text requires a re-upload.
             </p>
             <FullQueryBlock label="Query text (possibly truncated)" code={row.query_details} />
           </>

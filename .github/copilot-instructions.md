@@ -14,6 +14,14 @@ As a senior developer (>10 years experience), your role is to:
 - Deliver actionable content that learners can implement
 - Always create tests to cover functions, features, services, components, etc, make sure the state will remain the same before and after, the tests should not leave any intermittent files or states. 
 
+## Tech Stack
+- **Backend**: FastAPI
+- **Frontend**: Next.js framework
+- **Database**: Sqlite for local development
+- **Testing**: Pytest for backend, Playwright for frontend
+- **DevOps**: GitHub Actions for testing
+- **Package Management**: uv for Python dependencies, npm for JavaScript dependencies
+
 ## Task Proctol
 
 ### MANDATORY PLANNING PHASE

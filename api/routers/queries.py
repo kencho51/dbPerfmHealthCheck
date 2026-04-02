@@ -314,6 +314,36 @@ async def get_typed_detail(
             await session.commit()
             await session.refresh(typed_row)
 
+    # 4) Collection-fuzzy fallback — for OLD-format slow_mongo rows where
+    #    query_details is the full command JSON (e.g. {"find":"reportDocument",...}).
+    #    Each execution has a unique $oid / filter so text & hash both miss.
+    #    The typed table has a representative row for the same collection+host
+    #    with real metrics (duration_ms, plan_summary etc.) — use that.
+    if not typed_row and rq_type == "slow_query_mongo" and rq.query_details:
+        import json as _json
+        collection: str | None = None
+        try:
+            cmd = _json.loads(rq.query_details)
+            # First key is the command op (find/aggregate/update…), value is the collection
+            first_val = next(iter(cmd.values()), None)
+            if isinstance(first_val, str):
+                collection = first_val
+        except Exception:
+            pass
+        if collection:
+            stmt = (
+                select(model_cls)
+                .where(model_cls.collection == collection)
+                .where(model_cls.environment == rq.environment)
+            )
+            if rq.host:
+                stmt = stmt.where(model_cls.host == rq.host)
+            if rq.db_name:
+                stmt = stmt.where(model_cls.db_name == rq.db_name)
+            # Prefer the row with highest occurrence_count (most representative)
+            stmt = stmt.order_by(model_cls.occurrence_count.desc())  # type: ignore[attr-defined]
+            typed_row = (await session.exec(stmt)).first()
+
     if not typed_row:
         return {"type": rq_type, "data": None}
 
