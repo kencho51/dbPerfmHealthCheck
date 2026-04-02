@@ -29,7 +29,6 @@ function typeBadge(t: QueryType) {
 }
 
 const columns: ColumnDef<RawQuery>[] = [
-  { accessorKey: "id",               header: "ID",       size: 52 },
   { accessorKey: "environment",      header: "Env",      size: 64,  cell: (i) => envBadge(i.getValue<EnvironmentType>()) },
   { accessorKey: "type",             header: "Type",               cell: (i) => typeBadge(i.getValue<QueryType>()) },
   { accessorKey: "source",           header: "Src",      size: 60,  cell: (i) => { const v = i.getValue<string>(); return <Badge variant={v === "sql" ? "sql" : "mongo"}>{v === "mongodb" ? "mongo" : v}</Badge>; } },
@@ -54,62 +53,8 @@ const columns: ColumnDef<RawQuery>[] = [
     cell: (i) => {
       const v = i.getValue<string | null>();
       return v
-        ? <span className="font-mono text-slate-600 truncate block max-w-[340px]" title={v}>{v}</span>
+        ? <span className="font-mono text-slate-600 truncate block max-w-[480px]" title={v}>{v}</span>
         : <span className="text-slate-300">—</span>;
-    },
-  },
-  {
-    accessorKey: "query_hash",
-    header: "Hash",
-    size: 100,
-    cell: (i) => {
-      const v = i.getValue<string>();
-      return <span className="font-mono text-[10px] text-slate-400 truncate block max-w-[90px]" title={v}>{v}</span>;
-    },
-  },
-  {
-    accessorKey: "time",
-    header: "Time",
-    size: 140,
-    cell: (i) => {
-      const v = i.getValue<string | null>();
-      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ?? "—"}</span>;
-    },
-  },
-  {
-    accessorKey: "first_seen",
-    header: "First Seen",
-    size: 140,
-    cell: (i) => {
-      const v = i.getValue<string>();
-      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
-    },
-  },
-  {
-    accessorKey: "last_seen",
-    header: "Last Seen",
-    size: 140,
-    cell: (i) => {
-      const v = i.getValue<string>();
-      return <span className="font-mono text-[10px] text-slate-500 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
-    },
-  },
-  {
-    accessorKey: "created_at",
-    header: "Created",
-    size: 140,
-    cell: (i) => {
-      const v = i.getValue<string>();
-      return <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
-    },
-  },
-  {
-    accessorKey: "updated_at",
-    header: "Updated",
-    size: 140,
-    cell: (i) => {
-      const v = i.getValue<string>();
-      return <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap">{v ? v.slice(0, 19).replace("T", " ") : "—"}</span>;
     },
   },
 ];
@@ -268,21 +213,12 @@ export default function QueriesPage() {
                       className="px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 whitespace-nowrap"
                       style={{ width: h.getSize() }}
                     >
-                      {h.column.id === "id" ? (
-                        <button
-                          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-                          className="flex items-center gap-0.5 hover:text-indigo-600 cursor-pointer select-none"
-                          title="Sort by ID"
-                        >
-                          ID <span className="text-[10px]">{sortDir === "desc" ? "▼" : "▲"}</span>
-                        </button>
-                      ) : flexRender(h.column.columnDef.header, h.getContext())}
+                      {flexRender(h.column.columnDef.header, h.getContext())}
                     </th>
                   ))}
                 </tr>
               ))}
               <tr className="border-b border-slate-200 bg-slate-50">
-                <td className="px-2 py-1" />
                 <td className="px-2 py-1 w-16">
                   <FSelect value={environment} onChange={setEnvironment}>
                     <option value="">all</option>
@@ -317,7 +253,7 @@ export default function QueriesPage() {
                     {dbOpts.map((d) => <option key={d} value={d}>{d}</option>)}
                   </FSelect>
                 </td>
-                <td className="px-2 py-1" />
+                <td className="px-2 py-1" />{/* occurrence_count */}
                 <td className="px-2 py-1">
                   <FInput value={month} onChange={setMonth} placeholder="YYYY-MM" />
                 </td>
@@ -329,12 +265,6 @@ export default function QueriesPage() {
                   </FSelect>
                 </td>
                 <td className="px-2 py-1" />{/* query_details */}
-                <td className="px-2 py-1" />{/* query_hash */}
-                <td className="px-2 py-1" />{/* time */}
-                <td className="px-2 py-1" />{/* first_seen */}
-                <td className="px-2 py-1" />{/* last_seen */}
-                <td className="px-2 py-1" />{/* created_at */}
-                <td className="px-2 py-1" />{/* updated_at */}
               </tr>
             </thead>
             <tbody>
