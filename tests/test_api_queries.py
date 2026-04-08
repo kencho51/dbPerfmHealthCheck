@@ -195,6 +195,7 @@ import uuid  # noqa: E402
 from api.database import open_session as _open_session  # noqa: E402
 from api.models import (  # noqa: E402
     RawQueryBlocker,
+    RawQuerySlowMongo,
     RawQuerySlowSql,
 )
 
@@ -236,6 +237,29 @@ async def _seed_slow_sql(raw_query_id: int | None = None, **overrides) -> RawQue
     )
     defaults.update(overrides)
     row = RawQuerySlowSql(**defaults)
+    async with _open_session() as session:
+        session.add(row)
+        await session.flush()
+        await session.refresh(row)
+    return row
+
+
+async def _seed_slow_mongo(raw_query_id: int | None = None, **overrides) -> RawQuerySlowMongo:
+    """Insert one RawQuerySlowMongo row and return it."""
+    unique = str(uuid.uuid4())
+    defaults = dict(
+        query_hash=hashlib.sha256(unique.encode()).hexdigest(),
+        raw_query_id=raw_query_id,
+        environment="prod",
+        host="MONGOSRV01",
+        db_name="mongo_db",
+        collection="orders",
+        month_year="2026-01",
+        command_json=f'{{"find": "orders", "filter": {{}} /* {unique} */}}',
+        occurrence_count=1,
+    )
+    defaults.update(overrides)
+    row = RawQuerySlowMongo(**defaults)
     async with _open_session() as session:
         session.add(row)
         await session.flush()
@@ -290,3 +314,96 @@ class TestGetTypedDetail:
         assert r.status_code == 200
         body = r.json()
         assert set(body.keys()) == {"type", "data"}
+
+    async def test_hash_reconstruction_fallback_for_slow_mongo(self, client: AsyncClient):
+        """No FK, no matching command_json text — hash fallback locates slow_mongo via
+        MD5(host|db_name|env|query_details) and backfills the FK on success."""
+        query_key = f"orders:find-{uuid.uuid4()}"
+        host = "MONGOSRV01"
+        db_name = "mongo_db"
+        env = "prod"
+        # raw_query stores query_details == query_key (new-format)
+        raw = await _seed_query(
+            type="slow_query_mongo",
+            source="mongodb",
+            host=host,
+            db_name=db_name,
+            environment=env,
+            query_details=query_key,
+        )
+        # Typed table row uses the same hash derivation as the ingestor
+        candidate_hash = hashlib.md5(
+            "|".join(str(p or "").strip() for p in [host, db_name, env, query_key]).encode()
+        ).hexdigest()
+        typed = await _seed_slow_mongo(
+            raw_query_id=None,
+            host=host,
+            db_name=db_name,
+            environment=env,
+            query_hash=candidate_hash,
+            command_json=query_key,
+        )
+
+        r = await client.get(f"/api/queries/{raw.id}/typed-detail")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["type"] == "slow_query_mongo"
+        assert body["data"] is not None
+        assert body["data"]["id"] == typed.id
+
+        # FK should be backfilled after the hash match
+        async with _open_session() as session:
+            from sqlmodel import select as _select
+
+            refreshed = (
+                await session.exec(_select(RawQuerySlowMongo).where(RawQuerySlowMongo.id == typed.id))
+            ).one()
+        assert refreshed.raw_query_id == raw.id
+
+    async def test_collection_fuzzy_fallback_for_slow_mongo(self, client: AsyncClient):
+        """Old-format slow_mongo row (query_details is JSON) — collection-fuzzy fallback
+        finds the typed row with the highest occurrence_count for the same collection+env+host."""
+        import json
+
+        collection = f"reportDocument-{uuid.uuid4().hex[:8]}"
+        host = "MONGOSRV02"
+        db_name = "reports_db"
+        env = "prod"
+        query_details_json = json.dumps({"find": collection, "filter": {"_id": "unique-oid"}})
+
+        raw = await _seed_query(
+            type="slow_query_mongo",
+            source="mongodb",
+            host=host,
+            db_name=db_name,
+            environment=env,
+            query_details=query_details_json,
+        )
+        # Seed two typed rows for the same collection — the one with higher occurrence_count
+        # should be preferred by the fallback.
+        await _seed_slow_mongo(
+            raw_query_id=None,
+            host=host,
+            db_name=db_name,
+            environment=env,
+            collection=collection,
+            occurrence_count=3,
+            command_json=f'{{"find": "{collection}"}}',
+        )
+        preferred = await _seed_slow_mongo(
+            raw_query_id=None,
+            host=host,
+            db_name=db_name,
+            environment=env,
+            collection=collection,
+            occurrence_count=10,
+            command_json=f'{{"find": "{collection}"}}',
+        )
+
+        r = await client.get(f"/api/queries/{raw.id}/typed-detail")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["type"] == "slow_query_mongo"
+        assert body["data"] is not None
+        # Must return the row with occurrence_count=10 (most representative)
+        assert body["data"]["id"] == preferred.id
