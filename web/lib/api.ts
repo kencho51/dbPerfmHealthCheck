@@ -236,6 +236,82 @@ export interface FingerprintRow {
   example_source:  string;    // most-common source ("mssql" / "mongodb")
 }
 
+/** A single raw_query row returned by the by-hour drill-down endpoint. */
+export interface HourQueryRow {
+  id:               number;
+  type:             QueryType;
+  host:             string | null;
+  db_name:          string | null;
+  environment:      EnvironmentType;
+  source:           SourceType;
+  time:             string | null;
+  month_year:       string | null;
+  occurrence_count: number;
+  query_details:    string | null;
+}
+
+export interface HourQueriesResult {
+  rows:  HourQueryRow[];
+  total: number;
+}
+
+// ---- Typed query detail interfaces (from raw_query_* tables) --------------
+
+export interface SlowSqlDetail {
+  creation_time:         string | null;
+  last_execution_time:   string | null;
+  max_elapsed_time_s:    number | null;
+  avg_elapsed_time_s:    number | null;
+  total_elapsed_time_s:  number | null;
+  total_worker_time_s:   number | null;
+  avg_io:                number | null;
+  avg_logical_reads:     number | null;
+  avg_logical_writes:    number | null;
+  execution_count:       number | null;
+  query_final:           string | null;  // full untruncated SQL
+}
+
+export interface BlockerDetail {
+  currentdbname: string | null;
+  victims:       string | null;
+  resources:     string | null;
+  lock_modes:    string | null;
+  count:         number | null;
+  latest:        string | null;
+  earliest:      string | null;
+  all_query:     string | null;  // full untruncated SQL
+}
+
+export interface DeadlockDetail {
+  event_time:       string | null;
+  deadlock_id:      string | null;
+  is_victim:        number | null;  // 0 | 1
+  lock_mode:        string | null;
+  wait_resource:    string | null;
+  wait_time_ms:     number | null;
+  transaction_name: string | null;
+  app_host:         string | null;
+  sql_text:         string | null;  // full untruncated SQL
+  raw_xml:          string | null;
+}
+
+export interface SlowMongoDetail {
+  collection:    string | null;
+  event_time:    string | null;
+  duration_ms:   number | null;
+  plan_summary:  string | null;
+  op_type:       string | null;
+  remote_client: string | null;
+  command_json:  string | null;  // full untruncated Mongo command
+}
+
+export type TypedQueryDetail =
+  | { type: "slow_query";       data: SlowSqlDetail   | null }
+  | { type: "blocker";          data: BlockerDetail   | null }
+  | { type: "deadlock";         data: DeadlockDetail  | null }
+  | { type: "slow_query_mongo"; data: SlowMongoDetail | null }
+  | { type: string;             data: null };
+
 // ---- SPL Library ----------------------------------------------------------
 
 export interface SplQueryEntry {
@@ -285,6 +361,16 @@ export const api = {
       const qs = buildQS(filters);
       return apiFetch<HourCell[]>(`/analytics/by-hour${qs}`);
     },
+    byHourQueries: (
+      hour: number,
+      weekday: number,
+      filters?: AnalyticsFilters,
+      limit = 50,
+      offset = 0,
+    ) => {
+      const qs = buildQS({ hour, weekday, limit, offset, ...filters });
+      return apiFetch<HourQueriesResult>(`/analytics/by-hour-queries${qs}`);
+    },
     topFingerprints: (topN = 20, filters?: AnalyticsFilters) => {
       const qs = buildQS({ top_n: topN, ...filters });
       return apiFetch<FingerprintRow[]>(`/analytics/top-fingerprints${qs}`);
@@ -313,6 +399,7 @@ export const api = {
     },
     distinct: () => apiFetch<{ hosts: string[]; db_names: string[] }>("/queries/distinct"),
     get: (id: number) => apiFetch<RawQuery>(`/queries/${id}`),
+    typedDetail: (id: number) => apiFetch<TypedQueryDetail>(`/queries/${id}/typed-detail`),
   },
 
   labels: {

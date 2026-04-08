@@ -122,7 +122,11 @@ engine: AsyncEngine = create_async_engine(
     echo=False,  # set True to log SQL for debugging
     connect_args={
         "check_same_thread": False,
-        "timeout": 30,
+        # 120 s gives the aiosqlite thread time to wait for a SQLite write lock
+        # held by the background _link_typed_to_raw thread (see upload.py).
+        # The background thread uses its own sqlite3 connection with timeout=600,
+        # so it will always yield the lock well within 120 s.
+        "timeout": 120,
         # NOTE: do NOT set detect_types here.  detect_types causes the sqlite3
         # converter to fire and return a datetime *before* SQLAlchemy's own
         # DateTime result_processor runs.  SQLAlchemy then calls

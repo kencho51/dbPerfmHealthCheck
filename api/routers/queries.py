@@ -8,6 +8,8 @@ Query endpoints:
 
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import col, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -19,7 +21,15 @@ from api.models import (
     EnvironmentType,
     QueryType,
     RawQuery,
+    RawQueryBlocker,
+    RawQueryBlockerRead,
+    RawQueryDeadlock,
+    RawQueryDeadlockRead,
     RawQueryRead,
+    RawQuerySlowMongo,
+    RawQuerySlowMongoRead,
+    RawQuerySlowSql,
+    RawQuerySlowSqlRead,
     SourceType,
 )
 
@@ -207,6 +217,135 @@ async def count_queries(
     )
     total = (await session.exec(stmt)).one()
     return {"count": total}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/queries/{id}/typed-detail
+# ---------------------------------------------------------------------------
+
+_TYPED_MODEL_MAP = {
+    "slow_query": (RawQuerySlowSql, RawQuerySlowSqlRead),
+    "blocker": (RawQueryBlocker, RawQueryBlockerRead),
+    "deadlock": (RawQueryDeadlock, RawQueryDeadlockRead),
+    "slow_query_mongo": (RawQuerySlowMongo, RawQuerySlowMongoRead),
+}
+
+
+@router.get("/{query_id}/typed-detail", summary="Get type-specific rich detail for a raw_query row")
+async def get_typed_detail(
+    query_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Returns { "type": str, "data": <typed-row dict> | null }.
+
+    Looks up %raw_query to determine the type, then queries the corresponding
+    typed table (raw_query_slow_sql / raw_query_blocker / raw_query_deadlock /
+    raw_query_slow_mongo) via the raw_query_id FK.
+    Returns data=null when no typed row has been linked yet.
+    """
+    rq = await session.get(RawQuery, query_id)
+    if not rq:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Query not found")
+
+    # rq.type is stored as a plain str in SQLite — normalise before lookup
+    rq_type = rq.type if isinstance(rq.type, str) else rq.type.value
+
+    type_pair = _TYPED_MODEL_MAP.get(rq_type)
+    if type_pair is None:
+        return {"type": rq_type, "data": None}
+
+    model_cls, read_cls = type_pair
+
+    # Map each type to the typed-table column that mirrors raw_query.query_details
+    _QUERY_TEXT_COL: dict[str, str] = {
+        "slow_query": "query_final",
+        "blocker": "all_query",
+        "deadlock": "sql_text",
+        "slow_query_mongo": "command_json",
+    }
+    text_col = _QUERY_TEXT_COL.get(rq_type)
+
+    # 1) Fast path — FK is already set
+    typed_row = (
+        await session.exec(select(model_cls).where(model_cls.raw_query_id == query_id))
+    ).first()
+
+    # 2) Text fallback — works for OLD-format raw_query rows where
+    #    query_details was stored as the full command JSON (before the
+    #    extractor was optimised to store queryShapeHash / ns:op_type).
+    if not typed_row and text_col and rq.query_details:
+        text_col_attr = getattr(model_cls, text_col)
+        typed_row = (
+            await session.exec(select(model_cls).where(text_col_attr == rq.query_details))
+        ).first()
+        # Backfill the FK so future lookups hit the fast path
+        if typed_row and typed_row.raw_query_id is None:
+            typed_row.raw_query_id = query_id
+            session.add(typed_row)
+            await session.commit()
+            await session.refresh(typed_row)
+
+    # 3) Hash-reconstruction fallback — works for NEW-format slow_mongo rows
+    #    where query_details = queryShapeHash or "ns:op_type".
+    #    Both extractors derive the same query_key, and typed_ingestor computes:
+    #      query_hash = MD5(host | db_name | env | query_key)
+    #    Since query_key == query_details for new-format raw_query rows, we can
+    #    reconstruct the typed query_hash and look it up directly.
+    if not typed_row and rq_type == "slow_query_mongo" and rq.query_details:
+        candidate_hash = hashlib.md5(
+            "|".join(
+                str(p or "").strip()
+                for p in [rq.host, rq.db_name, rq.environment, rq.query_details]
+            ).encode("utf-8")
+        ).hexdigest()
+        typed_row = (
+            await session.exec(select(model_cls).where(model_cls.query_hash == candidate_hash))
+        ).first()
+        if typed_row and typed_row.raw_query_id is None:
+            typed_row.raw_query_id = query_id
+            session.add(typed_row)
+            await session.commit()
+            await session.refresh(typed_row)
+
+    # 4) Collection-fuzzy fallback — for OLD-format slow_mongo rows where
+    #    query_details is the full command JSON (e.g. {"find":"reportDocument",...}).
+    #    Each execution has a unique $oid / filter so text & hash both miss.
+    #    The typed table has a representative row for the same collection+host
+    #    with real metrics (duration_ms, plan_summary etc.) — use that.
+    if not typed_row and rq_type == "slow_query_mongo" and rq.query_details:
+        import json as _json
+
+        collection: str | None = None
+        try:
+            cmd = _json.loads(rq.query_details)
+            # First key is the command op (find/aggregate/update…), value is the collection
+            first_val = next(iter(cmd.values()), None)
+            if isinstance(first_val, str):
+                collection = first_val
+        except Exception:
+            pass
+        if collection:
+            stmt = (
+                select(model_cls)
+                .where(model_cls.collection == collection)
+                .where(model_cls.environment == rq.environment)
+            )
+            if rq.host:
+                stmt = stmt.where(model_cls.host == rq.host)
+            if rq.db_name:
+                stmt = stmt.where(model_cls.db_name == rq.db_name)
+            # Prefer the row with highest occurrence_count (most representative)
+            stmt = stmt.order_by(model_cls.occurrence_count.desc())  # type: ignore[attr-defined]
+            typed_row = (await session.exec(stmt)).first()
+
+    if not typed_row:
+        return {"type": rq_type, "data": None}
+
+    return {
+        "type": rq_type,
+        "data": read_cls.model_validate(typed_row).model_dump(mode="json"),
+    }
 
 
 # ---------------------------------------------------------------------------

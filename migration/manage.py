@@ -22,6 +22,7 @@ Commands
   create        Apply all migrations to create the full schema (idempotent)
   drop          Drop all tables (destructive - prompts for confirmation)
   reset         drop + create (full wipe and rebuild)
+  partial-reset Clear ingestion tables only; preserves users, labels, SPL
   migrate-up    Apply the next incremental schema change (alembic upgrade head)
   migrate-down  Reverse the last schema change (alembic downgrade -1)
   truncate      Delete all rows, keep schema (prompts for confirmation)
@@ -48,8 +49,25 @@ from api.database import SQLITE_PATH, SQLITE_URL  # noqa: E402
 # Synchronous SQLite URL for Alembic CLI (strips aiosqlite driver)
 _ALEMBIC_URL = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
 
-# Tables listed in FK-safe drop/truncate order
-_DATA_TABLES = ["curated_query", "raw_query", "pattern_label", "spl_query", "user"]
+# Tables in FK-safe truncate order (children before parents).
+# cmd_drop / cmd_truncate iterate reversed(_DATA_TABLES) so parents are
+# processed first in those operations — but PRAGMA foreign_keys = OFF means
+# the order is informational rather than strictly required.
+_DATA_TABLES = [
+    # ── Children of raw_query (typed detail tables) ──────────────────────────
+    "curated_query",  # FK → raw_query, pattern_label
+    "raw_query_slow_sql",  # FK → raw_query
+    "raw_query_blocker",  # FK → raw_query
+    "raw_query_deadlock",  # FK → raw_query
+    "raw_query_slow_mongo",  # FK → raw_query
+    # ── Core tables ──────────────────────────────────────────────────────────
+    "raw_query",
+    "upload_log",
+    "pattern_label",
+    # ── Independent tables ────────────────────────────────────────────────────
+    "spl_query",
+    "user",
+]
 _ALL_TABLES = _DATA_TABLES + ["alembic_version"]
 
 # ---------------------------------------------------------------------------
@@ -388,6 +406,71 @@ def cmd_truncate() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tables cleared by partial-reset (data only; preserves users / labels / SPL)
+# ---------------------------------------------------------------------------
+
+_PARTIAL_RESET_TABLES = [
+    # typed detail tables first (they hold FKs into raw_query)
+    "raw_query_slow_sql",
+    "raw_query_blocker",
+    "raw_query_deadlock",
+    "raw_query_slow_mongo",
+    # core ingestion tables
+    "raw_query",
+    "upload_log",
+]
+
+
+def cmd_partial_reset() -> None:
+    """Delete rows from the 6 ingestion tables only.
+
+    Preserved: pattern_label, spl_query, user, curated_query, alembic_version.
+    Schema is never touched — just a targeted DELETE, not DROP.
+    """
+    print("\nPartial-reset — clears ingestion data only.")
+    print("  Preserved: pattern_label, spl_query, user, curated_query")
+    print("  Cleared  : raw_query_slow_sql, raw_query_blocker,")
+    print("             raw_query_deadlock, raw_query_slow_mongo,")
+    print("             raw_query, upload_log")
+
+    if _DRY_RUN:
+        _dry_banner("partial-reset")
+        if not SQLITE_PATH.exists():
+            _warn("Database file does not exist - nothing to clear.")
+            return
+        con = sqlite3.connect(SQLITE_PATH)
+        existing = _existing_tables(con)
+        for t in _PARTIAL_RESET_TABLES:
+            if t in existing:
+                n = _row_count(con, t)
+                _dry(f"Would DELETE FROM {t} ({n:,} rows)")
+            else:
+                _warn(f"Would skip (not found): {t}")
+        con.close()
+        return
+
+    if not _confirm("Type 'yes' to confirm PARTIAL RESET:"):
+        _info("Cancelled.")
+        return
+
+    con = _connect()
+    existing = _existing_tables(con)
+    con.execute("PRAGMA foreign_keys = OFF")
+
+    for t in _PARTIAL_RESET_TABLES:
+        if t in existing:
+            n = _row_count(con, t)
+            con.execute(f'DELETE FROM "{t}"')
+            _ok(f"Cleared {n:,} rows from: {t}")
+        else:
+            _warn(f"Skipped (not found): {t}")
+
+    con.commit()
+    con.close()
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Entry-point
 # ---------------------------------------------------------------------------
 
@@ -396,6 +479,10 @@ _COMMANDS: dict[str, tuple[str, object]] = {  # type: ignore[type-arg]
     "create": ("Apply migrations - create the full schema", cmd_create),
     "drop": ("Drop all tables (WARNING: destroys data)", cmd_drop),
     "reset": ("drop + create - full wipe and rebuild (WARNING)", cmd_reset),
+    "partial-reset": (
+        "Clear ingestion tables only; keep users/labels/SPL (WARNING)",
+        cmd_partial_reset,
+    ),
     "migrate-up": ("Apply next incremental schema change", cmd_migrate_up),
     "migrate-down": ("Reverse the last schema change (WARNING)", cmd_migrate_down),
     "truncate": ("Delete all rows, keep schema (WARNING)", cmd_truncate),

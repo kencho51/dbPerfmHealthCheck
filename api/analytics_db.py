@@ -108,27 +108,49 @@ def _load_table(table: str) -> pl.DataFrame:
             columns = list(result.keys())
             rows = result.fetchall()
 
-        df = (
-            pl.DataFrame({col: pl.Series([], dtype=pl.Utf8) for col in columns})
-            if not rows
-            else pl.DataFrame(
-                # Column-oriented construction avoids infer_schema_length issues.
-                # extra_metadata is nullable TEXT: if the first N rows are NULL,
-                # row-oriented inference would infer Null dtype and then fail when
-                # a deadlock JSON string arrives later.  schema_overrides forces
-                # Utf8 from the start without affecting other columns.
-                {col: [row[i] for row in rows] for i, col in enumerate(columns)},
-                schema_overrides={
-                    **({"extra_metadata": pl.Utf8} if "extra_metadata" in columns else {}),
-                    **(
-                        {"csv_row_count": pl.Int64, "inserted": pl.Int64, "updated": pl.Int64}
-                        if table == "upload_log"
-                        else {}
-                    ),
+            # For empty tables, read the declared column types from SQLite so
+            # DuckDB sees INTEGER/REAL columns rather than VARCHAR.  Without this
+            # SUM(occurrence_count) raises BinderError after a partial-reset.
+            if not rows:
+                pragma = conn.execute(sa.text(f"PRAGMA table_info({table})")).fetchall()  # noqa: S608
+                # pragma columns: cid, name, type, notnull, dflt_value, pk
+                _SQLITE_TYPE_MAP: dict[str, type[pl.DataType]] = {
+                    "INTEGER": pl.Int64,
+                    "INT": pl.Int64,
+                    "BIGINT": pl.Int64,
+                    "REAL": pl.Float64,
+                    "FLOAT": pl.Float64,
+                    "DOUBLE": pl.Float64,
+                    "NUMERIC": pl.Float64,
+                    "BOOLEAN": pl.Boolean,
                 }
-                or None,
-            )
-        )
+                col_dtypes: dict[str, type[pl.DataType]] = {}
+                for row in pragma:
+                    col_name = row[1]
+                    declared = (row[2] or "").upper().split("(")[0].strip()
+                    col_dtypes[col_name] = _SQLITE_TYPE_MAP.get(declared, pl.Utf8)
+                empty_schema = {
+                    col: pl.Series([], dtype=col_dtypes.get(col, pl.Utf8)) for col in columns
+                }
+                df = pl.DataFrame(empty_schema)
+            else:
+                df = pl.DataFrame(
+                    # Column-oriented construction avoids infer_schema_length issues.
+                    # extra_metadata is nullable TEXT: if the first N rows are NULL,
+                    # row-oriented inference would infer Null dtype and then fail when
+                    # a deadlock JSON string arrives later.  schema_overrides forces
+                    # Utf8 from the start without affecting other columns.
+                    {col: [row[i] for row in rows] for i, col in enumerate(columns)},
+                    schema_overrides={
+                        **({"extra_metadata": pl.Utf8} if "extra_metadata" in columns else {}),
+                        **(
+                            {"csv_row_count": pl.Int64, "inserted": pl.Int64, "updated": pl.Int64}
+                            if table == "upload_log"
+                            else {}
+                        ),
+                    }
+                    or None,
+                )
         # Belt-and-suspenders: cast any column that slipped through as Null.
         if "extra_metadata" in df.columns:
             df = df.with_columns(pl.col("extra_metadata").cast(pl.Utf8))

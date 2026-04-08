@@ -55,11 +55,16 @@ export function MonthlyTrendCard({
   monthTypeData?: MonthTypeRow[];
 }) {
   const [type, setType] = useState("");
-  const [data, setData] = useState<MonthRow[]>(() => toMonthRows(monthTypeData, ""));
+  // "All types" uses initialData (filter-aware byMonth → row_count from raw_query),
+  // so it matches the Total Queries KPI exactly.
+  // Per-type views use monthTypeData (upload_log CSV row counts per type).
+  const [data, setData] = useState<MonthRow[]>(() =>
+    type === "" ? initialData : toMonthRows(monthTypeData, type)
+  );
 
   useEffect(() => {
-    setData(toMonthRows(monthTypeData, type));
-  }, [type, monthTypeData]);
+    setData(type === "" ? initialData : toMonthRows(monthTypeData, type));
+  }, [type, initialData, monthTypeData]);
 
   const isFileRowMode = !type;
 
@@ -71,8 +76,8 @@ export function MonthlyTrendCard({
             <CardTitle>Monthly Trend</CardTitle>
             <p className="text-xs text-slate-400 mt-0.5">
               {isFileRowMode
-                ? "CSV file rows per month · ▲/▼ = month-over-month change"
-                : "SQL patterns per month for selected type · ▲/▼ = month-over-month change"}
+                ? "Distinct query patterns per month (matches Total Queries) · ▲/▼ = month-over-month change"
+                : "CSV file rows uploaded per month for selected type · ▲/▼ = month-over-month change"}
             </p>
           </div>
           <select
@@ -95,7 +100,7 @@ export function MonthlyTrendCard({
         {data.filter((r) => r.row_delta !== null).length > 0 && (
           <div className="mt-4">
             <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-              Month-over-month change ({isFileRowMode ? "file rows" : "patterns"})
+              Month-over-month change ({isFileRowMode ? "query patterns" : "file rows"})
             </p>
             <div className="flex flex-wrap gap-1.5">
               {data
@@ -114,7 +119,7 @@ export function MonthlyTrendCard({
                     <span
                       key={r.month_year}
                       className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-mono ${cls}`}
-                      title={`${r.month_year}: ${delta > 0 ? "+" : ""}${delta.toLocaleString()} ${isFileRowMode ? "file rows" : "patterns"} vs prior month`}
+                      title={`${r.month_year}: ${delta > 0 ? "+" : ""}${delta.toLocaleString()} ${isFileRowMode ? "query patterns" : "file rows"} vs prior month`}
                     >
                       <span className="text-slate-500 mr-0.5">{r.month_year}</span>
                       {arrow}{Math.abs(delta).toLocaleString()}
