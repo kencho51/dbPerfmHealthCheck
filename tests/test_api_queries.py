@@ -356,7 +356,9 @@ class TestGetTypedDetail:
             from sqlmodel import select as _select
 
             refreshed = (
-                await session.exec(_select(RawQuerySlowMongo).where(RawQuerySlowMongo.id == typed.id))
+                await session.exec(
+                    _select(RawQuerySlowMongo).where(RawQuerySlowMongo.id == typed.id)
+                )
             ).one()
         assert refreshed.raw_query_id == raw.id
 
