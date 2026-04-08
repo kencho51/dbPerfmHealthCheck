@@ -4,8 +4,8 @@ conn = sqlite3.connect("db/master.db")
 
 for table, type_val, text_col in [
     ("raw_query_slow_mongo", "slow_query_mongo", "command_json"),
-    ("raw_query_deadlock",   "deadlock",         "sql_text"),
-    ("raw_query_slow_sql",   "slow_query",       "query_final"),
+    ("raw_query_deadlock", "deadlock", "sql_text"),
+    ("raw_query_slow_sql", "slow_query", "query_final"),
 ]:
     sql = f"""
     SELECT COUNT(*) FROM {table} t
@@ -19,8 +19,8 @@ for table, type_val, text_col in [
 print("\nRunning bulk text-only backfill...")
 for table, type_val, text_col in [
     ("raw_query_slow_mongo", "slow_query_mongo", "command_json"),
-    ("raw_query_deadlock",   "deadlock",         "sql_text"),
-    ("raw_query_slow_sql",   "slow_query",       "query_final"),
+    ("raw_query_deadlock", "deadlock", "sql_text"),
+    ("raw_query_slow_sql", "slow_query", "query_final"),
 ]:
     sql = f"""
     UPDATE {table}
@@ -37,9 +37,16 @@ for table, type_val, text_col in [
 conn.commit()
 
 print("\nAfter backfill:")
-for tbl in ("raw_query_slow_sql", "raw_query_blocker", "raw_query_deadlock", "raw_query_slow_mongo"):
+for tbl in (
+    "raw_query_slow_sql",
+    "raw_query_blocker",
+    "raw_query_deadlock",
+    "raw_query_slow_mongo",
+):
     total = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-    linked = conn.execute(f"SELECT COUNT(*) FROM {tbl} WHERE raw_query_id IS NOT NULL").fetchone()[0]
+    linked = conn.execute(f"SELECT COUNT(*) FROM {tbl} WHERE raw_query_id IS NOT NULL").fetchone()[
+        0
+    ]
     print(f"  {tbl}: {total} total, {linked} linked, {total - linked} still unlinked")
 
 conn.close()

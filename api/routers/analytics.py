@@ -776,16 +776,16 @@ def _by_hour_queries_sync(
     for r in rows:
         result_rows.append(
             {
-                "id":               r[0],
-                "type":             r[1],
-                "host":             r[2],
-                "db_name":          r[3],
-                "environment":      r[4],
-                "source":           r[5],
-                "time":             r[6],
-                "month_year":       r[7],
+                "id": r[0],
+                "type": r[1],
+                "host": r[2],
+                "db_name": r[3],
+                "environment": r[4],
+                "source": r[5],
+                "time": r[6],
+                "month_year": r[7],
                 "occurrence_count": r[8],
-                "query_details":    r[9],
+                "query_details": r[9],
             }
         )
         total = r[10]  # COUNT(*) OVER() — same for every row
@@ -797,19 +797,19 @@ def _by_hour_queries_sync(
     summary="Drill-down: raw query rows for a specific hour × weekday cell",
 )
 async def analytics_by_hour_queries(
-    hour:        int              = Query(..., ge=0, le=23),
-    weekday:     int              = Query(..., ge=0, le=6),
+    hour: int = Query(..., ge=0, le=23),
+    weekday: int = Query(..., ge=0, le=6),
     environment: EnvironmentType | None = None,
-    source:      SourceType      | None = None,
-    host:        str  | None            = None,
-    db_name:     str  | None            = None,
-    month_year:  str  | None            = None,
-    type:        QueryType | None       = None,
-    system:      str  | None            = None,
-    week_start:  str  | None            = None,
-    week_end:    str  | None            = None,
-    limit:       int                    = Query(default=50, ge=1, le=200),
-    offset:      int                    = Query(default=0, ge=0),
+    source: SourceType | None = None,
+    host: str | None = None,
+    db_name: str | None = None,
+    month_year: str | None = None,
+    type: QueryType | None = None,
+    system: str | None = None,
+    week_start: str | None = None,
+    week_end: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     return await asyncio.to_thread(
         _by_hour_queries_sync,

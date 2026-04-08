@@ -224,9 +224,9 @@ async def count_queries(
 # ---------------------------------------------------------------------------
 
 _TYPED_MODEL_MAP = {
-    "slow_query":       (RawQuerySlowSql,   RawQuerySlowSqlRead),
-    "blocker":          (RawQueryBlocker,   RawQueryBlockerRead),
-    "deadlock":         (RawQueryDeadlock,  RawQueryDeadlockRead),
+    "slow_query": (RawQuerySlowSql, RawQuerySlowSqlRead),
+    "blocker": (RawQueryBlocker, RawQueryBlockerRead),
+    "deadlock": (RawQueryDeadlock, RawQueryDeadlockRead),
     "slow_query_mongo": (RawQuerySlowMongo, RawQuerySlowMongoRead),
 }
 
@@ -259,18 +259,16 @@ async def get_typed_detail(
 
     # Map each type to the typed-table column that mirrors raw_query.query_details
     _QUERY_TEXT_COL: dict[str, str] = {
-        "slow_query":       "query_final",
-        "blocker":          "all_query",
-        "deadlock":         "sql_text",
+        "slow_query": "query_final",
+        "blocker": "all_query",
+        "deadlock": "sql_text",
         "slow_query_mongo": "command_json",
     }
     text_col = _QUERY_TEXT_COL.get(rq_type)
 
     # 1) Fast path — FK is already set
     typed_row = (
-        await session.exec(
-            select(model_cls).where(model_cls.raw_query_id == query_id)
-        )
+        await session.exec(select(model_cls).where(model_cls.raw_query_id == query_id))
     ).first()
 
     # 2) Text fallback — works for OLD-format raw_query rows where
@@ -279,9 +277,7 @@ async def get_typed_detail(
     if not typed_row and text_col and rq.query_details:
         text_col_attr = getattr(model_cls, text_col)
         typed_row = (
-            await session.exec(
-                select(model_cls).where(text_col_attr == rq.query_details)
-            )
+            await session.exec(select(model_cls).where(text_col_attr == rq.query_details))
         ).first()
         # Backfill the FK so future lookups hit the fast path
         if typed_row and typed_row.raw_query_id is None:
@@ -304,9 +300,7 @@ async def get_typed_detail(
             ).encode("utf-8")
         ).hexdigest()
         typed_row = (
-            await session.exec(
-                select(model_cls).where(model_cls.query_hash == candidate_hash)
-            )
+            await session.exec(select(model_cls).where(model_cls.query_hash == candidate_hash))
         ).first()
         if typed_row and typed_row.raw_query_id is None:
             typed_row.raw_query_id = query_id
@@ -321,6 +315,7 @@ async def get_typed_detail(
     #    with real metrics (duration_ms, plan_summary etc.) — use that.
     if not typed_row and rq_type == "slow_query_mongo" and rq.query_details:
         import json as _json
+
         collection: str | None = None
         try:
             cmd = _json.loads(rq.query_details)
