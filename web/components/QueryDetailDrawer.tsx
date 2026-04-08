@@ -384,13 +384,32 @@ export function QueryDetailDrawer({
 
   // Fetch typed-detail whenever the selected query changes
   useEffect(() => {
-    if (!query) { setTypedDetail(null); return; }
+    let cancelled = false;
+
+    if (!query) {
+      setTypedDetail(null);
+      setLoadingTyped(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setLoadingTyped(true);
     setTypedDetail(null);
     api.queries.typedDetail(query.id)
-      .then(setTypedDetail)
-      .catch(() => setTypedDetail(null))
-      .finally(() => setLoadingTyped(false));
+      .then((detail) => {
+        if (!cancelled) setTypedDetail(detail);
+      })
+      .catch(() => {
+        if (!cancelled) setTypedDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTyped(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [query?.id]);
 
   // Close on Escape
