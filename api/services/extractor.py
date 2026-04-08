@@ -194,7 +194,9 @@ def _process_blockers(file_path: Path) -> list[dict]:
                 "blocked_sessions_count": row.pop("_blocked_count"),
             }
             meta_clean = {k: v for k, v in meta.items() if v}
-            row["extra_metadata"] = _json.dumps(meta_clean, ensure_ascii=False) if meta_clean else None
+            row["extra_metadata"] = (
+                _json.dumps(meta_clean, ensure_ascii=False) if meta_clean else None
+            )
         return rows
 
     # Aggregated / legacy format

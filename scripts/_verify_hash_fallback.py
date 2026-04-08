@@ -1,15 +1,12 @@
 """Verify that the hash-based fallback in get_typed_detail works correctly."""
 import asyncio
-import sqlite3
 import hashlib
+import sqlite3
 import sys
 
 sys.path.insert(0, ".")
 
 async def test():
-    from api.database import get_session
-    from api.routers.queries import get_typed_detail
-    from unittest.mock import MagicMock
 
     # Find a new-format raw_query slow_mongo row (one NOT the FK target)
     # that DOES have a matching typed row via hash

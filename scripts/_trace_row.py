@@ -11,7 +11,8 @@ row = conn.execute(
     (rq_id,)
 ).fetchone()
 if not row:
-    print("NOT FOUND"); exit()
+    print("NOT FOUND")
+    exit()
 print(f"  type={row[1]} source={row[2]}")
 print(f"  host={row[3]} db={row[4]} env={row[5]} month={row[6]}")
 print(f"  query_details len={row[7]}: {row[8]!r}")

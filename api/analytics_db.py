@@ -129,7 +129,10 @@ def _load_table(table: str) -> pl.DataFrame:
                     col_name = row[1]
                     declared = (row[2] or "").upper().split("(")[0].strip()
                     col_dtypes[col_name] = _SQLITE_TYPE_MAP.get(declared, pl.Utf8)
-                empty_schema = {col: pl.Series([], dtype=col_dtypes.get(col, pl.Utf8)) for col in columns}
+                empty_schema = {
+                    col: pl.Series([], dtype=col_dtypes.get(col, pl.Utf8))
+                    for col in columns
+                }
                 df = pl.DataFrame(empty_schema)
             else:
                 df = pl.DataFrame(

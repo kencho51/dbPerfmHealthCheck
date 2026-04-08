@@ -479,7 +479,10 @@ _COMMANDS: dict[str, tuple[str, object]] = {  # type: ignore[type-arg]
     "create": ("Apply migrations - create the full schema", cmd_create),
     "drop": ("Drop all tables (WARNING: destroys data)", cmd_drop),
     "reset": ("drop + create - full wipe and rebuild (WARNING)", cmd_reset),
-    "partial-reset": ("Clear ingestion tables only; keep users/labels/SPL (WARNING)", cmd_partial_reset),
+    "partial-reset": (
+        "Clear ingestion tables only; keep users/labels/SPL (WARNING)",
+        cmd_partial_reset,
+    ),
     "migrate-up": ("Apply next incremental schema change", cmd_migrate_up),
     "migrate-down": ("Reverse the last schema change (WARNING)", cmd_migrate_down),
     "truncate": ("Delete all rows, keep schema (WARNING)", cmd_truncate),

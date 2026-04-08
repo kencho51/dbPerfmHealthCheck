@@ -255,7 +255,8 @@ async def _link_slow_mongo_by_shape(session) -> None:
     for rq_id, typed_id in updates:
         await session.execute(
             text(
-                "UPDATE raw_query_slow_mongo SET raw_query_id=:rq WHERE id=:t AND raw_query_id IS NULL"
+                "UPDATE raw_query_slow_mongo"
+                " SET raw_query_id=:rq WHERE id=:t AND raw_query_id IS NULL"
             ),
             {"rq": rq_id, "t": typed_id},
         )
