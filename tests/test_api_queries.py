@@ -190,10 +190,10 @@ class TestGetQuery:
 # ---------------------------------------------------------------------------
 
 import hashlib  # noqa: E402 — grouped here so the module-level import stays clean
-import uuid     # noqa: E402
+import uuid  # noqa: E402
 
-from api.database import open_session as _open_session                     # noqa: E402
-from api.models import (                                                     # noqa: E402
+from api.database import open_session as _open_session  # noqa: E402
+from api.models import (  # noqa: E402
     RawQueryBlocker,
     RawQuerySlowSql,
 )
@@ -262,7 +262,7 @@ class TestGetTypedDetail:
     async def test_fk_fast_path_returns_blocker_data(self, client: AsyncClient):
         """FK already set → data is populated in one query (fast path)."""
         raw = await _seed_query(type="blocker")
-        typed = await _seed_blocker(raw_query_id=raw.id, all_query="EXEC sp_block_test")
+        await _seed_blocker(raw_query_id=raw.id, all_query="EXEC sp_block_test")
         r = await client.get(f"/api/queries/{raw.id}/typed-detail")
         assert r.status_code == 200
         body = r.json()
@@ -275,7 +275,7 @@ class TestGetTypedDetail:
         unique_sql = f"SELECT 1 /* text-fallback-{uuid.uuid4()} */"
         raw = await _seed_query(type="slow_query", query_details=unique_sql)
         # seed typed row with NO FK but matching query_final
-        typed = await _seed_slow_sql(raw_query_id=None, query_final=unique_sql)
+        await _seed_slow_sql(raw_query_id=None, query_final=unique_sql)
         r = await client.get(f"/api/queries/{raw.id}/typed-detail")
         assert r.status_code == 200
         body = r.json()
