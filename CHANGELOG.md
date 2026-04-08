@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-08
+
+### Added
+- 117 new tests for `GET /api/queries/{id}/typed-detail` slow_mongo paths: hash-reconstruction fallback and collection-fuzzy fallback (`tests/test_api_queries.py`)
+
+### Changed
+- CI workflow refactored: split into two parallel jobs (`lint` and `test`); added `concurrency` group to cancel stale runs; upgraded to `setup-uv@v5` with `enable-cache: true`; switched to `uv sync --frozen` to enforce lockfile integrity; added `--tb=short` to pytest output; added `permissions: contents: read`
+- `QueryDetailDrawer` — tracks active query ID in a local variable with an abort flag to prevent stale fetch results overwriting fresher ones
+
+### Fixed
+- CodeQL alert "Use of broken or weak cryptographic hashing algorithm on sensitive data" — replaced raw `hashlib.md5()` call in test helper with `hashlib.md5(..., usedforsecurity=False)`
+- `ruff format` violations across 11 files (`api/analytics_db.py`, `api/routers/analytics.py`, `api/routers/queries.py`, `migration/manage.py`, and 7 `scripts/` files) caused by multi-line E501 refactors not being subsequently auto-formatted
+
+### Chores
+- Removed `instructions.md` from Git tracking (`git rm --cached`); added to `.gitignore`
+
+## [0.7.0] - 2026-04-08
+
+### Added
+- `GET /api/queries/{id}/typed-detail` endpoint — returns the full native-column row from the matching `raw_query_*` typed table (joined via `raw_query_id` FK with text-hash fallback)
+- 5 new tests in `TestGetTypedDetail` covering: 404, null data when no typed row, FK fast path, text fallback for slow SQL, and response shape
+- `migration/manage.py` `partial-reset` command — truncates the 6 ingestion tables (`raw_query`, `upload_log`, and all 4 typed tables) while preserving `pattern_label`, `spl_query`, and `user`
+
+### Changed
+- **`raw_query` ingest is no longer deduplicated by time** — `_process_blockers` now includes `session_id`, `wait_type`, `command`, `head_blocker`, and `blocked_sessions_count` in `extra_metadata` so each blocked session produces a distinct hash; aggregated-format rows include `victims`, `resources`, `count`, and `lock_modes`
+- `_process_blockers` aggregated path now prefers `database_name` column when `currentdbname` is absent, restoring correct `db_name` extraction for per-session format CSVs without `session_id`
+- `migration/manage.py` `_DATA_TABLES` updated to include all 10 tables (`raw_query_slow_sql`, `raw_query_blocker`, `raw_query_deadlock`, `raw_query_slow_mongo`, `raw_query`, `upload_log`, `curated_query`, `pattern_label`, `spl_query`, `user`)
+- Queries page (`/queries`) trimmed to 9 display columns: Env, Type, Src, Host, Database, Occ, Month, Curated, Query Details — removing Hash, Time, First/Last Seen, Created, Updated from the table view
+- `QueryDetailDrawer` extended with a "Full CSV Detail" section that fetches and renders all typed-table columns when a row is clicked
+
+### Fixed
+- **Upload timeout** — `_link_typed_to_raw` background task rewrote to use `asyncio.to_thread` with a plain `sqlite3.connect(timeout=600)` connection; the heavy correlated UPDATE now runs in a worker thread using SQLite's C-level busy-wait, leaving the asyncio event loop free to accept new uploads
+- **`database is locked` on `DELETE FROM upload_log`** — root cause was concurrent `open_session()` writers; resolved by the `asyncio.to_thread` approach above combined with bumping the aiosqlite engine `connect_args["timeout"]` from 30 s → 120 s
+- **DuckDB `sum(VARCHAR)` BinderException on empty tables** — `analytics_db._load_table()` now reads `PRAGMA table_info` to map declared SQLite column types to correct Polars dtypes instead of defaulting all columns to `pl.Utf8` for empty tables
+- **Dashboard "Total Queries" KPI ignoring filters** — switched source from `upload_log.csv_row_count` to `kpi.coverage.total_rows` (i.e. `COUNT(*) FROM raw_query WHERE <all active filters>`)
+- **Monthly Trend "All types" bar using unfiltered upload_log counts** — "All types" view now uses `initialData` from the filter-aware `byMonth(filters)` call instead of `monthTypeData`
+
 ## [0.6.0] - 2026-03-30
 
 ### Added

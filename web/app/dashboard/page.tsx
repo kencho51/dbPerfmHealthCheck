@@ -155,7 +155,13 @@ export default function DashboardPage() {
     ])
       .then(([monthTypeRows, coverage]) => {
         setMonthType(monthTypeRows);
-        const totalCsvRows = monthTypeRows.reduce(
+        // When a month filter is active, only count CSV rows for that month.
+        // byMonthType() returns all months (MonthlyTrendCard needs the full
+        // timeline), so we filter client-side for the KPI card only.
+        const kpiRows = filters.month_year
+          ? monthTypeRows.filter((r) => r.month_year === filters.month_year)
+          : monthTypeRows;
+        const totalCsvRows = kpiRows.reduce(
           (sum, r) => sum + (r.total_file_rows ?? 0), 0
         );
         setKpi({ totalCsvRows, coverage });
@@ -336,8 +342,8 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle>Total Queries</CardTitle>
-              <CardValue>{fmt(kpi?.totalCsvRows ?? 0)}</CardValue>
-              <p className="text-xs text-slate-400 mt-1">Total rows from all uploaded CSV files (latest upload per file counts once)</p>
+              <CardValue>{fmt(kpi?.coverage.total_rows ?? 0)}</CardValue>
+              <p className="text-xs text-slate-400 mt-1">Distinct query patterns in raw_query matching active filters</p>
             </CardHeader>
           </Card>
           <Card>
