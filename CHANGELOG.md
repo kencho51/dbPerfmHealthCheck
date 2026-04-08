@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-08
+
+### Added
+- 117 new tests for `GET /api/queries/{id}/typed-detail` slow_mongo paths: hash-reconstruction fallback and collection-fuzzy fallback (`tests/test_api_queries.py`)
+
+### Changed
+- CI workflow refactored: split into two parallel jobs (`lint` and `test`); added `concurrency` group to cancel stale runs; upgraded to `setup-uv@v5` with `enable-cache: true`; switched to `uv sync --frozen` to enforce lockfile integrity; added `--tb=short` to pytest output; added `permissions: contents: read`
+- `QueryDetailDrawer` — tracks active query ID in a local variable with an abort flag to prevent stale fetch results overwriting fresher ones
+
+### Fixed
+- CodeQL alert "Use of broken or weak cryptographic hashing algorithm on sensitive data" — replaced raw `hashlib.md5()` call in test helper with `hashlib.md5(..., usedforsecurity=False)`
+- `ruff format` violations across 11 files (`api/analytics_db.py`, `api/routers/analytics.py`, `api/routers/queries.py`, `migration/manage.py`, and 7 `scripts/` files) caused by multi-line E501 refactors not being subsequently auto-formatted
+
+### Chores
+- Removed `instructions.md` from Git tracking (`git rm --cached`); added to `.gitignore`
+
 ## [0.7.0] - 2026-04-08
 
 ### Added
