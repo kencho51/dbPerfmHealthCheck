@@ -332,7 +332,7 @@ class TestGetTypedDetail:
             query_details=query_key,
         )
         # Typed table row uses the same hash derivation as the ingestor
-        candidate_hash = hashlib.md5(
+        candidate_hash = hashlib.sha256(
             "|".join(str(p or "").strip() for p in [host, db_name, env, query_key]).encode()
         ).hexdigest()
         typed = await _seed_slow_mongo(
