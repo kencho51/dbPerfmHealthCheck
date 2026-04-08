@@ -116,11 +116,11 @@ def _load_table(table: str) -> pl.DataFrame:
                 # pragma columns: cid, name, type, notnull, dflt_value, pk
                 _SQLITE_TYPE_MAP: dict[str, type[pl.DataType]] = {
                     "INTEGER": pl.Int64,
-                    "INT":     pl.Int64,
-                    "BIGINT":  pl.Int64,
-                    "REAL":    pl.Float64,
-                    "FLOAT":   pl.Float64,
-                    "DOUBLE":  pl.Float64,
+                    "INT": pl.Int64,
+                    "BIGINT": pl.Int64,
+                    "REAL": pl.Float64,
+                    "FLOAT": pl.Float64,
+                    "DOUBLE": pl.Float64,
                     "NUMERIC": pl.Float64,
                     "BOOLEAN": pl.Boolean,
                 }
@@ -130,8 +130,7 @@ def _load_table(table: str) -> pl.DataFrame:
                     declared = (row[2] or "").upper().split("(")[0].strip()
                     col_dtypes[col_name] = _SQLITE_TYPE_MAP.get(declared, pl.Utf8)
                 empty_schema = {
-                    col: pl.Series([], dtype=col_dtypes.get(col, pl.Utf8))
-                    for col in columns
+                    col: pl.Series([], dtype=col_dtypes.get(col, pl.Utf8)) for col in columns
                 }
                 df = pl.DataFrame(empty_schema)
             else:

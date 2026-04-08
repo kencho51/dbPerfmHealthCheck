@@ -6,6 +6,7 @@ typed_ingestor hashes [host, db_name, env, query_key] to produce query_hash.
 Since raw_query.query_details = query_key for new-format rows, we can
 reconstruct the hash and find the typed row.
 """
+
 import hashlib
 import sqlite3
 import time
@@ -28,9 +29,7 @@ print(f"  {len(rq_rows):,} raw_query slow_mongo rows without a direct FK")
 print("Loading typed query_hash → id map...")
 hash_to_typed_id: dict[str, int] = {
     row[0]: row[1]
-    for row in conn.execute(
-        "SELECT query_hash, id FROM raw_query_slow_mongo"
-    ).fetchall()
+    for row in conn.execute("SELECT query_hash, id FROM raw_query_slow_mongo").fetchall()
     if row[0]
 }
 print(f"  {len(hash_to_typed_id):,} typed rows in hash map")
@@ -61,7 +60,9 @@ print(f"\nDone in {elapsed:.1f}s")
 
 # Summary
 total = conn.execute("SELECT COUNT(*) FROM raw_query_slow_mongo").fetchone()[0]
-linked = conn.execute("SELECT COUNT(*) FROM raw_query_slow_mongo WHERE raw_query_id IS NOT NULL").fetchone()[0]
+linked = conn.execute(
+    "SELECT COUNT(*) FROM raw_query_slow_mongo WHERE raw_query_id IS NOT NULL"
+).fetchone()[0]
 print(f"raw_query_slow_mongo: {linked}/{total} linked")
 
 # How many raw_query slow_mongo rows now have a typed row?
@@ -69,7 +70,9 @@ covered = conn.execute(
     "SELECT COUNT(*) FROM raw_query rq WHERE rq.type='slow_query_mongo' "
     "AND EXISTS (SELECT 1 FROM raw_query_slow_mongo sm WHERE sm.raw_query_id=rq.id)"
 ).fetchone()[0]
-total_rq = conn.execute("SELECT COUNT(*) FROM raw_query WHERE type='slow_query_mongo'").fetchone()[0]
-print(f"raw_query rows with typed FK: {covered:,}/{total_rq:,} ({100*covered/total_rq:.1f}%)")
+total_rq = conn.execute("SELECT COUNT(*) FROM raw_query WHERE type='slow_query_mongo'").fetchone()[
+    0
+]
+print(f"raw_query rows with typed FK: {covered:,}/{total_rq:,} ({100 * covered / total_rq:.1f}%)")
 
 conn.close()

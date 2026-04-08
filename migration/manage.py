@@ -55,11 +55,11 @@ _ALEMBIC_URL = str(SQLITE_URL).replace("sqlite+aiosqlite", "sqlite")
 # the order is informational rather than strictly required.
 _DATA_TABLES = [
     # ── Children of raw_query (typed detail tables) ──────────────────────────
-    "curated_query",        # FK → raw_query, pattern_label
-    "raw_query_slow_sql",   # FK → raw_query
-    "raw_query_blocker",    # FK → raw_query
-    "raw_query_deadlock",   # FK → raw_query
-    "raw_query_slow_mongo", # FK → raw_query
+    "curated_query",  # FK → raw_query, pattern_label
+    "raw_query_slow_sql",  # FK → raw_query
+    "raw_query_blocker",  # FK → raw_query
+    "raw_query_deadlock",  # FK → raw_query
+    "raw_query_slow_mongo",  # FK → raw_query
     # ── Core tables ──────────────────────────────────────────────────────────
     "raw_query",
     "upload_log",

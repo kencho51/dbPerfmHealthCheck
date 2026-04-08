@@ -1,14 +1,19 @@
 """
 Diagnose why slow_mongo typed-detail lookup still fails.
 """
+
 import sqlite3
 
 conn = sqlite3.connect("db/master.db")
 
 # 1. How many raw_query slow_mongo rows exist vs typed rows?
-rq_total = conn.execute("SELECT COUNT(*) FROM raw_query WHERE type='slow_query_mongo'").fetchone()[0]
+rq_total = conn.execute("SELECT COUNT(*) FROM raw_query WHERE type='slow_query_mongo'").fetchone()[
+    0
+]
 typed_total = conn.execute("SELECT COUNT(*) FROM raw_query_slow_mongo").fetchone()[0]
-typed_linked = conn.execute("SELECT COUNT(*) FROM raw_query_slow_mongo WHERE raw_query_id IS NOT NULL").fetchone()[0]
+typed_linked = conn.execute(
+    "SELECT COUNT(*) FROM raw_query_slow_mongo WHERE raw_query_id IS NOT NULL"
+).fetchone()[0]
 print(f"raw_query (slow_query_mongo):  {rq_total:,}")
 print(f"raw_query_slow_mongo total:    {typed_total:,}")
 print(f"raw_query_slow_mongo linked:   {typed_linked:,}")

@@ -1,10 +1,12 @@
 """Verify that the hash-based fallback in get_typed_detail works correctly."""
+
 import asyncio
 import hashlib
 import sqlite3
 import sys
 
 sys.path.insert(0, ".")
+
 
 async def test():
 
@@ -33,14 +35,17 @@ async def test():
         # Check if typed row exists with this hash
         typed = conn.execute(
             "SELECT id, collection, op_type, duration_ms FROM raw_query_slow_mongo WHERE query_hash = ?",
-            (candidate,)
+            (candidate,),
         ).fetchone()
         print(f"  raw_query id={rq_id} query_details={qd[:50]!r}")
         if typed:
-            print(f"    FOUND typed row id={typed[0]} col={typed[1]} op={typed[2]} dur={typed[3]}ms")
+            print(
+                f"    FOUND typed row id={typed[0]} col={typed[1]} op={typed[2]} dur={typed[3]}ms"
+            )
         else:
             print(f"    MISS  no typed row for hash {candidate[:16]}...")
-    
+
     conn.close()
+
 
 asyncio.run(test())
