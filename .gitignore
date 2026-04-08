@@ -47,3 +47,6 @@ web/package-lock.json
 .DS_Store
 Thumbs.db
 *.log
+
+# instructions files
+.github/copilot-instructions.md
