@@ -7,7 +7,6 @@ requires-python = ">=3.14"
 dependencies = [
     # existing
     "numpy>=2.4.2",
-    "pandas>=3.0.1",
     "ruff>=0.15.2",
     # Phase 0: API + DB
     "fastapi[standard]>=0.115.0",
