@@ -279,7 +279,7 @@ async def upload_csv(
     """
     filename = file.filename or "unknown.csv"
 
-    # -- Write to temp file so pandas can read it --------------------------------
+    # -- Write to temp file for processing ---------------------------------------
     contents = await file.read()
     with tempfile.NamedTemporaryFile(
         suffix=".csv", delete=False, prefix=f"upload_{Path(filename).stem}_"
