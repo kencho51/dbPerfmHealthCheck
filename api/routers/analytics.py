@@ -277,11 +277,15 @@ def _by_month_sync(
                    row_count - LAG(row_count, 1) OVER (ORDER BY month_year)
                        AS row_delta,
                    total_occurrences - LAG(total_occurrences, 1) OVER (ORDER BY month_year)
-                       AS occ_delta
+                       AS occ_delta,
+                   prod_count,
+                   sat_count
             FROM (
                 SELECT month_year,
                        COUNT(*) AS row_count,
-                       SUM(occurrence_count) AS total_occurrences
+                       SUM(occurrence_count) AS total_occurrences,
+                       COUNT(*) FILTER (WHERE environment = 'prod') AS prod_count,
+                       COUNT(*) FILTER (WHERE environment = 'sat') AS sat_count
                 FROM raw_query
                 {where}
                 GROUP BY month_year
@@ -297,6 +301,8 @@ def _by_month_sync(
                 "total_occurrences": r[2],
                 "row_delta": r[3],  # None for the first month
                 "occ_delta": r[4],
+                "prod_count": r[5],
+                "sat_count": r[6],
             }
             for r in rows
         ]
@@ -331,7 +337,7 @@ async def analytics_by_month(
 # ---------------------------------------------------------------------------
 
 
-def _by_month_type_sync() -> list[dict]:
+def _by_month_type_sync(environment: str | None) -> list[dict]:
     """Pivot: one row per month_year.
 
     per-type columns (blocker/deadlock/slow_query/slow_query_mongo) show the
@@ -345,8 +351,27 @@ def _by_month_type_sync() -> list[dict]:
     entries in the normalised table.
     """
     con = get_duck("raw_query", "upload_log")
+    
+    # Build filter for raw_query
+    rq_where_clauses = ["month_year IS NOT NULL"]
+    rq_params = []
+    if environment:
+        rq_where_clauses.append("environment = ?")
+        rq_params.append(environment.lower())
+        
+    rq_where_str = " AND ".join(rq_where_clauses)
+    
+    # Build filter for upload_log
+    ul_where_clauses = ["month_year IS NOT NULL"]
+    ul_params = []
+    if environment:
+        ul_where_clauses.append("environment = ?")
+        ul_params.append(environment.lower())
+        
+    ul_where_str = " AND ".join(ul_where_clauses)
+    
     try:
-        rows = con.execute("""
+        rows = con.execute(f"""
             SELECT
                 coalesce(r.month_year, u.month_year) AS month_year,
                 coalesce(u.blocker, 0)          AS blocker,
@@ -354,11 +379,19 @@ def _by_month_type_sync() -> list[dict]:
                 coalesce(u.slow_query, 0)       AS slow_query,
                 coalesce(u.slow_query_mongo, 0) AS slow_query_mongo,
                 u.total_file_rows,
-                coalesce(r.total_patterns, 0)   AS total_patterns
+                coalesce(r.total_patterns, 0)   AS total_patterns,
+                coalesce(u.blocker_prod, 0)          AS blocker_prod,
+                coalesce(u.deadlock_prod, 0)         AS deadlock_prod,
+                coalesce(u.slow_query_prod, 0)       AS slow_query_prod,
+                coalesce(u.slow_query_mongo_prod, 0) AS slow_query_mongo_prod,
+                coalesce(u.blocker_sat, 0)          AS blocker_sat,
+                coalesce(u.deadlock_sat, 0)         AS deadlock_sat,
+                coalesce(u.slow_query_sat, 0)       AS slow_query_sat,
+                coalesce(u.slow_query_mongo_sat, 0) AS slow_query_mongo_sat
             FROM (
                 SELECT month_year, COUNT(*) AS total_patterns
                 FROM raw_query
-                WHERE month_year IS NOT NULL
+                WHERE {rq_where_str}
                 GROUP BY month_year
             ) r
             FULL OUTER JOIN (
@@ -371,21 +404,29 @@ def _by_month_type_sync() -> list[dict]:
                     SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql')   AS slow_query,
                     SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo')
                         AS slow_query_mongo,
-                    SUM(csv_row_count) AS total_file_rows
+                    SUM(csv_row_count) AS total_file_rows,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'blocker' AND environment = 'prod') AS blocker_prod,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock' AND environment = 'prod') AS deadlock_prod,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql' AND environment = 'prod') AS slow_query_prod,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo' AND environment = 'prod') AS slow_query_mongo_prod,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'blocker' AND environment = 'sat') AS blocker_sat,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock' AND environment = 'sat') AS deadlock_sat,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql' AND environment = 'sat') AS slow_query_sat,
+                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo' AND environment = 'sat') AS slow_query_mongo_sat
                 FROM (
-                    SELECT month_year, file_type, csv_row_count,
+                    SELECT month_year, file_type, environment, csv_row_count,
                            ROW_NUMBER() OVER (
                                PARTITION BY filename
                                ORDER BY CAST(uploaded_at AS TIMESTAMP) DESC
                            ) AS rn
                     FROM upload_log
-                    WHERE month_year IS NOT NULL
+                    WHERE {ul_where_str}
                 )
                 WHERE rn = 1
                 GROUP BY month_year
             ) u ON r.month_year = u.month_year
             ORDER BY coalesce(r.month_year, u.month_year) DESC
-        """).fetchall()
+        """, rq_params + ul_params).fetchall()
         return [
             {
                 "month_year": r[0],
@@ -395,6 +436,14 @@ def _by_month_type_sync() -> list[dict]:
                 "slow_query_mongo": r[4],
                 "total_file_rows": r[5],  # None for pre-log months
                 "total_patterns": r[6],  # unique SQL entries in raw_query
+                "blocker_prod": r[7],
+                "deadlock_prod": r[8],
+                "slow_query_prod": r[9],
+                "slow_query_mongo_prod": r[10],
+                "blocker_sat": r[11],
+                "deadlock_sat": r[12],
+                "slow_query_sat": r[13],
+                "slow_query_mongo_sat": r[14],
             }
             for r in rows
         ]
@@ -403,8 +452,10 @@ def _by_month_type_sync() -> list[dict]:
 
 
 @router.get("/by-month-type", summary="Row counts per month broken down by query type")
-async def analytics_by_month_type() -> list[dict]:
-    return await asyncio.to_thread(_by_month_type_sync)
+async def analytics_by_month_type(
+    environment: str | None = Query(None, description="Optional environment filter (prod/sat)"),
+) -> list[dict]:
+    return await asyncio.to_thread(_by_month_type_sync, environment)
 
 
 # ---------------------------------------------------------------------------

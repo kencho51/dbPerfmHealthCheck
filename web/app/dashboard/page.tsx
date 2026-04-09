@@ -150,7 +150,7 @@ export default function DashboardPage() {
     // Group 1 — KPI cards (total CSV rows from upload_log + coverage)
     setKpiLoading(true);
     Promise.all([
-      api.analytics.byMonthType(),
+      api.analytics.byMonthType(filters),
       api.analytics.curationCoverage(filters).catch(() => DEFAULT_COVERAGE),
     ])
       .then(([monthTypeRows, coverage]) => {

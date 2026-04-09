@@ -171,6 +171,8 @@ export interface MonthRow {
   total_occurrences: number;
   row_delta:         number | null;  // null for the first month (no prior period)
   occ_delta:         number | null;
+  prod_count?:       number;
+  sat_count?:        number;
 }
 
 export interface MonthTypeRow {
@@ -181,6 +183,14 @@ export interface MonthTypeRow {
   slow_query_mongo: number;  // CSV rows of type slow_query_mongo uploaded
   total_file_rows:  number | null;  // NULL for months uploaded before log tracking
   total_patterns:   number;  // COUNT(*) distinct normalised SQL entries in raw_query
+  blocker_prod?:    number;
+  deadlock_prod?:   number;
+  slow_query_prod?: number;
+  slow_query_mongo_prod?: number;
+  blocker_sat?:     number;
+  deadlock_sat?:    number;
+  slow_query_sat?:  number;
+  slow_query_mongo_sat?: number;
 }
 
 export interface HostStatsRow {
@@ -385,7 +395,11 @@ export const api = {
       const qs = buildQS(Object.keys(rest).length ? rest : undefined);
       return apiFetch<CoOccurrenceRow[]>(`/analytics/co-occurrence${qs}`);
     },
-    byMonthType: () => apiFetch<MonthTypeRow[]>("/analytics/by-month-type"),
+    byMonthType: (filters?: AnalyticsFilters) => {
+      const { environment } = filters ?? {};
+      const qs = buildQS(environment ? { environment } : undefined);
+      return apiFetch<MonthTypeRow[]>(`/analytics/by-month-type${qs}`);
+    },
   },
 
   queries: {
