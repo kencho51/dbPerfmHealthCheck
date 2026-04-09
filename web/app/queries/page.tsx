@@ -50,7 +50,11 @@ const columns: ColumnDef<RawQuery>[] = [
   },
   {
     accessorKey: "query_details",
-    header: "Query Details",
+    header: () => (
+      <span title="Normalised SQL text stored after ingestion. Use the search box to find rows by pasting any fragment of the original SQL.">
+        SQL Preview
+      </span>
+    ),
     cell: (i) => {
       const v = i.getValue<string | null>();
       return v
@@ -88,7 +92,7 @@ function SearchInput({ value, onChange }: { value: string; onChange: (v: string)
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => commit(e.target.value)}
       onKeyDown={(e) => { if (e.key === "Enter") { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); } }}
-      placeholder="Search query text… (Enter)"
+      placeholder="Paste SQL fragment to search… (Enter)"
     />
   );
 }
@@ -259,6 +263,7 @@ export default function QueriesPage() {
                 <td className="px-2 py-1">
                   <FInput value={month} onChange={setMonth} placeholder="YYYY-MM" />
                 </td>
+                <td className="px-2 py-1" />{/* time */}
                 <td className="px-2 py-1">
                   <FSelect value={isCurated} onChange={setIsCurated}>
                     <option value="">all</option>
