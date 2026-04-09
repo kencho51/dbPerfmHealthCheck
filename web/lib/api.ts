@@ -385,7 +385,11 @@ export const api = {
       const qs = buildQS(Object.keys(rest).length ? rest : undefined);
       return apiFetch<CoOccurrenceRow[]>(`/analytics/co-occurrence${qs}`);
     },
-    byMonthType: () => apiFetch<MonthTypeRow[]>("/analytics/by-month-type"),
+    byMonthType: (filters?: AnalyticsFilters) => {
+      const { environment } = filters ?? {};
+      const qs = buildQS(environment ? { environment } : undefined);
+      return apiFetch<MonthTypeRow[]>(`/analytics/by-month-type${qs}`);
+    },
   },
 
   queries: {

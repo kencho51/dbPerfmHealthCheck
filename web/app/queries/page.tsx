@@ -232,6 +232,7 @@ export default function QueriesPage() {
                     <option value="slow_query">slow query</option>
                     <option value="blocker">blocker</option>
                     <option value="deadlock">deadlock</option>
+                    <option value="slow_query_mongo">slow query mongo</option>
                   </FSelect>
                 </td>
                 <td className="px-2 py-1 w-16">
