@@ -9,6 +9,7 @@ Query endpoints:
 from __future__ import annotations
 
 import hashlib
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import col, func, select
@@ -75,7 +76,11 @@ def _apply_filters(
         curated_ids = select(CuratedQuery.raw_query_id)
         stmt = stmt.where(col(RawQuery.id).not_in(curated_ids))
     if search:
-        stmt = stmt.where(col(RawQuery.query_details).contains(search))
+        # Normalise the search term the same way the ingestor's _clean() function
+        # does — collapse whitespace and normalise @Pn parameter placeholders.
+        # This lets users paste raw CSV query_text and still find matching rows.
+        normalised = re.sub(r"@P\d+", "@P?", re.sub(r"\s+", " ", search.strip()))
+        stmt = stmt.where(col(RawQuery.query_details).contains(normalised))
     stmt = apply_system_filter(stmt, system)
     return stmt
 
