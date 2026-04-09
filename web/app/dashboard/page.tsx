@@ -341,9 +341,14 @@ export default function DashboardPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Card>
             <CardHeader>
-              <CardTitle>Total Queries</CardTitle>
-              <CardValue>{fmt(kpi?.coverage.total_rows ?? 0)}</CardValue>
-              <p className="text-xs text-slate-400 mt-1">Distinct query patterns in raw_query matching active filters</p>
+              <CardTitle>Ingested Rows</CardTitle>
+              <CardValue>{fmt(kpi?.totalCsvRows ?? 0)}</CardValue>
+              <p className="text-xs text-slate-400 mt-1">
+                Total CSV rows uploaded: {" "}
+                <span title="Same SQL seen in multiple files is merged into one row — unique deduplicated patterns stored in the database">
+                  {fmt(kpi?.coverage.total_rows ?? 0)} unique patterns after deduplication.
+                </span>
+              </p>
             </CardHeader>
           </Card>
           <Card>
