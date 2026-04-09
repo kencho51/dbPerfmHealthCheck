@@ -331,7 +331,7 @@ async def analytics_by_month(
 # ---------------------------------------------------------------------------
 
 
-def _by_month_type_sync() -> list[dict]:
+def _by_month_type_sync(environment: str | None) -> list[dict]:
     """Pivot: one row per month_year.
 
     per-type columns (blocker/deadlock/slow_query/slow_query_mongo) show the
@@ -345,8 +345,27 @@ def _by_month_type_sync() -> list[dict]:
     entries in the normalised table.
     """
     con = get_duck("raw_query", "upload_log")
+    
+    # Build filter for raw_query
+    rq_where_clauses = ["month_year IS NOT NULL"]
+    rq_params = []
+    if environment:
+        rq_where_clauses.append("environment = ?")
+        rq_params.append(environment.lower())
+        
+    rq_where_str = " AND ".join(rq_where_clauses)
+    
+    # Build filter for upload_log
+    ul_where_clauses = ["month_year IS NOT NULL"]
+    ul_params = []
+    if environment:
+        ul_where_clauses.append("environment = ?")
+        ul_params.append(environment.lower())
+        
+    ul_where_str = " AND ".join(ul_where_clauses)
+    
     try:
-        rows = con.execute("""
+        rows = con.execute(f"""
             SELECT
                 coalesce(r.month_year, u.month_year) AS month_year,
                 coalesce(u.blocker, 0)          AS blocker,
@@ -358,7 +377,7 @@ def _by_month_type_sync() -> list[dict]:
             FROM (
                 SELECT month_year, COUNT(*) AS total_patterns
                 FROM raw_query
-                WHERE month_year IS NOT NULL
+                WHERE {rq_where_str}
                 GROUP BY month_year
             ) r
             FULL OUTER JOIN (
@@ -379,13 +398,13 @@ def _by_month_type_sync() -> list[dict]:
                                ORDER BY CAST(uploaded_at AS TIMESTAMP) DESC
                            ) AS rn
                     FROM upload_log
-                    WHERE month_year IS NOT NULL
+                    WHERE {ul_where_str}
                 )
                 WHERE rn = 1
                 GROUP BY month_year
             ) u ON r.month_year = u.month_year
             ORDER BY coalesce(r.month_year, u.month_year) DESC
-        """).fetchall()
+        """, rq_params + ul_params).fetchall()
         return [
             {
                 "month_year": r[0],
@@ -403,8 +422,10 @@ def _by_month_type_sync() -> list[dict]:
 
 
 @router.get("/by-month-type", summary="Row counts per month broken down by query type")
-async def analytics_by_month_type() -> list[dict]:
-    return await asyncio.to_thread(_by_month_type_sync)
+async def analytics_by_month_type(
+    environment: str | None = Query(None, description="Optional environment filter (prod/sat)"),
+) -> list[dict]:
+    return await asyncio.to_thread(_by_month_type_sync, environment)
 
 
 # ---------------------------------------------------------------------------
