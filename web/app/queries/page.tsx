@@ -36,6 +36,7 @@ const columns: ColumnDef<RawQuery>[] = [
   { accessorKey: "db_name",          header: "Database", size: 160, cell: (i) => <span className="font-mono truncate block max-w-[148px]" title={i.getValue<string>() ?? ""}>{i.getValue<string>() ?? "—"}</span> },
   { accessorKey: "occurrence_count", header: "Occ",      size: 48 },
   { accessorKey: "month_year",       header: "Month",    size: 76,  cell: (i) => <span>{i.getValue<string | null>() ?? "—"}</span> },
+  { accessorKey: "time",             header: "Time",     size: 140, cell: (i) => <span className="text-[10px] tabular-nums whitespace-nowrap">{i.getValue<string | null>() ?? "—"}</span> },
   {
     accessorKey: "curated_id",
     header: "Curated",
