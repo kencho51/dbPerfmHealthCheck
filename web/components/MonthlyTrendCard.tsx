@@ -20,7 +20,26 @@ const TYPE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 /** Pick the right upload_log count column for a given type filter. */
-function pickCount(r: MonthTypeRow, type: string): number {
+function pickCount(r: MonthTypeRow, type: string, env?: "prod" | "sat"): number {
+  if (env === "prod") {
+    switch (type) {
+      case "blocker":          return r.blocker_prod ?? 0;
+      case "deadlock":         return r.deadlock_prod ?? 0;
+      case "slow_query":       return r.slow_query_prod ?? 0;
+      case "slow_query_mongo": return r.slow_query_mongo_prod ?? 0;
+      default:                 return 0; // Not easily available for "All types" upload_log without summing
+    }
+  }
+  if (env === "sat") {
+    switch (type) {
+      case "blocker":          return r.blocker_sat ?? 0;
+      case "deadlock":         return r.deadlock_sat ?? 0;
+      case "slow_query":       return r.slow_query_sat ?? 0;
+      case "slow_query_mongo": return r.slow_query_mongo_sat ?? 0;
+      default:                 return 0;
+    }
+  }
+  
   switch (type) {
     case "blocker":          return r.blocker;
     case "deadlock":         return r.deadlock;
@@ -35,10 +54,14 @@ function toMonthRows(mtRows: MonthTypeRow[], type: string): MonthRow[] {
   const sorted = [...mtRows].sort((a, b) => a.month_year.localeCompare(b.month_year));
   return sorted.map((r, i) => {
     const count     = pickCount(r, type);
+    const prodCount = type ? pickCount(r, type, "prod") : undefined;
+    const satCount  = type ? pickCount(r, type, "sat") : undefined;
     const prevCount = i > 0 ? pickCount(sorted[i - 1], type) : null;
     return {
       month_year:        r.month_year,
       row_count:         count,
+      prod_count:        prodCount,
+      sat_count:         satCount,
       total_occurrences: count,
       row_delta:         prevCount !== null ? count - prevCount : null,
       occ_delta:         null,

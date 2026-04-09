@@ -87,20 +87,45 @@ export function EnvPieChart({ data }: { data: SummaryRow[] }) {
 
 // ---- Month trend line chart -----------------------------------------------
 export function MonthLineChart({ data }: { data: MonthRow[] }) {
+  // If we have prod/sat count broken down, show multiple lines instead of a single total
+  const hasSplit = data.some((r) => r.prod_count !== undefined || r.sat_count !== undefined);
+
   return (
     <ResponsiveContainer width="100%" height={220}>
       <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
         <XAxis dataKey="month_year" tick={{ fontSize: 11 }} />
         <YAxis tick={{ fontSize: 11 }} />
         <Tooltip />
-        <Line
-          type="monotone"
-          dataKey="row_count"
-          name="Rows"
-          stroke="#6366f1"
-          strokeWidth={2}
-          dot={{ r: 4 }}
-        />
+        {hasSplit && <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: 12 }} />}
+        {hasSplit ? (
+          <>
+            <Line
+              type="monotone"
+              dataKey="prod_count"
+              name="Prod"
+              stroke="#6366f1"
+              strokeWidth={2}
+              dot={{ r: 4 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="sat_count"
+              name="Sat"
+              stroke="#14b8a6"
+              strokeWidth={2}
+              dot={{ r: 4 }}
+            />
+          </>
+        ) : (
+          <Line
+            type="monotone"
+            dataKey="row_count"
+            name="Rows"
+            stroke="#6366f1"
+            strokeWidth={2}
+            dot={{ r: 4 }}
+          />
+        )}
       </LineChart>
     </ResponsiveContainer>
   );
