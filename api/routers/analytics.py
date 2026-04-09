@@ -351,27 +351,28 @@ def _by_month_type_sync(environment: str | None) -> list[dict]:
     entries in the normalised table.
     """
     con = get_duck("raw_query", "upload_log")
-    
+
     # Build filter for raw_query
     rq_where_clauses = ["month_year IS NOT NULL"]
     rq_params = []
     if environment:
         rq_where_clauses.append("environment = ?")
         rq_params.append(environment.lower())
-        
+
     rq_where_str = " AND ".join(rq_where_clauses)
-    
+
     # Build filter for upload_log
     ul_where_clauses = ["month_year IS NOT NULL"]
     ul_params = []
     if environment:
         ul_where_clauses.append("environment = ?")
         ul_params.append(environment.lower())
-        
+
     ul_where_str = " AND ".join(ul_where_clauses)
-    
+
     try:
-        rows = con.execute(f"""
+        rows = con.execute(
+            f"""
             SELECT
                 coalesce(r.month_year, u.month_year) AS month_year,
                 coalesce(u.blocker, 0)          AS blocker,
@@ -405,14 +406,30 @@ def _by_month_type_sync(environment: str | None) -> list[dict]:
                     SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo')
                         AS slow_query_mongo,
                     SUM(csv_row_count) AS total_file_rows,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'blocker' AND environment = 'prod') AS blocker_prod,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock' AND environment = 'prod') AS deadlock_prod,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql' AND environment = 'prod') AS slow_query_prod,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo' AND environment = 'prod') AS slow_query_mongo_prod,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'blocker' AND environment = 'sat') AS blocker_sat,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'deadlock' AND environment = 'sat') AS deadlock_sat,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_sql' AND environment = 'sat') AS slow_query_sat,
-                    SUM(csv_row_count) FILTER (WHERE file_type = 'slow_query_mongo' AND environment = 'sat') AS slow_query_mongo_sat
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'blocker' AND environment = 'prod'
+                    ) AS blocker_prod,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'deadlock' AND environment = 'prod'
+                    ) AS deadlock_prod,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'slow_query_sql' AND environment = 'prod'
+                    ) AS slow_query_prod,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'slow_query_mongo' AND environment = 'prod'
+                    ) AS slow_query_mongo_prod,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'blocker' AND environment = 'sat'
+                    ) AS blocker_sat,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'deadlock' AND environment = 'sat'
+                    ) AS deadlock_sat,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'slow_query_sql' AND environment = 'sat'
+                    ) AS slow_query_sat,
+                    SUM(csv_row_count) FILTER (
+                        WHERE file_type = 'slow_query_mongo' AND environment = 'sat'
+                    ) AS slow_query_mongo_sat
                 FROM (
                     SELECT month_year, file_type, environment, csv_row_count,
                            ROW_NUMBER() OVER (
@@ -426,7 +443,9 @@ def _by_month_type_sync(environment: str | None) -> list[dict]:
                 GROUP BY month_year
             ) u ON r.month_year = u.month_year
             ORDER BY coalesce(r.month_year, u.month_year) DESC
-        """, rq_params + ul_params).fetchall()
+        """,
+            rq_params + ul_params,
+        ).fetchall()
         return [
             {
                 "month_year": r[0],
