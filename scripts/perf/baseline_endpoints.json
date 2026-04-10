@@ -1,0 +1,121 @@
+{
+  "label": "Phase 0 baseline \u2014 endpoint latency",
+  "base_url": "http://127.0.0.1:8000",
+  "n_calls": 10,
+  "results": [
+    {
+      "label": "analytics/summary",
+      "path": "/api/analytics/summary",
+      "params": {},
+      "n_calls": 10,
+      "n_errors": 0,
+      "p50_s": 0.1037,
+      "p95_s": 0.1122,
+      "min_s": 0.0946,
+      "max_s": 0.1137,
+      "mean_s": 0.1039,
+      "errors": []
+    },
+    {
+      "label": "analytics/by-host",
+      "path": "/api/analytics/by-host",
+      "params": {
+        "top_n": 20
+      },
+      "n_calls": 10,
+      "n_errors": 0,
+      "p50_s": 0.1109,
+      "p95_s": 0.1309,
+      "min_s": 0.1017,
+      "max_s": 0.1338,
+      "mean_s": 0.1133,
+      "errors": []
+    },
+    {
+      "label": "analytics/by-month",
+      "path": "/api/analytics/by-month",
+      "params": {},
+      "n_calls": 10,
+      "n_errors": 0,
+      "p50_s": 0.0998,
+      "p95_s": 0.1101,
+      "min_s": 0.093,
+      "max_s": 0.1141,
+      "mean_s": 0.1006,
+      "errors": []
+    },
+    {
+      "label": "analytics/top-fingerprints",
+      "path": "/api/analytics/top-fingerprints",
+      "params": {
+        "top_n": 20
+      },
+      "n_calls": 10,
+      "n_errors": 0,
+      "p50_s": 0.783,
+      "p95_s": 0.8655,
+      "min_s": 0.6901,
+      "max_s": 0.893,
+      "mean_s": 0.7757,
+      "errors": []
+    },
+    {
+      "label": "analytics/co-occurrence",
+      "path": "/api/analytics/co-occurrence",
+      "params": {},
+      "n_calls": 10,
+      "n_errors": 0,
+      "p50_s": 0.1444,
+      "p95_s": 0.184,
+      "min_s": 0.1294,
+      "max_s": 0.1971,
+      "mean_s": 0.1499,
+      "errors": []
+    },
+    {
+      "label": "queries/list (no filter)",
+      "path": "/api/queries/",
+      "params": {
+        "page": 1,
+        "page_size": 20
+      },
+      "n_calls": 10,
+      "n_errors": 10,
+      "p50_s": 0.0022,
+      "p95_s": 0.0037,
+      "min_s": 0.002,
+      "max_s": 0.0042,
+      "mean_s": 0.0025,
+      "errors": [
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307"
+      ]
+    },
+    {
+      "label": "queries/list (search)",
+      "path": "/api/queries/",
+      "params": {
+        "page": 1,
+        "page_size": 20,
+        "search": "SELECT"
+      },
+      "n_calls": 10,
+      "n_errors": 10,
+      "p50_s": 0.0025,
+      "p95_s": 0.0035,
+      "min_s": 0.0021,
+      "max_s": 0.0039,
+      "mean_s": 0.0026,
+      "errors": [
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307",
+        "HTTP 307"
+      ]
+    }
+  ]
+}
