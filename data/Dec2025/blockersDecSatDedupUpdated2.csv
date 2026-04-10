@@ -1,3 +1,0 @@
-"_time",host,"database_name","session_id","wait_type",command,"head_blocker","sql_text","blocked_sessions_count","total_blocked_wait_time_ms"
-"2025-12-24T08:40:57.000+0800",IDASTBDB03,"fb_db_v2",1166,"PAGEIOLATCH_EX",DELETE,1,"DECLARE @rcount1 AS INT =1                 WHILE @rcount1 > 0                 BEGIN                     DECLARE @tmpDeletedRows TABLE(msg_id BIGINT, m",4,2292
-"2025-12-22T15:00:46.000+0800",WINDB11ST01N,"asc_db",83,"PAGELATCH_EX",UPDATE,1,"(@P0 smallint,@P1 nvarchar(4000),@P2 varbinary(8000),@P3 varbinary(8000),@P4 varbinary(8000),@P5 bigint,@P6 datetime2,@P7 varbinary(8000),@P8 bigint,@",0,0
