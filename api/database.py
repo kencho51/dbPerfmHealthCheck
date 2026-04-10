@@ -203,6 +203,14 @@ async def apply_pragmas() -> None:
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
         await conn.exec_driver_sql("PRAGMA cache_size=-64000")  # 64 MB page cache
         await conn.exec_driver_sql("PRAGMA temp_store=MEMORY")
+        # 512 MB memory-mapped I/O — eliminates read() syscalls for the full DB
+        # file; dramatically speeds up analytics reads on the 330 MB database.
+        # Safe on Windows NTFS; stays well below address-space limits.
+        await conn.exec_driver_sql("PRAGMA mmap_size=536870912")
+        # Run targeted ANALYZE only on stale/new indexes — never the full table.
+        # 0x10002 = run ANALYZE + set a temporary analysis_limit so it completes
+        # quickly even on large tables (SQLite 3.46.0+ recommended practice).
+        await conn.exec_driver_sql("PRAGMA optimize=0x10002")
         # Pre-create the two link indexes used by _link_typed_to_raw so they
         # always exist before any upload runs, avoiding a costly full-table-scan
         # index-build inside an active write transaction.

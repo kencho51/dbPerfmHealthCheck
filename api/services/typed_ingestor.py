@@ -216,7 +216,15 @@ async def ingest_typed_rows(
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"Batch {i // BATCH_SIZE}: {exc}")
 
-        await session.commit()
+        # write_session() context manager commits automatically on clean exit;
+        # the explicit commit below was redundant and is removed.
+
+    # Flush the WAL back into the main DB file so subsequent readers don't have
+    # to scan a large WAL.  PASSIVE mode is non-blocking.
+    from api.database import engine as _engine  # noqa: PLC0415
+
+    async with _engine.begin() as conn:
+        await conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
 
     return result
 

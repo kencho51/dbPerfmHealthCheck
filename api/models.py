@@ -150,7 +150,7 @@ class RawQuery(SQLModel, table=True):
     type: QueryType = Field(
         sa_column=Column(SAString, index=True, nullable=False),
     )
-    query_details: str | None = Field(default=None)
+    query_details: str | None = Field(default=None, index=True)
 
     # Derived at ingest -- "YYYY-MM"
     month_year: str | None = Field(default=None, index=True)
@@ -203,14 +203,14 @@ class UploadLog(SQLModel, table=True):
     __tablename__ = "upload_log"
 
     id: int | None = Field(default=None, primary_key=True)
-    filename: str = Field(nullable=False)
-    file_type: str | None = Field(default=None)
+    filename: str = Field(nullable=False, index=True)
+    file_type: str | None = Field(default=None, index=True)
     environment: str | None = Field(default=None, index=True)
     month_year: str | None = Field(default=None, index=True)
     csv_row_count: int = Field(nullable=False)
     inserted: int = Field(default=0)
     updated: int = Field(default=0)
-    uploaded_at: str = Field(nullable=False)
+    uploaded_at: str = Field(nullable=False, index=True)
 
 
 # ---------------------------------------------------------------------------
