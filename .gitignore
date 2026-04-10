@@ -50,3 +50,7 @@ Thumbs.db
 
 # instructions files
 .github/copilot-instructions.md
+
+# data - ignore contents but keep directory
+data/*
+!data/.gitkeep
