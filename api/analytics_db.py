@@ -61,6 +61,11 @@ def _get_sync_engine() -> sa.engine.Engine:
         with engine.connect() as conn:
             conn.execute(sa.text("PRAGMA journal_mode=WAL"))
             conn.execute(sa.text("PRAGMA synchronous=NORMAL"))
+            # 512 MB memory-mapped I/O — matches async engine setting so analytics
+            # reads on the 330 MB DB also avoid read() syscalls.
+            conn.execute(sa.text("PRAGMA mmap_size=536870912"))
+            # Targeted ANALYZE on stale indexes only; fast even on large tables.
+            conn.execute(sa.text("PRAGMA optimize=0x10002"))
         _sync_engine = engine
     return _sync_engine
 
