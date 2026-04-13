@@ -1,5 +1,5 @@
 """
-QueryExtractor service — promoted from scripts/extract_all_queries_refactored.py.
+QueryExtractor service ??promoted from scripts/extract_all_queries_refactored.py.
 
 Key changes from the original:
   - Hardcoded PROJECT_ROOT / DATA_DIR / OUTPUT_DIR constants removed.
@@ -39,7 +39,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
     #                      lockMode, lockTimeout, waittime, es_text, clean_query, _raw
     #   Summarised (Nov25):currentdbname, victims, resources, lock_modes, count,
     #                      latest, earliest, all_query  (no host, no _raw)
-    "deadlock": [],  # flexible — at least one of: _raw, all_query, clean_query
+    "deadlock": [],  # flexible ??at least one of: _raw, all_query, clean_query
     "slow_query_mongo": ["host", "_raw"],
 }
 
@@ -89,7 +89,7 @@ def _clean(val: object) -> str:
     s = str(val).strip()
     # normalise whitespace
     s = re.sub(r"\s+", " ", s)
-    # normalise SQL param placeholders @P0, @P1 → @P?
+    # normalise SQL param placeholders @P0, @P1 ??@P?
     s = re.sub(r"@P\d+", "@P?", s)
     return s
 
@@ -124,25 +124,32 @@ def _extract_mongodb_command(raw_json: str) -> str:
 
 
 def _process_slow_query_sql(file_path: Path) -> list[dict]:
-    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    # scan_csv: Polars applies projection pushdown ??only the 5 needed source
+    # columns are parsed from disk; all other CSV columns are skipped entirely.
+    lf = pl.scan_csv(file_path, encoding="utf8", infer_schema_length=0)
+    cols = set(lf.collect_schema().names())  # one cheap header-only resolve
     env = _extract_environment(file_path.name)
     # Choose the best available time column; both are trimmed and nulls guarded.
     time_expr = (
-        pl.when(_col_or(df, "last_execution_time").str.len_chars().gt(0))
-        .then(_col_or(df, "last_execution_time"))
-        .otherwise(_col_or(df, "creation_time"))
+        pl.when(_col_or(cols, "last_execution_time").str.len_chars().gt(0))
+        .then(_col_or(cols, "last_execution_time"))
+        .otherwise(_col_or(cols, "creation_time"))
     )
-    return df.select(
-        [
-            time_expr.alias("time"),
-            pl.lit("sql").alias("source"),
-            _col_or(df, "host").alias("host"),
-            _col_or(df, "db_name").alias("db_name"),
-            pl.lit(env).alias("environment"),
-            pl.lit("slow_query").alias("type"),
-            _clean_expr(_col_or(df, "query_final")).alias("query_details"),
-        ]
-    ).to_dicts()
+    return (
+        lf.select(
+            [
+                time_expr.alias("time"),
+                pl.lit("sql").alias("source"),
+                _col_or(cols, "host").alias("host"),
+                _col_or(cols, "db_name").alias("db_name"),
+                pl.lit(env).alias("environment"),
+                pl.lit("slow_query").alias("type"),
+                _clean_expr(_col_or(cols, "query_final")).alias("query_details"),
+            ]
+        )
+        .collect()
+        .to_dicts()
+    )
 
 
 def _process_blockers(file_path: Path) -> list[dict]:
@@ -153,12 +160,12 @@ def _process_blockers(file_path: Path) -> list[dict]:
     Per-session format (``session_id`` + ``query_text`` present):
         extra_metadata = {"session_id": ..., "wait_type": ..., "command": ...,
                           "head_blocker": ..., "blocked_sessions_count": ...}
-        → each blocked session is a separate raw_query row.
+        ??each blocked session is a separate raw_query row.
 
     Aggregated / legacy format (``currentdbname`` + ``all_query`` present):
         extra_metadata = {"victims": ..., "resources": ..., "count": ...,
                           "lock_modes": ...}
-        → rows that differ only in victim-list are kept distinct.
+        ??rows that differ only in victim-list are kept distinct.
     """
     import json as _json
 
@@ -352,7 +359,7 @@ def _process_deadlocks_legacy(
         splunk_time = _get(row, "earliest", "_time")
         splunk_host = _get(row, "host")
 
-        # SQL text — prefer pre-extracted column, fall back to others.
+        # SQL text ??prefer pre-extracted column, fall back to others.
         query_details = _get(
             row, "clean_query", "all_query", "query_text", "statement", "sql_text", "deadlock_graph"
         )
@@ -422,16 +429,20 @@ def _process_deadlocks_legacy(
 
 
 def _process_mongodb_slow(file_path: Path) -> list[dict]:
-    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    # scan_csv: mongodbSlowQueries CSVs have 30+ columns; this processor only
+    # needs 6 of them.  Projection pushdown avoids parsing ~24 unused columns
+    # on every row ??the biggest single win for the 10 K-row MongoDB file.
+    lf = pl.scan_csv(file_path, encoding="utf8", infer_schema_length=0)
+    cols = set(lf.collect_schema().names())  # one cheap header-only resolve
     env = _extract_environment(file_path.name)
 
     # --- query key (pure Polars, zero Python per row) -------------------------
     # Prefer CSV column attr.queryShapeHash (set by MongoDB 7.0+) as the dedup
-    # key.  Fall back to "ns:c" or "ns:type" — all Rust string ops.
-    shape_col = _col_or(df, "attr.queryShapeHash")
-    c_col = _col_or(df, "c")
-    ns_col = _col_or(df, "attr.ns")
-    type_col = _col_or(df, "attr.type")
+    # key.  Fall back to "ns:c" or "ns:type" ??all Rust string ops.
+    shape_col = _col_or(cols, "attr.queryShapeHash")
+    c_col = _col_or(cols, "c")
+    ns_col = _col_or(cols, "attr.ns")
+    type_col = _col_or(cols, "attr.type")
 
     query_key_expr = (
         pl.when(shape_col.str.len_chars().gt(0))
@@ -450,26 +461,30 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
     # _query_key is ALWAYS non-empty: it is either queryShapeHash (len 64) or
     # the concat_str result which contains at least ":" (len 1).  Therefore
     # _cmd_json is never selected as query_details and we skip the entire
-    # map_elements(_extract_mongodb_command) call — saving 1 768 json.loads
+    # map_elements(_extract_mongodb_command) call ??saving 1 768 json.loads
     # invocations and the associated GIL churn.
-    df = df.with_columns(
+    lf = lf.with_columns(
         [
             query_key_expr.alias("_query_key"),
             ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
         ]
     )
 
-    return df.select(
-        [
-            _col_or(df, "t.$date").alias("time"),
-            pl.lit("mongodb").alias("source"),
-            _col_or(df, "host").alias("host"),
-            pl.col("_db").alias("db_name"),
-            pl.lit(env).alias("environment"),
-            pl.lit("slow_query_mongo").alias("type"),
-            pl.col("_query_key").alias("query_details"),
-        ]
-    ).to_dicts()
+    return (
+        lf.select(
+            [
+                _col_or(cols, "t.$date").alias("time"),
+                pl.lit("mongodb").alias("source"),
+                _col_or(cols, "host").alias("host"),
+                pl.col("_db").alias("db_name"),
+                pl.lit(env).alias("environment"),
+                pl.lit("slow_query_mongo").alias("type"),
+                pl.col("_query_key").alias("query_details"),
+            ]
+        )
+        .collect()
+        .to_dicts()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +522,7 @@ def extract_from_directory(directory: Path) -> list[dict]:
 
 
 def extract_from_path(path: Path) -> list[dict]:
-    """Unified entry point — accepts either a file or a directory."""
+    """Unified entry point ??accepts either a file or a directory."""
     if path.is_dir():
         return extract_from_directory(path)
     return extract_from_file(path)
@@ -519,7 +534,7 @@ def detect_file_category(filename: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Typed extractors — full native CSV columns for each file type
+# Typed extractors ??full native CSV columns for each file type
 # These feed into the raw_query_* type-specific tables.
 # ---------------------------------------------------------------------------
 
@@ -550,7 +565,7 @@ def _safe_int(val: object) -> int | None:
 def _clean_expr(expr: pl.Expr) -> pl.Expr:
     """
     Vectorised equivalent of _clean(): trim whitespace, collapse runs,
-    normalise @P\\d+ → @P?  — runs entirely in Polars' Rust/Rayon thread pool.
+    normalise @P\\d+ ??@P?  ??runs entirely in Polars' Rust/Rayon thread pool.
     """
     return (
         expr.fill_null("")
@@ -560,17 +575,22 @@ def _clean_expr(expr: pl.Expr) -> pl.Expr:
     )
 
 
-def _col_or(df: pl.DataFrame, name: str, default: str = "") -> pl.Expr:
+def _col_or(df: pl.DataFrame | set[str], name: str, default: str = "") -> pl.Expr:
     """Return pl.col(name).fill_null(default) when the column exists, else pl.lit(default).
+
+    Accepts either a materialised DataFrame or a set of column names (the latter
+    is used by lazy scan_csv callers that resolve the schema once via
+    ``lf.collect_schema().names()`` to avoid repeated per-expression schema scans).
 
     Guards against CSV exports that omit optional columns (e.g. attr.queryShapeHash
     absent in pre-MongoDB-7.0 exports).
     """
-    return pl.col(name).fill_null(default) if name in df.columns else pl.lit(default)
+    col_names: set[str] | list[str] = df if isinstance(df, set) else df.columns
+    return pl.col(name).fill_null(default) if name in col_names else pl.lit(default)
 
 
 def _detect_typed_table(filename: str) -> str:
-    """Map filename → type-specific table key."""
+    """Map filename ??type-specific table key."""
     name = filename.lower()
     if "maxelapsed" in name:
         return "slow_sql"
@@ -591,7 +611,7 @@ def _detect_typed_table(filename: str) -> str:
 
 def extract_typed_slow_sql(file_path: Path) -> list[dict]:
     """
-    maxElapsedQueries*.csv — returns all native timing/IO columns.
+    maxElapsedQueries*.csv ??returns all native timing/IO columns.
 
     CSV header:
         "creation_time","last_execution_time",host,"db_name",
@@ -602,7 +622,7 @@ def extract_typed_slow_sql(file_path: Path) -> list[dict]:
     df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
 
-    # Best available execution time — used for month_year derivation.
+    # Best available execution time ??used for month_year derivation.
     exec_time_expr = (
         pl.when(_col_or(df, "last_execution_time").str.len_chars().gt(0))
         .then(_col_or(df, "last_execution_time"))
@@ -610,7 +630,7 @@ def extract_typed_slow_sql(file_path: Path) -> list[dict]:
     )
     qf_expr = _clean_expr(_col_or(df, "query_final"))
 
-    # All casts run in Polars' Rust thread pool — zero Python GIL.
+    # All casts run in Polars' Rust thread pool ??zero Python GIL.
     rows = df.select(
         [
             pl.lit("slow_sql").alias("table_type"),
@@ -644,7 +664,7 @@ def extract_typed_slow_sql(file_path: Path) -> list[dict]:
         ]
     ).to_dicts()
 
-    # _hash_parts is a list — cannot be a Polars column; add in one O(N) Python pass.
+    # _hash_parts is a list ??cannot be a Polars column; add in one O(N) Python pass.
     for row in rows:
         exec_time = row.pop("_exec_time")
         row["month_year"] = _month_from_time(exec_time)
@@ -654,7 +674,7 @@ def extract_typed_slow_sql(file_path: Path) -> list[dict]:
 
 def extract_typed_blocker(file_path: Path) -> list[dict]:
     """
-    blockers*.csv — returns all native blocker columns.
+    blockers*.csv ??returns all native blocker columns.
 
     Supports two Splunk export formats:
 
@@ -715,7 +735,7 @@ def extract_typed_blocker(file_path: Path) -> list[dict]:
             row["_hash_parts"] = [env, row["currentdbname"], qt, et, sid]
         return rows
 
-    # Aggregated/legacy format — unchanged behaviour
+    # Aggregated/legacy format ??unchanged behaviour
     qf_expr = _clean_expr(_col_or(df, "all_query"))
     df = df.with_columns(
         [
@@ -756,7 +776,7 @@ def extract_typed_blocker(file_path: Path) -> list[dict]:
 
 def extract_typed_deadlock(file_path: Path) -> list[dict]:
     """
-    deadlocks*.csv — returns per-process rows with all structured columns.
+    deadlocks*.csv ??returns per-process rows with all structured columns.
     Supports both raw SPL format and legacy aggregated format.
     """
     import json
@@ -903,7 +923,7 @@ def _mongodb_query_key(row: dict, ns: str, op_type: str) -> str:
     """
     Return a stable query-shape key for MongoDB deduplication.
 
-    MongoDB 7.0+ exports `attr.queryShapeHash` — a hash of the normalised
+    MongoDB 7.0+ exports `attr.queryShapeHash` ??a hash of the normalised
     query structure with literal values removed.  When present, use it.
     For write operations (remove/update/insert) queryShapeHash is absent;
     fall back to `ns:optype` which still groups all removes on the same
@@ -919,7 +939,7 @@ def _mongodb_query_key(row: dict, ns: str, op_type: str) -> str:
 
 def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
     """
-    mongodbSlowQueries*.csv — returns all native MongoDB slow op columns.
+    mongodbSlowQueries*.csv ??returns all native MongoDB slow op columns.
 
     Deduplication key: ``attr.queryShapeHash`` when present (MongoDB 7.0+),
     otherwise ``attr.ns:c`` (namespace + operation category).  This groups
@@ -931,15 +951,22 @@ def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
     ``_extract_mongodb_command`` via ``map_elements`` (Python GIL-bound)
     but all other column reads (queryShapeHash, durationMillis, planSummary,
     remote, type, ns, host) are zero-copy Rust vector ops.
+
+    scan_csv + projection pushdown: mongodbSlowQueries CSVs have 30+ columns
+    but this extractor only needs ~12.  Polars reads only those columns from
+    disk, skipping the rest.  ``_raw`` (largest column) is still read because
+    command_json requires it via map_elements.
     """
-    df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
+    # scan_csv: resolve schema once; only the selected columns will be read.
+    lf = pl.scan_csv(file_path, encoding="utf8", infer_schema_length=0)
+    cols = set(lf.collect_schema().names())  # one cheap header-only resolve
     env = _extract_environment(file_path.name)
 
-    # --- query key: queryShapeHash → ns:c → ns:type  (pure Rust) -------------
-    shape_col = _col_or(df, "attr.queryShapeHash")
-    c_col = _col_or(df, "c")
-    ns_col = _col_or(df, "attr.ns")
-    type_col = _col_or(df, "attr.type")
+    # --- query key: queryShapeHash ??ns:c ??ns:type  (pure Rust) -------------
+    shape_col = _col_or(cols, "attr.queryShapeHash")
+    c_col = _col_or(cols, "c")
+    ns_col = _col_or(cols, "attr.ns")
+    type_col = _col_or(cols, "attr.type")
 
     query_key_expr = (
         pl.when(shape_col.str.len_chars().gt(0))
@@ -957,10 +984,10 @@ def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
 
     # --- command_json: requires Python json.loads; use map_elements -----------
     # All other fields are extracted with zero-GIL Polars ops above.
-    df = df.with_columns(
+    lf = lf.with_columns(
         [
             query_key_expr.alias("_query_key"),
-            _col_or(df, "_raw")
+            _col_or(cols, "_raw")
             .map_elements(_extract_mongodb_command, return_dtype=pl.Utf8)
             .alias("_command_json"),
             ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
@@ -972,24 +999,30 @@ def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
         ]
     )
 
-    rows = df.select(
-        [
-            pl.lit("slow_mongo").alias("table_type"),
-            _col_or(df, "host").alias("host"),
-            pl.col("_db").alias("db_name"),
-            pl.col("_collection").alias("collection"),
-            pl.lit(env).alias("environment"),
-            _col_or(df, "t.$date").alias("event_time"),
-            _col_or(df, "attr.durationMillis").cast(pl.Int64, strict=False).alias("duration_ms"),
-            _col_or(df, "attr.planSummary").alias("plan_summary"),
-            type_col.alias("op_type"),
-            _col_or(df, "attr.remote").alias("remote_client"),
-            pl.col("_command_json").alias("command_json"),
-            pl.col("_query_key"),
-        ]
-    ).to_dicts()
+    rows = (
+        lf.select(
+            [
+                pl.lit("slow_mongo").alias("table_type"),
+                _col_or(cols, "host").alias("host"),
+                pl.col("_db").alias("db_name"),
+                pl.col("_collection").alias("collection"),
+                pl.lit(env).alias("environment"),
+                _col_or(cols, "t.$date").alias("event_time"),
+                _col_or(cols, "attr.durationMillis")
+                .cast(pl.Int64, strict=False)
+                .alias("duration_ms"),
+                _col_or(cols, "attr.planSummary").alias("plan_summary"),
+                type_col.alias("op_type"),
+                _col_or(cols, "attr.remote").alias("remote_client"),
+                pl.col("_command_json").alias("command_json"),
+                pl.col("_query_key"),
+            ]
+        )
+        .collect()
+        .to_dicts()
+    )
 
-    # _hash_parts and month_year are list / derived — add in one O(N) Python pass.
+    # _hash_parts and month_year are list / derived ??add in one O(N) Python pass.
     for row in rows:
         qk = row.pop("_query_key")
         row["month_year"] = _month_from_time(row["event_time"])
@@ -999,7 +1032,7 @@ def extract_typed_slow_mongo(file_path: Path) -> list[dict]:
 
 def extract_typed_datafile_sql(file_path: Path) -> list[dict]:
     """
-    dataFileSize*.csv — returns all native data-file size columns.
+    dataFileSize*.csv ??returns all native data-file size columns.
 
     CSV header:
         updated, db, host, Path, trend, is_up, range_mb,
@@ -1037,7 +1070,7 @@ def extract_typed_datafile_sql(file_path: Path) -> list[dict]:
 
 def extract_typed_datafile_mongo(file_path: Path) -> list[dict]:
     """
-    mongodbDataFileSize*.csv (and aggregated variant) — returns all native
+    mongodbDataFileSize*.csv (and aggregated variant) ??returns all native
     MongoDB storage utilisation columns.
 
     CSV header:
@@ -1048,7 +1081,7 @@ def extract_typed_datafile_mongo(file_path: Path) -> list[dict]:
     """
     df = pl.read_csv(file_path, encoding="utf-8", infer_schema_length=0)
     env = _extract_environment(file_path.name)
-    # Derive month_year hint from filename (e.g. "Jan26" → "2026-01")
+    # Derive month_year hint from filename (e.g. "Jan26" ??"2026-01")
     rows = []
     for row in df.iter_rows(named=True):
         host_mount = _get(row, "host_mount")
@@ -1075,7 +1108,7 @@ def extract_typed_datafile_mongo(file_path: Path) -> list[dict]:
 
 def extract_typed_from_file(file_path: Path) -> list[dict]:
     """
-    Unified typed extractor — routes to the correct per-type function.
+    Unified typed extractor ??routes to the correct per-type function.
     Returns a list of dicts with a `table_type` key + all native CSV columns.
     Returns [] for unrecognised file types.
     """
