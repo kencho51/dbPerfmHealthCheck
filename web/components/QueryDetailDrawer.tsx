@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { X, BookmarkPlus, BookmarkX } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +50,11 @@ function CurationPanel({
   query: RawQuery;
   onCurationChange: (updated: RawQuery) => void;
 }) {
-  const [labels, setLabels] = useState<PatternLabel[]>([]);
+  const { data: labels = [] } = useQuery<PatternLabel[]>({
+    queryKey: ['labels'],
+    queryFn: api.labels.list,
+    staleTime: Infinity,
+  });
   const [curatedEntry, setCuratedEntry] = useState<CuratedQuery | null>(null);
   const [loadingEntry, setLoadingEntry] = useState(false);
 
@@ -86,10 +91,7 @@ function CurationPanel({
     setError("");
   }, [query.id]);
 
-  // Load labels
-  useEffect(() => {
-    api.labels.list().then(setLabels).catch(() => setLabels([]));
-  }, []);
+  // Load labels is handled by useQuery above
 
   // Load curated entry when curated_id is set
   useEffect(() => {
