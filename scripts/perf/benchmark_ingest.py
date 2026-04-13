@@ -61,7 +61,7 @@ from api.services.typed_ingestor import ingest_typed_rows  # noqa: E402
 DB_PATH = PROJECT_ROOT / "db" / "master.db"
 WAL_PATH = PROJECT_ROOT / "db" / "master.db-wal"
 CSV_DIR = PROJECT_ROOT / "data" / "Feb2026"
-OUTPUT_JSON = PROJECT_ROOT / "scripts" / "perf" / "baseline_ingest.json"
+_DEFAULT_OUTPUT = PROJECT_ROOT / "scripts" / "perf" / "baseline_ingest.json"
 
 
 def _mb(path: Path) -> float:
@@ -159,6 +159,17 @@ async def benchmark_file(csv_path: Path) -> dict:
 
 
 async def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Ingest pipeline benchmark")
+    parser.add_argument(
+        "--output",
+        default=str(_DEFAULT_OUTPUT),
+        help="Path to write JSON snapshot (default: baseline_ingest.json)",
+    )
+    args = parser.parse_args()
+    output_path = Path(args.output)
+
     # -- Initialise DB pragmas (WAL mode, cache_size, etc.) -------------------
     print("Initialising SQLite pragmas …")
     await apply_pragmas()
@@ -240,7 +251,7 @@ async def main() -> None:
 
     # -- Save JSON baseline ---------------------------------------------------
     snapshot = {
-        "label": "Phase 0 baseline — Mar2026",
+        "label": output_path.stem,
         "csv_dir": str(CSV_DIR.relative_to(PROJECT_ROOT)),
         "db_size_before_mb": db_size_before,
         "wal_size_before_mb": wal_size_before,
@@ -254,9 +265,13 @@ async def main() -> None:
         "files": results,
     }
 
-    OUTPUT_JSON.write_text(json.dumps(snapshot, indent=2))
-    print(f"\n  Baseline saved → {OUTPUT_JSON.relative_to(PROJECT_ROOT)}")
-    print("\nDone. Run again after Phase 1–3 optimizations to compare.\n")
+    output_path.write_text(json.dumps(snapshot, indent=2))
+    try:
+        rel = output_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        rel = output_path
+    print(f"\n  Snapshot saved → {rel}")
+    print("\nDone. Use compare_benchmarks.py to diff against baseline.\n")
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ except ImportError:
     print("ERROR: httpx is not installed. Run:  uv sync  to install dev dependencies.")
     sys.exit(1)
 
-OUTPUT_JSON = PROJECT_ROOT / "scripts" / "perf" / "baseline_endpoints.json"
+_DEFAULT_OUTPUT = PROJECT_ROOT / "scripts" / "perf" / "baseline_endpoints.json"
 
 # ---------------------------------------------------------------------------
 # Endpoints to benchmark
@@ -166,6 +166,11 @@ def main() -> None:
     parser.add_argument(
         "--calls", type=int, default=10, help="Number of calls per endpoint (default: 10)"
     )
+    parser.add_argument(
+        "--output",
+        default=str(_DEFAULT_OUTPUT),
+        help="Path to write JSON snapshot (default: baseline_endpoints.json)",
+    )
     args = parser.parse_args()
 
     base_url: str = args.base_url.rstrip("/")
@@ -215,15 +220,20 @@ def main() -> None:
             )
 
     # -- Save JSON snapshot ---------------------------------------------------
+    output_path = Path(args.output)
     snapshot = {
-        "label": "Phase 0 baseline — endpoint latency",
+        "label": output_path.stem,
         "base_url": base_url,
         "n_calls": n_calls,
         "results": results,
     }
-    OUTPUT_JSON.write_text(json.dumps(snapshot, indent=2))
-    print(f"\n  Baseline saved → {OUTPUT_JSON.relative_to(PROJECT_ROOT)}\n")
-    print("Done. Run again after Phase 2–4 optimizations to compare.\n")
+    output_path.write_text(json.dumps(snapshot, indent=2))
+    try:
+        rel = output_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        rel = output_path
+    print(f"\n  Snapshot saved → {rel}\n")
+    print("Done. Use compare_benchmarks.py to diff against baseline.\n")
 
 
 if __name__ == "__main__":

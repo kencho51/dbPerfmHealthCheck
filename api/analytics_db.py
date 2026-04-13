@@ -239,10 +239,19 @@ def get_duck(*tables: str) -> _DuckNoClose:
 
     for table in tables:
         df = _load_table(table)  # fast — returns cached DF on ~59/60 calls
-        # _df_cache[table][0] is the monotonic timestamp when the DF was last
-        # loaded from SQLite.  Re-register only if that timestamp is newer than
-        # the last time this thread registered the same table.
-        cached_ts = _df_cache[table][0]
+        # _load_table() always sets _df_cache[table] as a side effect, but the
+        # entry may be absent if:
+        #   a) _load_table is mocked in tests (mock returns DF without updating cache)
+        #   b) invalidate_cache() was called concurrently between the return above
+        #      and this read (TOCTOU race)
+        # In both cases fall back to a fresh timestamp so the table is always
+        # registered into DuckDB on this call.
+        cache_entry = _df_cache.get(table)
+        if cache_entry is None:
+            cached_ts = time.monotonic()
+            _df_cache[table] = (cached_ts, df)
+        else:
+            cached_ts = cache_entry[0]
         if registered_at.get(table, -1.0) < cached_ts:
             with _duckdb_lock:
                 con.register(table, df)
