@@ -14,7 +14,13 @@ Thread-safety
 - Per-table locks ensure only ONE thread ever loads a given table from SQLite.
   All other threads that arrive while a load is in progress wait, then read the
   freshly-filled cache — eliminating concurrent SQLite access entirely.
-- DuckDB: each request opens its own in-memory connection (no shared state).
+- DuckDB: one in-memory connection per worker thread (_thread_local.con).  The
+  connection is created once on the thread's first request and reused thereafter.
+  A table is only re-registered into DuckDB when the TTL cache has refreshed its
+  DataFrame from SQLite — on a warm cache the Arrow copy is skipped entirely.
+  duckdb.connect() and con.register() are still serialised by _duckdb_lock
+  (DuckDB 1.x is not thread-safe for concurrent connection creation on Windows);
+  individual query execution is unlocked since each thread owns its connection.
 - The shared sync engine uses a single connection via QueuePool; WAL pragmas
   allow non-blocking reads even if an async write is in progress.
 """
@@ -84,6 +90,11 @@ _table_locks: dict[str, threading.Lock] = {t: threading.Lock() for t in _KNOWN_T
 # Serialises duckdb.connect() + con.register() — DuckDB 1.x is not thread-safe
 # for concurrent connection creation on Windows.
 _duckdb_lock: threading.Lock = threading.Lock()
+
+# One DuckDB in-memory connection per worker thread (created lazily on first
+# request).  Avoids the per-request duckdb.connect() overhead while keeping
+# each thread's query execution fully isolated from other threads.
+_thread_local: threading.local = threading.local()
 
 
 def _load_table(table: str) -> pl.DataFrame:
@@ -175,25 +186,69 @@ def invalidate_cache(table: str | None = None) -> None:
         _df_cache.pop(table, None)
 
 
-def get_duck(*tables: str) -> duckdb.DuckDBPyConnection:
-    """
-    Open in-memory DuckDB and register the requested tables from cache.
+class _DuckNoClose:
+    """Proxy that forwards DuckDB calls except close() to the thread-local connection.
 
-    The global _duckdb_lock serialises duckdb.connect() + con.register() calls.
-    DuckDB 1.x has known thread-safety issues on Windows when multiple threads
-    call duckdb.connect() simultaneously.  The lock eliminates the race; each
-    individual DuckDB query completes in < 100 ms so serialisation is invisible.
-    Once the connection is created and tables registered, the caller holds its
-    own private in-memory DuckDB handle and can execute queries without the lock.
+    Returned by get_duck() so all callers can keep their ``con.close()`` pattern
+    without destroying the thread-local connection that is reused across requests.
+    The underlying connection lives for the lifetime of the worker thread.
+    """
+
+    __slots__ = ("_con",)
+
+    def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
+        self._con = con
+
+    def execute(self, query: str, parameters=None):  # noqa: ANN001, ANN201
+        if parameters is None:
+            return self._con.execute(query)
+        return self._con.execute(query, parameters)
+
+    def close(self) -> None:
+        """No-op — keeps the thread-local connection alive for the next request."""
+
+
+def get_duck(*tables: str) -> _DuckNoClose:
+    """
+    Return a DuckDB proxy with the requested tables registered.
+
+    Thread-local singleton: each worker thread creates its DuckDB connection
+    once and reuses it across all requests handled by that thread.  A table is
+    only re-registered when its TTL cache has refreshed from SQLite, so on a
+    warm cache the DataFrame→Arrow copy is skipped entirely.
+
+    The global _duckdb_lock serialises duckdb.connect() and con.register()
+    because DuckDB 1.x is not thread-safe for concurrent connection creation
+    on Windows.  Individual query execution is unlocked since each thread holds
+    its own private connection.
+
+    Callers must call .close() on the returned proxy (no-op, but keeps the
+    pattern consistent so a future refactor is easy).
     """
     if not tables:
         tables = ("raw_query",)
-    with _duckdb_lock:
-        con = duckdb.connect()
-        for table in tables:
-            df = _load_table(table)
-            con.register(table, df)
-    return con
+
+    # ---- First call on this thread: create the per-thread DuckDB connection ----
+    if not hasattr(_thread_local, "con"):
+        with _duckdb_lock:
+            _thread_local.con = duckdb.connect()
+        _thread_local.registered_at: dict[str, float] = {}  # {table: cache loaded_at}
+
+    con: duckdb.DuckDBPyConnection = _thread_local.con
+    registered_at: dict[str, float] = _thread_local.registered_at
+
+    for table in tables:
+        df = _load_table(table)  # fast — returns cached DF on ~59/60 calls
+        # _df_cache[table][0] is the monotonic timestamp when the DF was last
+        # loaded from SQLite.  Re-register only if that timestamp is newer than
+        # the last time this thread registered the same table.
+        cached_ts = _df_cache[table][0]
+        if registered_at.get(table, -1.0) < cached_ts:
+            with _duckdb_lock:
+                con.register(table, df)
+            registered_at[table] = cached_ts
+
+    return _DuckNoClose(con)
 
 
 def build_where(

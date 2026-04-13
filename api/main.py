@@ -72,6 +72,19 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Cache-Control for read-only analytics GET responses.
+    # max-age=60: browser serves from local cache for 60 s without a network hit.
+    # stale-while-revalidate=120: after 60 s the browser revalidates in the BG;
+    # the user still sees the stale response for up to 120 s during revalidation.
+    # Matches the 60 s DataFrame TTL in analytics_db.py, preventing round-trips
+    # to an API whose results won't change within that window anyway.
+    @app.middleware("http")
+    async def _analytics_cache_headers(request: Request, call_next):  # noqa: ANN001, ANN201
+        response = await call_next(request)
+        if request.method == "GET" and request.url.path.startswith("/api/analytics/"):
+            response.headers["Cache-Control"] = "max-age=60, stale-while-revalidate=120"
+        return response
+
     _ALLOWED_ORIGINS = {"http://localhost:3000", "http://localhost:3001"}
 
     @app.exception_handler(Exception)

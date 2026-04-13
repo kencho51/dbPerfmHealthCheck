@@ -1214,6 +1214,7 @@ def _co_occurrence_sync(
     db_name: str | None,
     month_year: str | None,
     system: str | None,
+    limit: int = 200,
 ) -> list[dict]:
     """
     FULL OUTER JOIN between blocker-aggregated and deadlock-aggregated CTEs on
@@ -1258,8 +1259,9 @@ def _co_occurrence_sync(
             FULL OUTER JOIN deadlocks d
                 ON b.host = d.host AND b.month_year = d.month_year
             ORDER BY combined_score DESC, host, month_year
+            LIMIT ?
         """,
-            params + params,
+            params + params + [limit],
         ).fetchall()  # params duplicated for both CTEs
         return [
             {
@@ -1282,6 +1284,7 @@ async def analytics_co_occurrence(
     db_name: str | None = None,
     month_year: str | None = None,
     system: str | None = None,
+    limit: int = Query(200, ge=1, le=1000, description="Maximum rows returned (default 200)"),
 ) -> list[dict]:
     return await asyncio.to_thread(
         _co_occurrence_sync,
@@ -1290,4 +1293,5 @@ async def analytics_co_occurrence(
         db_name,
         month_year,
         system,
+        limit,
     )
