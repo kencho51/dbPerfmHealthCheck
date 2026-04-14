@@ -51,8 +51,10 @@ def _pct(before: float, after: float) -> str:
 
 
 def _compare_endpoints(before: dict, after: dict) -> None:
-    print(f"\n{'Endpoint':<38} {'p50 before':>10} {'p50 after':>10} {'Δ p50':>11}"
-          f"  {'p95 before':>10} {'p95 after':>10} {'Δ p95':>11}")
+    print(
+        f"\n{'Endpoint':<38} {'p50 before':>10} {'p50 after':>10} {'Δ p50':>11}"
+        f"  {'p95 before':>10} {'p95 after':>10} {'Δ p95':>11}"
+    )
     print("-" * 108)
 
     before_map = {r["label"]: r for r in before.get("results", [])}
@@ -79,7 +81,9 @@ def _compare_endpoints(before: dict, after: dict) -> None:
 
     print()
     b_total = sum(r["p50_s"] for r in before_map.values() if r.get("p50_s"))
-    a_total = sum(r["p50_s"] for r in after_map.values() if r.get("p50_s") and r["label"] in before_map)
+    a_total = sum(
+        r["p50_s"] for r in after_map.values() if r.get("p50_s") and r["label"] in before_map
+    )
     print(f"  Sum p50 before : {b_total * 1000:.1f} ms")
     print(f"  Sum p50 after  : {a_total * 1000:.1f} ms  ({_pct(b_total, a_total).strip()})")
     print()
@@ -91,8 +95,10 @@ def _compare_endpoints(before: dict, after: dict) -> None:
 
 
 def _compare_ingest(before: dict, after: dict) -> None:
-    print(f"\n{'File':<45} {'t_total bef':>11} {'t_total aft':>11} {'Δ total':>9}"
-          f"  {'t_ingest bef':>12} {'t_ingest aft':>12} {'Δ ingest':>10}")
+    print(
+        f"\n{'File':<45} {'t_total bef':>11} {'t_total aft':>11} {'Δ total':>9}"
+        f"  {'t_ingest bef':>12} {'t_ingest aft':>12} {'Δ ingest':>10}"
+    )
     print("-" * 120)
 
     before_map = {r["file"]: r for r in before.get("files", [])}
@@ -144,12 +150,12 @@ def main() -> None:
 
     # Auto-detect format
     if "results" in before and before["results"] and "p50_s" in before["results"][0]:
-        print(f"\n=== Endpoint latency comparison ===")
+        print("\n=== Endpoint latency comparison ===")
         print(f"  Before : {sys.argv[1]}  ({before.get('n_calls', '?')} calls/endpoint)")
         print(f"  After  : {sys.argv[2]}  ({after.get('n_calls', '?')} calls/endpoint)")
         _compare_endpoints(before, after)
     elif "files" in before:
-        print(f"\n=== Ingest pipeline comparison ===")
+        print("\n=== Ingest pipeline comparison ===")
         print(f"  Before : {sys.argv[1]}")
         print(f"  After  : {sys.argv[2]}")
         _compare_ingest(before, after)

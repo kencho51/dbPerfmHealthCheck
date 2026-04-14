@@ -60,6 +60,7 @@ def seeded_raw_query():
     # the freshly inserted rows (the TTL cache may hold a stale snapshot from a
     # previously-run test in the same session).
     from api.analytics_db import invalidate_cache
+
     invalidate_cache("raw_query")
 
     yield
