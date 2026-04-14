@@ -81,8 +81,12 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _analytics_cache_headers(request: Request, call_next):  # noqa: ANN001, ANN201
         response = await call_next(request)
-        if request.method == "GET" and request.url.path.startswith("/api/analytics/"):
-            response.headers["Cache-Control"] = "max-age=60, stale-while-revalidate=120"
+        if (
+            request.method == "GET"
+            and request.url.path.startswith("/api/analytics/")
+            and 200 <= response.status_code < 300
+        ):
+            response.headers.setdefault("Cache-Control", "max-age=60, stale-while-revalidate=120")
         return response
 
     _ALLOWED_ORIGINS = {"http://localhost:3000", "http://localhost:3001"}

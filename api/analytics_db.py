@@ -199,10 +199,15 @@ class _DuckNoClose:
     def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
         self._con = con
 
+    def __getattr__(self, name):  # noqa: ANN001, ANN204
+        return getattr(self._con, name)
+
     def execute(self, query: str, parameters=None):  # noqa: ANN001, ANN201
         if parameters is None:
-            return self._con.execute(query)
-        return self._con.execute(query, parameters)
+            self._con.execute(query)
+        else:
+            self._con.execute(query, parameters)
+        return self
 
     def close(self) -> None:
         """No-op — keeps the thread-local connection alive for the next request."""

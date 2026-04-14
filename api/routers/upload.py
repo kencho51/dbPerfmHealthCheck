@@ -292,16 +292,18 @@ async def upload_csv(
 
     # -- Stream to temp file — avoids holding the entire CSV in RAM -------------
     # Reads in 1 MB chunks so memory usage stays bounded regardless of file size.
-    with tempfile.NamedTemporaryFile(
-        suffix=".csv", delete=False, prefix=f"upload_{Path(filename).stem}_"
-    ) as tmp:
-        chunk = await file.read(1 * 1024 * 1024)
-        while chunk:
-            tmp.write(chunk)
-            chunk = await file.read(1 * 1024 * 1024)
-        tmp_path = Path(tmp.name)
 
+    tmp_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".csv", delete=False, prefix=f"upload_{Path(filename).stem}_"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            chunk = await file.read(1 * 1024 * 1024)
+            while chunk:
+                tmp.write(chunk)
+                chunk = await file.read(1 * 1024 * 1024)
+
         # -- Validate ------------------------------------------------------------
         validation = await asyncio.to_thread(validate_csv, tmp_path)
 
@@ -412,7 +414,8 @@ async def upload_csv(
             detail={"message": f"Ingest failed: {type(exc).__name__}: {exc}"},
         ) from exc
     finally:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
     return {
         "filename": filename,

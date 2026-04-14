@@ -223,8 +223,11 @@ async def ingest_typed_rows(
     # to scan a large WAL.  PASSIVE mode is non-blocking.
     from api.database import engine as _engine  # noqa: PLC0415
 
-    async with _engine.begin() as conn:
-        await conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
+    try:
+        async with _engine.begin() as conn:
+            await conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"WAL checkpoint failed: {exc}")
 
     return result
 

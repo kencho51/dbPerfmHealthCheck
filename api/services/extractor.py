@@ -458,14 +458,12 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
         )
     )
 
-    # _query_key is ALWAYS non-empty: it is either queryShapeHash (len 64) or
-    # the concat_str result which contains at least ":" (len 1).  Therefore
-    # _cmd_json is never selected as query_details and we skip the entire
-    # map_elements(_extract_mongodb_command) call ??saving 1 768 json.loads
-    # invocations and the associated GIL churn.
     lf = lf.with_columns(
         [
             query_key_expr.alias("_query_key"),
+            _col_or(cols, "_raw")
+            .map_elements(_extract_mongodb_command, return_dtype=pl.Utf8)
+            .alias("_command_json"),
             ns_col.str.split(".").list.get(0).fill_null("").alias("_db"),
         ]
     )
@@ -479,7 +477,8 @@ def _process_mongodb_slow(file_path: Path) -> list[dict]:
                 pl.col("_db").alias("db_name"),
                 pl.lit(env).alias("environment"),
                 pl.lit("slow_query_mongo").alias("type"),
-                pl.col("_query_key").alias("query_details"),
+                pl.col("_command_json").alias("query_details"),
+                pl.col("_query_key").alias("query_key"),
             ]
         )
         .collect()
