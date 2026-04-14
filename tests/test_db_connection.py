@@ -11,7 +11,6 @@ Run:
 
 from __future__ import annotations
 
-import duckdb
 import polars as pl
 import pytest
 import sqlalchemy as sa
@@ -56,9 +55,19 @@ def seeded_raw_query():
     with Session(engine) as session:
         session.add_all(rows)
         session.commit()
+
+    # Evict the DataFrame cache so _load_table re-reads from SQLite and sees
+    # the freshly inserted rows (the TTL cache may hold a stale snapshot from a
+    # previously-run test in the same session).
+    from api.analytics_db import invalidate_cache
+
+    invalidate_cache("raw_query")
+
     yield
+
     with engine.begin() as conn:
         conn.execute(sa.text("DELETE FROM raw_query WHERE query_hash IN ('aaa','bbb')"))
+    invalidate_cache("raw_query")
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +112,13 @@ class TestLoadTable:
 
 class TestGetDuck:
     def test_returns_duckdb_connection(self, seeded_raw_query):
-        from api.analytics_db import get_duck
+        from api.analytics_db import _DuckNoClose, get_duck
 
         con = get_duck("raw_query")
-        assert isinstance(con, duckdb.DuckDBPyConnection)
+        # get_duck() returns a _DuckNoClose proxy (Phase 2 singleton refactor).
+        # Verify it is that proxy and that it exposes the DuckDB execute interface.
+        assert isinstance(con, _DuckNoClose)
+        assert hasattr(con, "execute")
         con.close()
 
     def test_table_queryable(self, seeded_raw_query):

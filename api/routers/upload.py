@@ -32,6 +32,10 @@ from api.services.validator import validate_csv
 
 router = APIRouter()
 
+# Limit concurrent background link tasks to 3 so rapid sequential uploads
+# don't spawn unbounded threads competing for the SQLite write lock.
+_link_semaphore: asyncio.Semaphore = asyncio.Semaphore(3)
+
 # ---------------------------------------------------------------------------
 # Mapping: table_type → SQL that sets raw_query_id where NULL.
 #
@@ -185,6 +189,9 @@ async def _link_typed_to_raw(table_type: str) -> None:
             con.execute(idx_ddl)
             con.execute(sql)
             con.commit()
+            # Flush the WAL immediately after the heavy correlated UPDATE so
+            # subsequent analytics reads don't have to walk a large WAL file.
+            con.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception:
             try:
                 con.rollback()
@@ -252,14 +259,18 @@ async def _link_slow_mongo_by_shape(session) -> None:
         if candidate in unlinked:
             updates.append((rq_id, unlinked[candidate]))
 
-    for rq_id, typed_id in updates:
-        await session.execute(
-            text(
-                "UPDATE raw_query_slow_mongo"
-                " SET raw_query_id=:rq WHERE id=:t AND raw_query_id IS NULL"
-            ),
-            {"rq": rq_id, "t": typed_id},
-        )
+    if not updates:
+        return
+
+    # Single bulk UPDATE with executemany — replaces the previous row-by-row loop
+    # that issued one async round-trip per matched row.  SQLAlchemy Core
+    # executemany batches these into the fewest statements aiosqlite allows.
+    await session.execute(
+        text(
+            "UPDATE raw_query_slow_mongo SET raw_query_id=:rq WHERE id=:t AND raw_query_id IS NULL"
+        ),
+        [{"rq": rq_id, "t": typed_id} for rq_id, typed_id in updates],
+    )
 
 
 @router.post("/upload", summary="Upload and ingest a Splunk CSV file")
@@ -279,15 +290,20 @@ async def upload_csv(
     """
     filename = file.filename or "unknown.csv"
 
-    # -- Write to temp file for processing ---------------------------------------
-    contents = await file.read()
-    with tempfile.NamedTemporaryFile(
-        suffix=".csv", delete=False, prefix=f"upload_{Path(filename).stem}_"
-    ) as tmp:
-        tmp.write(contents)
-        tmp_path = Path(tmp.name)
+    # -- Stream to temp file — avoids holding the entire CSV in RAM -------------
+    # Reads in 1 MB chunks so memory usage stays bounded regardless of file size.
 
+    tmp_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".csv", delete=False, prefix=f"upload_{Path(filename).stem}_"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            chunk = await file.read(1 * 1024 * 1024)
+            while chunk:
+                tmp.write(chunk)
+                chunk = await file.read(1 * 1024 * 1024)
+
         # -- Validate ------------------------------------------------------------
         validation = await asyncio.to_thread(validate_csv, tmp_path)
 
@@ -382,7 +398,13 @@ async def upload_csv(
         # -- Link typed rows to raw_query (Phase 1 — set raw_query_id FK) ------
         # Scheduled AFTER upload_log commit so no active write transaction
         # exists when the task fires.  Idempotent (WHERE raw_query_id IS NULL).
-        asyncio.create_task(_link_typed_to_raw(table_type))
+        # Semaphore caps concurrent background tasks to 3 so rapid sequential
+        # uploads don’t spawn unbounded threads competing for the write lock.
+        async def _guarded_link() -> None:
+            async with _link_semaphore:
+                await _link_typed_to_raw(table_type)
+
+        asyncio.create_task(_guarded_link())
 
     except HTTPException:
         raise
@@ -392,7 +414,8 @@ async def upload_csv(
             detail={"message": f"Ingest failed: {type(exc).__name__}: {exc}"},
         ) from exc
     finally:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
     return {
         "filename": filename,

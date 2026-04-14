@@ -3,7 +3,35 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.8.0] - 2026-04-13
+
+### Added
+- Alembic migration `add_perf_indexes`: `ix_raw_query_query_details`, `ix_upload_log_filename`, `ix_upload_log_file_type`, `ix_upload_log_uploaded_at`
+- `PRAGMA mmap_size=536870912` (512 MB memory-mapped I/O) on both async and sync SQLite engines
+- `PRAGMA optimize=0x10002` (targeted auto-ANALYZE) on every new SQLite connection
+- `PRAGMA wal_checkpoint(PASSIVE)` after each bulk ingest in `ingestor.py`, `typed_ingestor.py`, and the background link function in `upload.py`
+- Thread-local DuckDB singleton in `analytics_db.py` — tables re-registered only when the 60 s TTL cache refreshes; eliminates DataFrame→Arrow copy on warm requests
+- `Cache-Control: max-age=60, stale-while-revalidate=120` ASGI middleware on all `GET /api/analytics/*` responses
+- `LIMIT` cap (default 200, max 1000) on `GET /api/analytics/co-occurrence`
+- `asyncio.Semaphore(3)` guard on background link tasks in `upload.py`
+- `@tanstack/react-query@^5`; `web/app/providers.tsx` with SSR-safe `QueryClientProvider` (`staleTime: 60 s`)
+- `scripts/perf/compare_benchmarks.py` — side-by-side diff of ingest or endpoint JSON snapshots with % improvement markers
+- `--output` flag on `benchmark_ingest.py` and `benchmark_endpoints.py` to avoid overwriting Phase 0 baselines
+
+### Changed
+- `valid_cols` computation moved outside the batch loop in `typed_ingestor.py` (computed once per ingest call)
+- `pl.read_csv` → `pl.scan_csv(...).select([cols]).collect()` (lazy column projection) in `extractor.py` for `_process_slow_query_sql`, `_process_mongodb_slow`, and `extract_typed_slow_mongo`
+- Full in-memory file read in `upload.py` replaced with 1 MB chunked streaming write to `NamedTemporaryFile`
+- Row-by-row slow_mongo UPDATE loop replaced with `executemany` bulk UPDATE
+- `web/app/layout.tsx` root layout wrapped in `<Providers>`
+- `cache: "no-store"` → `cache: "default"` in `apiFetch()` (`web/lib/api.ts`) so browsers honour `Cache-Control: max-age=60`
+- Labels fetch in `QueryDetailDrawer` converted from `useEffect` + `api.labels.list()` to `useQuery({ queryKey: ['labels'], staleTime: Infinity })`
+- `seeded_raw_query` test fixture now calls `invalidate_cache("raw_query")` before and after yield
+- `TestGetDuck.test_returns_duckdb_connection` updated to assert `_DuckNoClose` proxy type
+
+### Fixed
+- `KeyError: 'raw_query'` in `get_duck()` when `_load_table` is mocked in tests or `invalidate_cache()` races between the call and cache read — replaced bare `_df_cache[table][0]` with `.get()` fallback that backfills the cache entry
 
 ## [0.7.1] - 2026-04-08
 

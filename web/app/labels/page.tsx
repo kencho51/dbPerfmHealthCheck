@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Plus, X, ChevronUp, ChevronDown, ChevronsUpDown, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -293,6 +294,7 @@ function LabelPanel({
 // ---- main page --------------------------------------------------------------
 
 export default function LabelsPage() {
+  const queryClient = useQueryClient();
   const [labels,    setLabels]    = useState<PatternLabel[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -328,11 +330,13 @@ export default function LabelsPage() {
       setLabels((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
       setSelected(updated);
     }
+    queryClient.invalidateQueries({ queryKey: ['labels'] });
   };
 
   const handleDelete = async (id: number) => {
     await api.labels.delete(id);
     setLabels((prev) => prev.filter((l) => l.id !== id));
+    queryClient.invalidateQueries({ queryKey: ['labels'] });
   };
 
   // ---- render ---------------------------------------------------------------

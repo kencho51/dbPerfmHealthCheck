@@ -170,13 +170,13 @@ async def ingest_typed_rows(
 
     from api.database import write_session  # local import to avoid circular refs
 
+    # Compute valid column set once per ingest call — it is constant for a given
+    # model and was previously being recomputed on every 500-row batch iteration.
+    valid_cols = {c.name for c in model.__table__.columns}  # type: ignore[attr-defined]
+
     async with write_session() as session:
         for i in range(0, len(normalised), BATCH_SIZE):
             batch = normalised[i : i + BATCH_SIZE]
-
-            # Get the actual columns defined on the model so we can drop any
-            # extra keys that don't belong (e.g. "raw_xml" on a blocker row).
-            valid_cols = {c.name for c in model.__table__.columns}  # type: ignore[attr-defined]
 
             clean_batch = [{k: v for k, v in r.items() if k in valid_cols} for r in batch]
 
@@ -216,7 +216,18 @@ async def ingest_typed_rows(
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"Batch {i // BATCH_SIZE}: {exc}")
 
-        await session.commit()
+        # write_session() context manager commits automatically on clean exit;
+        # the explicit commit below was redundant and is removed.
+
+    # Flush the WAL back into the main DB file so subsequent readers don't have
+    # to scan a large WAL.  PASSIVE mode is non-blocking.
+    from api.database import engine as _engine  # noqa: PLC0415
+
+    try:
+        async with _engine.begin() as conn:
+            await conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"WAL checkpoint failed: {exc}")
 
     return result
 

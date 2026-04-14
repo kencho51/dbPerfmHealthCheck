@@ -284,4 +284,13 @@ async def ingest_rows(rows: list[dict]) -> IngestResult:
         return result
 
     await _upsert_sqlite(normalized, result)
+
+    # Flush the WAL back into the main DB file so subsequent readers don't have
+    # to scan a large WAL.  PASSIVE mode is non-blocking — it checkpoints as
+    # many pages as possible without waiting for active readers to finish.
+    from api.database import engine as _engine  # noqa: PLC0415
+
+    async with _engine.begin() as conn:
+        await conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
+
     return result

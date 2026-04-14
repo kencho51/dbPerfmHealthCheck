@@ -21,7 +21,7 @@ function base(): string {
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base()}${path}`, {
     headers: { "Content-Type": "application/json" },
-    cache: "no-store",
+    cache: "default",
     ...init,
   });
   if (!res.ok) {

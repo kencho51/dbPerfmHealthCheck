@@ -49,7 +49,7 @@ Thumbs.db
 *.log
 
 # instructions files
-.github/copilot-instructions.md
+.github/instructions/*.md 
 
 # data - ignore contents but keep directory
 data/*
