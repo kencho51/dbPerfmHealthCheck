@@ -1,0 +1,141 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for dbPerfmHealthCheck
+# Docs: https://docs.coderabbit.ai/reference/configuration
+
+language: "en-US"
+
+reviews:
+  # assertive = comprehensive feedback including style and best-practice suggestions
+  # (chill = critical issues only — too lenient for a POC under active development)
+  profile: "assertive"
+
+  # Automatically approve once all CodeRabbit comments are resolved
+  request_changes_workflow: false
+
+  # Show which files were ignored and which comments were suppressed
+  review_details: true
+
+  # Walkthrough extras
+  high_level_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  suggested_labels: true
+  suggested_reviewers: true
+
+  # Reduce noise
+  poem: false
+  in_progress_fortune: false
+
+  # Auto-review every non-draft PR targeting main or develop
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+      - "develop"
+
+  # Files to skip (lock files, generated files, raw data)
+  path_filters:
+    - "!uv.lock"
+    - "!web/package-lock.json"
+    - "!data/**"
+    - "!output/**"
+    - "!reports/**"
+    - "!**/*.csv"
+    - "!**/*.xlsx"
+    - "!**/*.duckdb"
+    - "!**/migrations/versions/**"  # auto-generated Alembic migration files
+
+  # Linters — CodeRabbit runs these in a sandboxed env and attaches output to review
+  tools:
+    # Python: use project's own ruff config in pyproject.toml
+    ruff:
+      enabled: true
+      config_file: "pyproject.toml"
+    # Secrets scanning
+    gitleaks:
+      enabled: true
+    # YAML lint (.github/**, *.yaml)
+    yamllint:
+      enabled: true
+
+  # Per-path review instructions (targeted supplements to built-in logic)
+  path_instructions:
+    # FastAPI routers — security and input validation are highest priority
+    - path: "api/routers/**"
+      instructions: |
+        - Check all route parameters and request bodies are validated with Pydantic before use.
+        - Flag any raw SQL string interpolation; all queries must use parameterised statements.
+        - Verify auth dependencies are applied where required (no unprotected write endpoints).
+        - Check HTTP status codes are semantically correct (e.g. 404 vs 400, 201 for creates).
+        - Flag missing rate limiting on expensive endpoints (analytics, export).
+
+    # Services — business logic and performance
+    - path: "api/services/**"
+      instructions: |
+        - Flag any Python-level loop where a Polars vectorised operation would be more efficient.
+        - Ensure all file I/O uses pathlib.Path, not raw strings.
+        - Check that map_elements calls on large DataFrames have a return_dtype declared.
+        - Flag hardcoded file paths or environment names.
+        - Verify deduplication keys (_query_key, _hash_parts) are not exposed in user-visible fields (e.g. query_details).
+
+    # Data models
+    - path: "api/models.py"
+      instructions: |
+        - Ensure new columns have an explicit default and are nullable where appropriate for backward compat.
+        - Check index annotations on frequently-queried fields (host, environment, month_year, query_hash).
+        - Flag model fields that could store unbounded text without a length or validation constraint.
+
+    # Database setup
+    - path: "api/database.py"
+      instructions: |
+        - Check connection pool settings are appropriate for async SQLite (single-writer constraint).
+        - Verify WAL mode and foreign key enforcement pragmas are set on connect.
+
+    # Next.js pages and API routes
+    - path: "web/app/**"
+      instructions: |
+        - Flag any fetch() call missing error handling or loading state.
+        - Ensure React Query keys are stable arrays with no inline objects that break cache identity.
+        - Check that queryClient.invalidateQueries is called after every mutation (create/update/delete).
+        - Flag direct DOM manipulation that bypasses React state.
+        - Verify no sensitive data (tokens, hashes) is logged to console.
+
+    # React components
+    - path: "web/components/**"
+      instructions: |
+        - Check all props are typed with TypeScript interfaces (no implicit `any`).
+        - Flag missing accessibility attributes (aria-label, role) on interactive elements.
+        - Ensure loading and error states are handled for async data.
+
+    # Pytest tests
+    - path: "tests/**"
+      instructions: |
+        - Verify tests use fixtures from conftest.py rather than creating their own DB state.
+        - Ensure each test cleans up any files or DB rows it creates (no leftover state).
+        - Flag tests that call real external services without mocking.
+        - Check test names clearly describe the scenario and expected outcome.
+        - Ensure both happy path and error/edge cases are covered for each new feature.
+
+    # GitHub Actions
+    - path: ".github/workflows/**"
+      instructions: |
+        - Flag any action using a mutable tag (e.g. uses: actions/checkout@v3) — prefer a pinned SHA.
+        - Check secrets are accessed via ${{ secrets.NAME }}, never hardcoded.
+        - Verify test jobs run on pull_request and not only on push to main/develop.
+
+    # One-off maintenance scripts
+    - path: "scripts/**"
+      instructions: |
+        - Flag any script that modifies data without a dry-run flag.
+        - Check for hardcoded DB paths or credentials.
+
+knowledge_base:
+  # Auto-detection picks up .github/instructions/*.instructions.md and copilot-instructions.md
+  # automatically — no filePatterns needed unless adding custom paths.
+  code_guidelines:
+    enabled: true
+
+chat:
+  auto_reply: true
