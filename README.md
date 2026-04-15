@@ -81,60 +81,65 @@ dbPerfmHealthCheck/
 
 ## Getting Started
 
-### 1. Install dependencies
+### 0. Pre-requisites
+- uv is installed according to https://docs.astral.sh/uv/getting-started/installation/, then check:
 
-```powershell
+```
+> uv --version                                   
+uv 0.9.18 (0cee76417 2025-12-16)
+```
+
+- npm is installed according to https://nodejs.org/en/download/, then check:
+
+```
+> npm --version                                  
+11.6.2
+```
+
+- 
+
+### 1. Clone the repo
+
+```
+> git clone https://github.com/hkjc-org-sandbox/dev-trial-poc-dbPerfmApp.git
+> cd dev-trial-poc-dbPerfmApp
+# check you are at main branch
+> git branch
+* main
+```
+
+
+### 2. Install Python dependencies for the backend
+
+```
 # Corporate proxy with SSL inspection — use native TLS once to populate cache
-uv sync --native-tls
+> uv sync --native-tls
+
 ```
 
-### 2. Configure environment
+### 3. Install JavaScript dependencies for the frontend
 
-Create `api/.env` (gitignored):
-
-```dotenv
-# SQLite path (default: db/master.db relative to project root)
-SQLITE_PATH=db/master.db
-
-# JWT secret — change before production use
-SECRET_KEY=change-me-in-production
-
-# Frontend URL (used by CORS middleware)
-FRONTEND_URL=http://localhost:3000
+``` 
+# Install npm dependencies for the frontend
+> cd web
+> npm install
 ```
 
-### 3. Create the database
+### 4. Spin up the backend server
 
-```powershell
-uv run python migration/manage.py create
 ```
-
-### 4. Create the first admin user
-
-Start the API server first (step 5), then in a separate terminal:
-
-```powershell
-uv run python scripts/create_admin.py
-```
-
-Prompts for username / email / password. The `/api/auth/register` endpoint is locked after the first user — subsequent users are added via the admin panel.
-
-### 5. Start the API server
-
-```powershell
-uv run uvicorn api.main:app --port 8000 --reload
+> uv run uvicorn api.main:app --port 8000 --reload
 # Health check: http://localhost:8000/health
 # Swagger UI:   http://localhost:8000/docs
 ```
 
-### 6. Start the frontend
+#### 5. Spin up the frontend server
 
-```powershell
-cd web
-npm install
-npm run dev
+``` 
+> cd web
+> npm run dev
 # http://localhost:3000
-```
+``` 
 
 ---
 
